@@ -23,6 +23,8 @@
 - Argumentos extras de scripts pnpm vão sem `--` (`pnpm smoke --shot=<png>`): o pnpm repassa o `--` literal e o Electron ignora os switches depois dele.
 - O kernel não enxerga `console`, `TextDecoder`, `performance` nem `structuredClone` (sem lib `DOM` e sem tipos do Node). O que precisar disso fica fora do kernel ou é injetado.
 - Todo modo de execução automática do Electron (`--smoke`, `--bench`) sai por uma função única e idempotente: a primeira chamada define o código de saída.
+- Verificação visual só pela captura do próprio app (`--shot`), com entrada injetada por `--play`. Nunca capturar a tela do sistema.
+- Tempo de GPU só se mede com sincronização (`readPixels`); um número que não cresce com a carga não é medida.
 
 ## Estrutura de arquivos
 
@@ -37,7 +39,7 @@ src/kernel/
   pick.ts · selection.ts · snap.ts
   command/           parser.ts · aliases.ts · runtime.ts · commands/*.ts
   dxf/               tokenizer.ts · reader.ts · writer.ts · template.ts · aci.ts
-src/render/          backend.ts · hilo.ts · scene.ts · overlay.ts · webgl2/{backend,shaders}.ts
+src/render/          backend.ts · hilo.ts · grid.ts · scene.ts · overlay.ts · webgl2/{backend,shaders}.ts
 src/app/             controller.ts · input.ts · stores.ts · bench.ts
 src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx · LayerPanel.tsx · tokens.css
 ```
@@ -58,43 +60,50 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
 
 ## M1 — Render (gate G1)
 
-- [ ] **T03 · ViewState**
+- [x] **T03 · ViewState**
   - Arquivos: `src/kernel/geom/vec.ts`, `src/kernel/view.ts`, `src/kernel/view.test.ts`, `package.json` (remove `--passWithNoTests` do script `check`: este é o primeiro teste)
   - Produz: `Vec2 {x,y}`, `BBox {minX,minY,maxX,maxY}`; `worldToScreen(v,x,y)`, `screenToWorld(v,sx,sy)`, `zoomAt(v,sx,sy,factor)`, `panBy(v,dxPx,dyPx)`, `fit(v,bbox,marginPx)`; todos retornam novo `ViewState`.
   - Testa: ida-e-volta tela↔mundo; `zoomAt` mantém o ponto sob o cursor com erro < 1e-6 em `(7.4e6, 9.1e6)`; `fit` enquadra o bbox com margem.
 
-- [ ] **T04 · Divisão hi/lo**
+- [x] **T04 · Divisão hi/lo**
   - Arquivos: `src/render/hilo.ts`, `src/render/hilo.test.ts`
   - Produz: `splitDouble(x: number, out: Float32Array, i: number): void` (hi em `i`, lo em `i+1`).
   - Testa: com `Math.fround`, `(hi−eyeHi)+(lo−eyeLo)` difere do valor `f64` em < 1e-6 para `x = 7_400_000.001`.
 
-- [ ] **T05 · Contrato e backend de segmentos**
+- [x] **T05 · Contrato e backend de segmentos**
   - Arquivos: `src/render/backend.ts`, `src/render/webgl2/backend.ts`, `src/render/webgl2/shaders.ts`
   - Consome: `ViewState`, `splitDouble`.
   - Produz: `RenderBackend`, `Draw`, `BatchId` conforme §4 da spec; `SEGMENT_STRIDE = 36`, `ARC_STRIDE = 32`; `createWebGL2Backend(canvas): RenderBackend`; tabela de estilos em textura.
   - Verifica: cena fixa de 3 segmentos em UTM aparece nítida; perda de contexto WebGL recria os recursos.
 
-- [ ] **T06 · Pan e zoom**
+- [x] **T06 · Pan e zoom**
   - Arquivos: `src/app/input.ts`, `src/app/controller.ts`
   - Produz: roda = `zoomAt` no cursor; botão do meio = pan; duplo clique do meio = `fit`; frame sob demanda (flag de sujo + rAF); `resize` com DPR.
   - Verifica: ponto sob o cursor não desliza ao dar zoom; CPU em repouso ≈ 0%.
   - Nota: os 32 px do topo do canvas são área de arraste da janela (`HTCAPTION`); eventos de ponteiro não chegam ali.
 
-- [ ] **T07 · Grid procedural**
+- [x] **T07 · Grid procedural**
   - Arquivos: `src/render/webgl2/shaders.ts`, `src/render/webgl2/backend.ts`
   - Produz: grid menor/maior em passos ×10 com fade, cores dos tokens, dentro de `frame`.
   - Verifica: sem cintilação nem moiré do zoom mínimo ao máximo.
 
-- [ ] **T08 · Primitiva arco**
+- [x] **T08 · Primitiva arco**
   - Arquivos: `src/render/webgl2/shaders.ts`, `src/render/webgl2/backend.ts`
   - Produz: batch `arc` avaliado no vertex shader; `Draw.subdiv` define as subdivisões da chamada.
   - Verifica: círculos redondos em qualquer zoom; arco de 90° começa e termina nos ângulos certos.
 
-- [ ] **T09 · Benchmark e gate G1**
+- [x] **T09 · Benchmark e gate G1**
   - Arquivos: `src/app/bench.ts`, `package.json` (script `bench`)
   - Produz: `pnpm bench --n=1000000` gera segmentos aleatórios em UTM, roda 300 frames de pan/zoom, imprime p50/p95 em JSON e sai com código ≠ 0 se p95 > 16,7 ms.
-  - Nota: o intervalo entre `requestAnimationFrame` fica preso ao vsync (~16,7 ms) e tornaria o gate um cara-ou-coroa. Decidir na expansão: medir o custo de render ou desligar o limite de quadros antes de `app.whenReady()`.
+  - Método: a amostra é o tempo de render do frame com a GPU sincronizada (`backend.frame` + `gl.readPixels` de 1 pixel), com vsync ligado. Desligar o limite de quadros não serve: o laço deixa de esperar a GPU.
   - Verifica: G1. **Parada para decisão do usuário** se falhar (ver incógnita 1).
+  - Resultado (2026-10-13, Radeon integrada 0x1638, 1920×1080): **G1 falha.** 1M segmentos: p50 ≈ 22 ms, p95 ≈ 47 ms; zoom ≥ 10×: ≈ 14 ms; tudo visível: ≈ 42 ms. Diagnóstico descartável: sem MSAA o p95 cai para ≈ 20 ms; linhas de hardware de 1 px sem MSAA, ≈ 17,4 ms.
+
+- [ ] **T09b · Tema injetado e testes do backend**
+  - Arquivos: `src/render/webgl2/backend.ts`, `src/render/webgl2/backend.test.ts`, `src/app/controller.ts`, `src/app/bench.ts`
+  - Produz: `createWebGL2Backend(canvas, { bg, gridMinor, gridMajor })`; a leitura dos tokens CSS sai do backend e vai para `src/app/`; a cor de desenho da demo usa o mesmo leitor.
+  - Testa (GL falso por `Proxy`): caminhos de `RangeError`; a restauração reenvia todo batch vivo e pula os destruídos; `frame` com contexto perdido registra e não desenha.
+  - Nota: vem antes de qualquer otimização do backend.
 
 ## M2 — Documento (gate G2)
 
@@ -119,12 +128,18 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
   - Consome: `Document`, `RenderBackend`, `EntityType.primitives`.
   - Produz: `createScene(doc, backend): { draws(view: ViewState): Draw[] }`; slots com lista livre; arcos por faixa de raio; estilos por layer.
   - Testa (backend falso que grava chamadas): adicionar = 1 escrita; remover libera o slot; mudar cor do layer só chama `setStyleTable`.
+  - Notas da revisão do M1:
+    - Batches por célula espacial, para `draws(view)` devolver só os visíveis (culling). Lista livre global destrói a localidade. Manter os batches visíveis na casa das centenas.
+    - `styleId 0` reservado como oculto: um slot zerado é um ponto visível em (0,0).
+    - Carga em massa junta as escritas: um DXF não pode virar um milhão de `writeBatch`.
+    - Primitiva cuja extensão na tela passe de ~4e6 px de dispositivo (segmento ou arco) é reemitida recortada em `f64`: além disso o `f32` do shader desloca o traço, engrossa e por fim some.
 
 - [ ] **T14 · Pick, seleção e gate G2**
   - Arquivos: `src/kernel/pick.ts`, `src/kernel/selection.ts` + testes; `src/render/scene.ts`; `src/app/bench.ts`
   - Produz: `pick(doc, index, p: Vec2, tol: number): number | null`; `pickBox(doc, index, b: BBox, crossing: boolean): number[]`; `createSelection()` com `ids`, `set`, `add`, `remove`, `clear`, `onChange`; batch de realce.
   - Testa: escolhe o mais próximo entre sobrepostos; janela exige contido, crossing aceita toque.
   - Verifica: G2 no `pnpm bench`. **Parada para decisão do usuário** se falhar (incógnita 2).
+  - Nota: a validação do resultado em `electron/main.ts` é específica do G1 (`frames === 300`, código de saída pelo `p95`); o G2 precisa da própria.
 
 ## M3 — Comandos
 
@@ -168,6 +183,7 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
   - Arquivos: `src/app/controller.ts`, `src/render/overlay.ts`, `src/ui/StatusBar.tsx`
   - Produz: pedidos `point` recebem o ponto com snap; marcadores □ △ ○; `F3` e `F7`; botões de status com `aria-pressed`.
   - Verifica: linha fecha exatamente no endpoint (coordenadas idênticas no documento).
+  - Nota: `F7` (grid) exige mudança em `src/render/webgl2/backend.ts`: hoje o passo do grid é incondicional e faz também a limpeza do frame.
 
 - [ ] **T23 · ORTHO e distância direta**
   - Arquivos: `src/kernel/command/runtime.ts` + teste; `src/ui/StatusBar.tsx`
@@ -263,4 +279,4 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
 - [ ] **T41 · Instalador**
   - Arquivos: `electron-builder.yml`, ícone
   - Verifica: instalador NSIS x64 instala, abre, grava e desinstala em máquina limpa.
-  - Decidir: `--smoke`, `--shot` e `--bench` funcionam no build empacotado e `--shot` grava PNG em qualquer caminho; restringir a `!app.isPackaged` ou manter para o teste do instalador.
+  - Decidir: `--smoke`, `--shot`, `--bench`, `--play`, `--lose-context` e `--n` funcionam no build empacotado, `--shot` grava PNG em qualquer caminho e `--play` lê qualquer arquivo; padrão recomendado: restringir a `!app.isPackaged`, com exceção explícita para o teste do instalador.
