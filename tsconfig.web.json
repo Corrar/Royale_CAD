@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": [],
+    "jsx": "react-jsx",
+    "outDir": "./node_modules/.tmp/web",
+    "tsBuildInfoFile": "./node_modules/.tmp/web.tsbuildinfo"
+  },
+  "include": ["src/ui/**/*", "src/app/**/*", "src/render/**/*"],
+  "exclude": ["src/**/*.test.ts"],
+  "references": [{ "path": "./src/kernel" }]
+}

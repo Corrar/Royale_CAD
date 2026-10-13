@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "outDir": "./node_modules/.tmp/test",
+    "tsBuildInfoFile": "./node_modules/.tmp/test.tsbuildinfo"
+  },
+  "include": ["src/**/*.test.ts", "vitest.config.ts"],
+  "references": [{ "path": "./src/kernel" }]
+}
