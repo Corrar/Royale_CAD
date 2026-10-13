@@ -9,7 +9,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite build && electron .",
-    "check": "tsc -b && vitest run --passWithNoTests",
+    "check": "tsc -b && vitest run",
     "smoke": "electron-vite build && electron . --smoke"
   },
   "dependencies": {
