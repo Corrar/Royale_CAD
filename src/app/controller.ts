@@ -1,5 +1,5 @@
 import { fit, type ViewState } from '../kernel/view'
-import { SEGMENT_STRIDE, writeSegment, writeStyle } from '../render/backend'
+import { ARC_STRIDE, SEGMENT_STRIDE, arcSubdiv, writeArc, writeSegment, writeStyle } from '../render/backend'
 import { createWebGL2Backend } from '../render/webgl2/backend'
 import { attachInput, FIT_MARGIN_PX } from './input'
 
@@ -46,6 +46,15 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
   const batch = backend.createBatch('segment', 3)
   backend.writeBatch(batch, 0, f32)
 
+  const arcBuf = new ArrayBuffer(3 * ARC_STRIDE)
+  const af32 = new Float32Array(arcBuf)
+  const au32 = new Uint32Array(arcBuf)
+  writeArc(af32, au32, 0, 7_400_000.003, 9_100_000.0025, 0.0015, 0, 2 * Math.PI, 0)
+  writeArc(af32, au32, 1, A.x, A.y, 0.002, 0, Math.PI / 2, 0)
+  writeArc(af32, au32, 2, B.x, B.y, 0.002, Math.PI, -Math.PI / 2, 0)
+  const arcs = backend.createBatch('arc', 3)
+  backend.writeBatch(arcs, 0, af32)
+
   const styles = new Uint32Array(2)
   writeStyle(styles, 0, 0xf2f4f5ff, 1.5, true) // mirrors --draw in tokens.css
   backend.setStyleTable(styles)
@@ -55,7 +64,10 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
   const loop = createFrameLoop(
     (cb) => requestAnimationFrame(cb),
     () => {
-      if (view) backend.frame(view, [{ batch, first: 0, count: 3 }])
+      if (view) {
+        const subdiv = arcSubdiv(0.002 * view.scale * view.dpr) // largest radius in the batch, device px
+        backend.frame(view, [{ batch, first: 0, count: 3 }, { batch: arcs, first: 0, count: 3, subdiv }])
+      }
     },
   )
 

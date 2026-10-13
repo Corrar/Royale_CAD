@@ -1,12 +1,8 @@
-// Segment: one instanced quad (TRIANGLE_STRIP, corner from gl_VertexID) per segment.
-export const SEGMENT_VERT = `#version 300 es
+// Shared by the instanced programs: uniforms, style lookup and the hi/lo relative-to-eye subtraction.
+const INSTANCED_HEAD = `#version 300 es
 precision highp float;
 precision highp int;
 precision highp usampler2D;
-
-layout(location = 0) in vec4 p0; // x0hi, x0lo, y0hi, y0lo
-layout(location = 1) in vec4 p1;
-layout(location = 2) in uint styleId;
 
 uniform vec2 eyeHi;
 uniform vec2 eyeLo;
@@ -17,21 +13,38 @@ uniform usampler2D styles; // 2 texels per row: color 0xRRGGBBAA, width/64 px | 
 
 flat out vec4 vColor;
 
-void main() {
+// Sets vColor and returns the half width in device px; false when the style is hidden.
+bool loadStyle(uint styleId, out float halfW) {
   int row = int(styleId);
   uint c = texelFetch(styles, ivec2(0, row), 0).r;
   uint w = texelFetch(styles, ivec2(1, row), 0).r;
-  if (((w >> 16) & 1u) == 0u) {
-    gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // outside clip: instance dropped
-    vColor = vec4(0.0);
-    return;
-  }
+  halfW = 0.5 * float(w & 0xFFFFu) / 64.0 * dpr;
   vColor = vec4(float((c >> 24) & 255u), float((c >> 16) & 255u), float((c >> 8) & 255u), float(c & 255u)) / 255.0;
-  float half_w = 0.5 * float(w & 0xFFFFu) / 64.0 * dpr;
+  return ((w >> 16) & 1u) != 0u;
+}
 
-  // The hi parts cancel exactly against eyeHi before the small residuals are added.
-  vec2 a = vec2((p0.x - eyeHi.x) + (p0.y - eyeLo.x), (p0.z - eyeHi.y) + (p0.w - eyeLo.y)) * pxPerUnit;
-  vec2 b = vec2((p1.x - eyeHi.x) + (p1.y - eyeLo.x), (p1.z - eyeHi.y) + (p1.w - eyeLo.y)) * pxPerUnit;
+// The hi parts cancel exactly against eyeHi before the small residuals are added. Result in device px.
+vec2 toEyePx(vec4 p) {
+  return vec2((p.x - eyeHi.x) + (p.y - eyeLo.x), (p.z - eyeHi.y) + (p.w - eyeLo.y)) * pxPerUnit;
+}
+
+void drop() {
+  gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // outside clip: instance dropped
+}
+`
+
+// Segment: one instanced quad (TRIANGLE_STRIP, corner from gl_VertexID) per segment.
+export const SEGMENT_VERT = INSTANCED_HEAD + `
+layout(location = 0) in vec4 p0; // x0hi, x0lo, y0hi, y0lo
+layout(location = 1) in vec4 p1;
+layout(location = 2) in uint styleId;
+
+void main() {
+  float half_w;
+  if (!loadStyle(styleId, half_w)) { drop(); return; }
+
+  vec2 a = toEyePx(p0);
+  vec2 b = toEyePx(p1);
 
   vec2 d = b - a;
   float len = length(d);
@@ -40,6 +53,28 @@ void main() {
   float side = float(gl_VertexID >> 1) * 2.0 - 1.0;
   // Square caps: the quad overshoots each end by half the width.
   vec2 pos = mix(a, b, t) + dir * (t * 2.0 - 1.0) * half_w + vec2(-dir.y, dir.x) * side * half_w;
+  gl_Position = vec4(pos / (0.5 * viewportPx), 0.0, 1.0);
+}
+`
+
+// Arc: one instanced TRIANGLE_STRIP of 2 * (subdiv + 1) vertices per arc, evaluated here.
+// shortcut: r, a0 and sweep are f32 and subdiv is capped at 4096, so past r * scale of about 1e6 px an
+// arc can land a few px off; clipping the visible span on the CPU belongs to Scene (T13).
+export const ARC_VERT = INSTANCED_HEAD + `
+layout(location = 0) in vec4 c; // cxhi, cxlo, cyhi, cylo
+layout(location = 1) in vec3 shape; // r, a0, sweep
+layout(location = 2) in uint styleId;
+
+uniform int subdiv;
+
+void main() {
+  float half_w;
+  if (!loadStyle(styleId, half_w)) { drop(); return; }
+
+  float angle = shape.y + shape.z * float(gl_VertexID >> 1) / float(subdiv);
+  float side = float(gl_VertexID & 1) * 2.0 - 1.0;
+  // The width offset is radial, so the stroke keeps a constant thickness.
+  vec2 pos = toEyePx(c) + (shape.x * pxPerUnit + side * half_w) * vec2(cos(angle), sin(angle));
   gl_Position = vec4(pos / (0.5 * viewportPx), 0.0, 1.0);
 }
 `

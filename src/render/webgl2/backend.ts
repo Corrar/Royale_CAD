@@ -1,18 +1,33 @@
 import type { ViewState } from '../../kernel/view'
-import { SEGMENT_STRIDE, STYLE_WORDS, type BatchId, type Draw, type RenderBackend } from '../backend'
+import { ARC_STRIDE, MAX_ARC_SUBDIV, SEGMENT_STRIDE, STYLE_WORDS, type BatchId, type Draw, type RenderBackend } from '../backend'
 import { gridParams } from '../grid'
 import { splitDouble } from '../hilo'
-import { GRID_FRAG, GRID_VERT, SEGMENT_FRAG, SEGMENT_VERT } from './shaders'
+import { ARC_VERT, GRID_FRAG, GRID_VERT, SEGMENT_FRAG, SEGMENT_VERT } from './shaders'
 
 export interface WebGL2Backend extends RenderBackend {
   /** Removes the canvas listeners and frees every GPU resource. The canvas context stays alive. */
   dispose(): void
 }
 
+type Kind = 'segment' | 'arc'
+
 interface Batch {
+  kind: Kind
   capacity: number
   buffer: WebGLBuffer | null
   cpu: Uint8Array
+}
+
+interface Pipeline {
+  program: WebGLProgram | null
+  vao: WebGLVertexArrayObject | null
+  u: Record<'eyeHi' | 'eyeLo' | 'pxPerUnit' | 'dpr' | 'viewportPx' | 'styles' | 'subdiv', WebGLUniformLocation | null>
+}
+
+// Both kinds share the attribute slots (vec4, float vector, uint styleId); only size and stride differ.
+const LAYOUT: Record<Kind, { stride: number; shapeSize: number; vert: string }> = {
+  segment: { stride: SEGMENT_STRIDE, shapeSize: 4, vert: SEGMENT_VERT },
+  arc: { stride: ARC_STRIDE, shapeSize: 3, vert: ARC_VERT },
 }
 
 type Rgba = [number, number, number, number]
@@ -53,10 +68,8 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
   let lastFrame: { view: ViewState; draws: readonly Draw[] } | undefined
   const eye = new Float32Array(4)
 
-  let program: WebGLProgram | null = null
-  let vao: WebGLVertexArrayObject | null = null
+  const pipelines = {} as Record<Kind, Pipeline>
   let styleTex: WebGLTexture | null = null
-  let u!: Record<'eyeHi' | 'eyeLo' | 'pxPerUnit' | 'dpr' | 'viewportPx' | 'styles', WebGLUniformLocation | null>
   let gridProgram: WebGLProgram | null = null
   let gridVao: WebGLVertexArrayObject | null = null
   let gu!: Record<
@@ -101,18 +114,11 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
     gu = Object.fromEntries(names.map((n) => [n, gl!.getUniformLocation(p, n)])) as typeof gu
   }
 
-  function buildProgram(): void {
-    const p = link(SEGMENT_VERT, SEGMENT_FRAG)
-    program = p
-    u = {
-      eyeHi: gl!.getUniformLocation(p, 'eyeHi'),
-      eyeLo: gl!.getUniformLocation(p, 'eyeLo'),
-      pxPerUnit: gl!.getUniformLocation(p, 'pxPerUnit'),
-      dpr: gl!.getUniformLocation(p, 'dpr'),
-      viewportPx: gl!.getUniformLocation(p, 'viewportPx'),
-      styles: gl!.getUniformLocation(p, 'styles'),
-    }
-    vao = gl!.createVertexArray()
+  function buildPipeline(kind: Kind): void {
+    const p = link(LAYOUT[kind].vert, SEGMENT_FRAG)
+    const names = ['eyeHi', 'eyeLo', 'pxPerUnit', 'dpr', 'viewportPx', 'styles', 'subdiv'] as const
+    const vao = gl!.createVertexArray()
+    pipelines[kind] = { program: p, vao, u: Object.fromEntries(names.map((n) => [n, gl!.getUniformLocation(p, n)])) as Pipeline['u'] }
     gl!.bindVertexArray(vao)
     for (const loc of [0, 1, 2]) {
       gl!.enableVertexAttribArray(loc)
@@ -163,29 +169,40 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
     drawGrid(view)
     gl!.enable(gl!.BLEND)
     gl!.blendFunc(gl!.SRC_ALPHA, gl!.ONE_MINUS_SRC_ALPHA)
-    gl!.useProgram(program)
-    gl!.bindVertexArray(vao)
     gl!.activeTexture(gl!.TEXTURE0)
     gl!.bindTexture(gl!.TEXTURE_2D, styleTex)
-    gl!.uniform1i(u.styles, 0)
     splitDouble(view.cx, eye, 0)
     splitDouble(view.cy, eye, 2)
-    gl!.uniform2f(u.eyeHi, eye[0]!, eye[2]!)
-    gl!.uniform2f(u.eyeLo, eye[1]!, eye[3]!)
-    gl!.uniform1f(u.pxPerUnit, view.scale * view.dpr)
-    gl!.uniform1f(u.dpr, view.dpr)
-    gl!.uniform2f(u.viewportPx, canvas.width, canvas.height)
+    let current: Kind | undefined
     for (const d of draws) {
       // A restore replays the last frame, whose batches may have been destroyed since.
       const b = batches.get(d.batch)
       if (!b || d.count === 0) continue
+      const { stride, shapeSize } = LAYOUT[b.kind]
+      const { program, vao, u } = pipelines[b.kind]
+      if (current !== b.kind) {
+        current = b.kind
+        gl!.useProgram(program)
+        gl!.bindVertexArray(vao)
+        gl!.uniform1i(u.styles, 0)
+        gl!.uniform2f(u.eyeHi, eye[0]!, eye[2]!)
+        gl!.uniform2f(u.eyeLo, eye[1]!, eye[3]!)
+        gl!.uniform1f(u.pxPerUnit, view.scale * view.dpr)
+        gl!.uniform1f(u.dpr, view.dpr)
+        gl!.uniform2f(u.viewportPx, canvas.width, canvas.height)
+      }
       gl!.bindBuffer(gl!.ARRAY_BUFFER, b.buffer)
       // No base instance in WebGL2: the first instance is a byte offset on every attribute.
-      const o = d.first * SEGMENT_STRIDE
-      gl!.vertexAttribPointer(0, 4, gl!.FLOAT, false, SEGMENT_STRIDE, o)
-      gl!.vertexAttribPointer(1, 4, gl!.FLOAT, false, SEGMENT_STRIDE, o + 16)
-      gl!.vertexAttribIPointer(2, 1, gl!.UNSIGNED_INT, SEGMENT_STRIDE, o + 32)
-      gl!.drawArraysInstanced(gl!.TRIANGLE_STRIP, 0, 4, d.count)
+      const o = d.first * stride
+      gl!.vertexAttribPointer(0, 4, gl!.FLOAT, false, stride, o)
+      gl!.vertexAttribPointer(1, shapeSize, gl!.FLOAT, false, stride, o + 16)
+      gl!.vertexAttribIPointer(2, 1, gl!.UNSIGNED_INT, stride, o + stride - 4)
+      if (b.kind === 'arc') {
+        gl!.uniform1i(u.subdiv, d.subdiv!)
+        gl!.drawArraysInstanced(gl!.TRIANGLE_STRIP, 0, 2 * (d.subdiv! + 1), d.count)
+      } else {
+        gl!.drawArraysInstanced(gl!.TRIANGLE_STRIP, 0, 4, d.count)
+      }
     }
   }
 
@@ -200,7 +217,8 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
   }
   function onRestored(): void {
     buildGrid()
-    buildProgram()
+    buildPipeline('segment')
+    buildPipeline('arc')
     uploadStyles()
     for (const b of batches.values()) uploadBatch(b)
     if (lastFrame) drawFrame(lastFrame.view, lastFrame.draws)
@@ -209,13 +227,13 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
   canvas.addEventListener('webglcontextlost', onLost)
   canvas.addEventListener('webglcontextrestored', onRestored)
   buildGrid()
-  buildProgram()
+  buildPipeline('segment')
+  buildPipeline('arc')
   uploadStyles()
 
   return {
     createBatch(kind, capacity) {
-      if (kind === 'arc') throw new Error('arc batches arrive in T08')
-      const b: Batch = { capacity, buffer: null, cpu: new Uint8Array(capacity * SEGMENT_STRIDE) }
+      const b: Batch = { kind, capacity, buffer: null, cpu: new Uint8Array(capacity * LAYOUT[kind].stride) }
       uploadBatch(b)
       const id = nextId++
       batches.set(id, b)
@@ -224,14 +242,15 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
 
     writeBatch(id, first, instances) {
       const b = getBatch(id)
+      const { stride } = LAYOUT[b.kind]
       const bytes = new Uint8Array(instances.buffer, instances.byteOffset, instances.byteLength)
-      if (bytes.length % SEGMENT_STRIDE !== 0) throw new RangeError(`write size ${bytes.length} is not a multiple of ${SEGMENT_STRIDE}`)
-      if (!Number.isInteger(first) || first < 0 || first + bytes.length / SEGMENT_STRIDE > b.capacity) {
-        throw new RangeError(`write [${first}, +${bytes.length / SEGMENT_STRIDE}) exceeds capacity ${b.capacity}`)
+      if (bytes.length % stride !== 0) throw new RangeError(`write size ${bytes.length} is not a multiple of ${stride}`)
+      if (!Number.isInteger(first) || first < 0 || first + bytes.length / stride > b.capacity) {
+        throw new RangeError(`write [${first}, +${bytes.length / stride}) exceeds capacity ${b.capacity}`)
       }
-      b.cpu.set(bytes, first * SEGMENT_STRIDE)
+      b.cpu.set(bytes, first * stride)
       gl.bindBuffer(gl.ARRAY_BUFFER, b.buffer)
-      gl.bufferSubData(gl.ARRAY_BUFFER, first * SEGMENT_STRIDE, bytes)
+      gl.bufferSubData(gl.ARRAY_BUFFER, first * stride, bytes)
     },
 
     destroyBatch(id) {
@@ -253,6 +272,9 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
         if (!Number.isInteger(d.first) || !Number.isInteger(d.count) || d.first < 0 || d.count < 0 || d.first + d.count > b.capacity) {
           throw new RangeError(`draw [${d.first}, +${d.count}) exceeds capacity ${b.capacity}`)
         }
+        if (b.kind === 'arc' && !(Number.isInteger(d.subdiv) && d.subdiv! >= 1 && d.subdiv! <= MAX_ARC_SUBDIV)) {
+          throw new RangeError(`arc draw needs an integer subdiv in [1, ${MAX_ARC_SUBDIV}], got ${d.subdiv}`)
+        }
       }
       lastFrame = { view, draws }
       if (gl.isContextLost()) return
@@ -270,8 +292,10 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
       for (const b of batches.values()) gl.deleteBuffer(b.buffer)
       batches.clear()
       gl.deleteTexture(styleTex)
-      gl.deleteVertexArray(vao)
-      gl.deleteProgram(program)
+      for (const p of Object.values(pipelines)) {
+        gl.deleteVertexArray(p.vao)
+        gl.deleteProgram(p.program)
+      }
       gl.deleteVertexArray(gridVao)
       gl.deleteProgram(gridProgram)
     },
