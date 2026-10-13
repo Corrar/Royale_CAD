@@ -130,8 +130,9 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
     gl!.uniform1f(u.dpr, view.dpr)
     gl!.uniform2f(u.viewportPx, canvas.width, canvas.height)
     for (const d of draws) {
-      if (d.count === 0) continue
-      const b = batches.get(d.batch)!
+      // A restore replays the last frame, whose batches may have been destroyed since.
+      const b = batches.get(d.batch)
+      if (!b || d.count === 0) continue
       gl!.bindBuffer(gl!.ARRAY_BUFFER, b.buffer)
       // No base instance in WebGL2: the first instance is a byte offset on every attribute.
       const o = d.first * SEGMENT_STRIDE
