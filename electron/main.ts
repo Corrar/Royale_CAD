@@ -4,6 +4,7 @@ import { app, BrowserWindow, Menu } from 'electron'
 
 const smoke = app.commandLine.hasSwitch('smoke')
 const shot = app.commandLine.getSwitchValue('shot')
+const loseContext = app.commandLine.hasSwitch('lose-context')
 // BG, SYMBOL and BAR_H mirror --bg, --text and --titlebar-h in src/ui/tokens.css.
 const BG = '#1B1D20'
 const SYMBOL = '#E6E8EA'
@@ -67,6 +68,27 @@ function createWindow(): void {
         )
         if (families.length === 0) throw new Error('no @font-face registered')
         console.log(`fonts loaded: ${[...new Set(families)].join(', ')}`)
+        if (loseContext) {
+          await wc.executeJavaScript(`(async () => {
+            const canvas = document.getElementById('viewport')
+            const ext = canvas?.getContext('webgl2')?.getExtension('WEBGL_lose_context')
+            if (!ext) throw new Error('WEBGL_lose_context unavailable')
+            const once = (name) => new Promise((resolve, reject) => {
+              canvas.addEventListener(name, resolve, { once: true })
+              setTimeout(() => reject(new Error('timeout waiting for ' + name)), 5000)
+            })
+            const lost = once('webglcontextlost')
+            ext.loseContext()
+            await lost
+            // restoreContext() called right inside the lost event task is ignored by Chromium.
+            await new Promise((r) => setTimeout(r, 100))
+            const restored = once('webglcontextrestored')
+            ext.restoreContext()
+            await restored
+            for (let i = 0; i < 2; i++) await new Promise((r) => requestAnimationFrame(r))
+          })()`)
+          console.log('context lost and restored')
+        }
         if (shot) await writeFile(shot, (await wc.capturePage()).toPNG())
         finish(0)
       })().catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)))
