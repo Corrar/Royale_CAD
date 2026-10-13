@@ -1,5 +1,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import '@fontsource-variable/inter'
+import '@fontsource-variable/geist-mono'
+import './tokens.css'
 import { App } from './App'
 
 const root = document.getElementById('root')

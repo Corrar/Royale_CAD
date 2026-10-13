@@ -1,3 +1,10 @@
+import './App.css'
+
 export function App() {
-  return <div className="app" />
+  return (
+    <>
+      <canvas id="viewport" aria-label="Drawing viewport" />
+      <header className="titlebar">Royale CAD</header>
+    </>
+  )
 }

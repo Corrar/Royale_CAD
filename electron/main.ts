@@ -4,6 +4,8 @@ import { app, BrowserWindow, Menu } from 'electron'
 
 const smoke = app.commandLine.hasSwitch('smoke')
 const shot = app.commandLine.getSwitchValue('shot')
+// Mirrors --bg in src/ui/tokens.css.
+const BG = '#1B1D20'
 const dev = !app.isPackaged && !!process.env.ELECTRON_RENDERER_URL
 
 function fail(reason: string): void {
@@ -18,7 +20,9 @@ function createWindow(): void {
     minWidth: 800,
     minHeight: 600,
     title: 'Royale CAD',
-    backgroundColor: '#1B1D20',
+    backgroundColor: BG,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: BG, symbolColor: '#E6E8EA', height: 32 },
     show: false,
     webPreferences: {
       contextIsolation: true,
@@ -41,13 +45,20 @@ function createWindow(): void {
     wc.on('console-message', (event) => {
       if (event.level === 'error') fail(`renderer console error: ${event.message}`)
     })
-    wc.on('did-finish-load', async () => {
-      // The window must be shown and painted, or capturePage returns blank pixels.
-      if (!win.isVisible()) await new Promise<void>((resolve) => win.once('show', () => resolve()))
-      await wc.executeJavaScript('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))')
-      if (shot) await writeFile(shot, (await wc.capturePage()).toPNG())
-      clearTimeout(timer)
-      app.exit(0)
+    wc.on('did-finish-load', () => {
+      void (async () => {
+        // The window must be shown and painted, or capturePage returns blank pixels.
+        if (!win.isVisible()) await new Promise<void>((resolve) => win.once('show', () => resolve()))
+        await wc.executeJavaScript('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))')
+        const families: string[] = await wc.executeJavaScript(
+          'Promise.all([...document.fonts].map(f => f.load().then(() => f.family)))',
+        )
+        if (families.length === 0) throw new Error('no @font-face registered')
+        console.log(`fonts loaded: ${[...new Set(families)].join(', ')}`)
+        if (shot) await writeFile(shot, (await wc.capturePage()).toPNG())
+        clearTimeout(timer)
+        app.exit(0)
+      })().catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)))
     })
   }
 
