@@ -46,12 +46,12 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
 
 ## M0 — Fundação
 
-- [ ] **T01 · Scaffold**
+- [x] **T01 · Scaffold**
   - Arquivos: `package.json`, `electron.vite.config.ts`, `tsconfig.json`, `src/kernel/tsconfig.json`, `electron/main.ts`, `electron/preload.ts`, `.gitignore`
   - Produz: `git init`; scripts `dev`, `check`, `build`; kernel sem lib `DOM`; flags de segurança do Electron.
   - Verifica: `pnpm check` verde; `pnpm dev` abre janela; arquivo de kernel usando `document` falha no `tsc`.
 
-- [ ] **T02 · Tokens e casca vazia**
+- [x] **T02 · Tokens e casca vazia**
   - Arquivos: `src/ui/tokens.css`, `src/ui/App.tsx`
   - Produz: variáveis do §9 da spec; fontes empacotadas; `<canvas id="viewport">` em tela cheia; janela sem moldura com área de arraste.
   - Verifica: janela grafite `#1B1D20`; fontes carregam com a rede desligada.
