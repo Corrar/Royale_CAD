@@ -8,7 +8,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "check": "tsc -b && vitest run --passWithNoTests",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "electron-vite build && electron . --smoke"
   },
   "dependencies": {
     "react": "^19.3.0",
