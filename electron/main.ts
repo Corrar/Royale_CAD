@@ -11,6 +11,9 @@ const BG = '#1B1D20'
 const SYMBOL = '#E6E8EA'
 const BAR_H = 32
 const dev = !app.isPackaged && !!process.env.ELECTRON_RENDERER_URL
+const bench = app.commandLine.hasSwitch('bench')
+const G1_LIMIT_MS = 16.7
+const BENCH_TIMEOUT_MS = 120_000
 
 let smokeTimer: NodeJS.Timeout | undefined
 let exiting = false
@@ -19,10 +22,22 @@ function finish(code: number, reason?: string): void {
   if (exiting) return
   exiting = true
   clearTimeout(smokeTimer)
-  if (reason) console.error(`smoke failed: ${reason}`)
+  if (reason) console.error(`${bench ? 'bench' : 'smoke'} failed: ${reason}`)
   app.exit(code)
 }
 const fail = (reason: string): void => finish(1, reason)
+
+// Without these two switches frame intervals are pinned to vsync and the gate measures the display.
+let benchN = 1_000_000
+if (bench) {
+  app.commandLine.appendSwitch('disable-frame-rate-limit')
+  app.commandLine.appendSwitch('disable-gpu-vsync')
+  const raw = app.commandLine.getSwitchValue('n')
+  if (raw !== '') {
+    benchN = /^\d+$/.test(raw) ? Number(raw) : NaN
+    if (!(benchN >= 1 && benchN <= 5_000_000)) finish(1, `--n must be an integer in 1..5000000, got "${raw}"`)
+  }
+}
 
 const MOUSE_TYPES = ['mouseDown', 'mouseUp', 'mouseMove', 'mouseWheel']
 const KEY_TYPES = ['keyDown', 'keyUp', 'char']
@@ -78,6 +93,7 @@ function createWindow(): void {
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: BG, symbolColor: SYMBOL, height: BAR_H },
     show: false,
+    fullscreen: bench, // the gate is defined at 1080p
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -94,14 +110,37 @@ function createWindow(): void {
     if (!(dev && event.url === wc.getURL())) event.preventDefault()
   })
 
-  if (smoke) {
-    smokeTimer = setTimeout(() => fail('timeout: page not loaded in 15 s'), 15_000)
+  if (smoke || bench) {
+    smokeTimer = bench
+      ? setTimeout(() => fail(`timeout: no result in ${BENCH_TIMEOUT_MS / 1000} s`), BENCH_TIMEOUT_MS)
+      : setTimeout(() => fail('timeout: page not loaded in 15 s'), 15_000)
     wc.on('did-fail-load', (_e, code, desc) => fail(`did-fail-load ${code} ${desc}`))
     wc.on('preload-error', (_e, path, error) => fail(`preload-error ${path}: ${error.message}`))
     wc.on('render-process-gone', (_e, details) => fail(`render-process-gone: ${details.reason}`))
     wc.on('console-message', (event) => {
       if (event.level === 'error') fail(`renderer console error: ${event.message}`)
     })
+  }
+
+  if (bench) {
+    let received = false
+    wc.on('console-message', (event) => {
+      if (received || !event.message.startsWith('BENCH_RESULT ')) return
+      received = true
+      void (async () => {
+        const line = event.message.slice('BENCH_RESULT '.length)
+        console.log(line)
+        const result: unknown = JSON.parse(line)
+        const r = result as { p95?: unknown; error?: unknown; frames?: unknown }
+        if (typeof r.error === 'string') return fail(r.error)
+        if (typeof r.p95 !== 'number' || !Number.isFinite(r.p95) || r.frames !== 300) return fail('invalid result')
+        if (shot) await writeFile(shot, (await wc.capturePage()).toPNG())
+        finish(r.p95 <= G1_LIMIT_MS ? 0 : 2)
+      })().catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)))
+    })
+  }
+
+  if (smoke) {
     wc.on('did-finish-load', () => {
       void (async () => {
         // Loading is done; the load watchdog yields to a deadline sized by the requested work.
@@ -157,8 +196,9 @@ function createWindow(): void {
     })
   }
 
-  if (dev) void win.loadURL(process.env.ELECTRON_RENDERER_URL!)
-  else void win.loadFile(join(import.meta.dirname, '../renderer/index.html'))
+  const query = bench ? { bench: String(benchN) } : undefined
+  if (dev) void win.loadURL(process.env.ELECTRON_RENDERER_URL! + (query ? `?bench=${query.bench}` : ''))
+  else void win.loadFile(join(import.meta.dirname, '../renderer/index.html'), { query })
 }
 
 // Default menu shortcuts (Ctrl+R reload, Ctrl+W close) would discard an unsaved drawing.

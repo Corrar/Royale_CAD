@@ -10,7 +10,8 @@
     "build": "electron-vite build",
     "start": "electron-vite build && electron .",
     "check": "tsc -b && vitest run",
-    "smoke": "electron-vite build && electron . --smoke"
+    "bench": "electron-vite build && electron . --bench",
+    "smoke":"electron-vite build && electron . --smoke"
   },
   "dependencies": {
     "@fontsource-variable/geist-mono": "^5.3.0",
