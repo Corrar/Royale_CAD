@@ -20,6 +20,9 @@
 - Kernel é TDD: teste falhando → implementação mínima → verde. Testes ao lado do fonte (`*.test.ts`).
 - Um commit por tarefa. `pnpm check` (`tsc -b` + `vitest run`) verde antes de cada commit.
 - Este plano não traz código de implementação (pedido do usuário). Antes de executar um marco, expandir as tarefas dele em passos TDD.
+- Argumentos extras de scripts pnpm vão sem `--` (`pnpm smoke --shot=<png>`): o pnpm repassa o `--` literal e o Electron ignora os switches depois dele.
+- O kernel não enxerga `console`, `TextDecoder`, `performance` nem `structuredClone` (sem lib `DOM` e sem tipos do Node). O que precisar disso fica fora do kernel ou é injetado.
+- Todo modo de execução automática do Electron (`--smoke`, `--bench`) sai por uma função única e idempotente: a primeira chamada define o código de saída.
 
 ## Estrutura de arquivos
 
@@ -56,7 +59,7 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
 ## M1 — Render (gate G1)
 
 - [ ] **T03 · ViewState**
-  - Arquivos: `src/kernel/geom/vec.ts`, `src/kernel/view.ts`, `src/kernel/view.test.ts`
+  - Arquivos: `src/kernel/geom/vec.ts`, `src/kernel/view.ts`, `src/kernel/view.test.ts`, `package.json` (remove `--passWithNoTests` do script `check`: este é o primeiro teste)
   - Produz: `Vec2 {x,y}`, `BBox {minX,minY,maxX,maxY}`; `worldToScreen(v,x,y)`, `screenToWorld(v,sx,sy)`, `zoomAt(v,sx,sy,factor)`, `panBy(v,dxPx,dyPx)`, `fit(v,bbox,marginPx)`; todos retornam novo `ViewState`.
   - Testa: ida-e-volta tela↔mundo; `zoomAt` mantém o ponto sob o cursor com erro < 1e-6 em `(7.4e6, 9.1e6)`; `fit` enquadra o bbox com margem.
 
@@ -75,6 +78,7 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
   - Arquivos: `src/app/input.ts`, `src/app/controller.ts`
   - Produz: roda = `zoomAt` no cursor; botão do meio = pan; duplo clique do meio = `fit`; frame sob demanda (flag de sujo + rAF); `resize` com DPR.
   - Verifica: ponto sob o cursor não desliza ao dar zoom; CPU em repouso ≈ 0%.
+  - Nota: os 32 px do topo do canvas são área de arraste da janela (`HTCAPTION`); eventos de ponteiro não chegam ali.
 
 - [ ] **T07 · Grid procedural**
   - Arquivos: `src/render/webgl2/shaders.ts`, `src/render/webgl2/backend.ts`
@@ -88,7 +92,8 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
 
 - [ ] **T09 · Benchmark e gate G1**
   - Arquivos: `src/app/bench.ts`, `package.json` (script `bench`)
-  - Produz: `pnpm bench -- --n=1000000` gera segmentos aleatórios em UTM, roda 300 frames de pan/zoom, imprime p50/p95 em JSON e sai com código ≠ 0 se p95 > 16,7 ms.
+  - Produz: `pnpm bench --n=1000000` gera segmentos aleatórios em UTM, roda 300 frames de pan/zoom, imprime p50/p95 em JSON e sai com código ≠ 0 se p95 > 16,7 ms.
+  - Nota: o intervalo entre `requestAnimationFrame` fica preso ao vsync (~16,7 ms) e tornaria o gate um cara-ou-coroa. Decidir na expansão: medir o custo de render ou desligar o limite de quadros antes de `app.whenReady()`.
   - Verifica: G1. **Parada para decisão do usuário** se falhar (ver incógnita 1).
 
 ## M2 — Documento (gate G2)
@@ -201,8 +206,8 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
 
 - [ ] **T30 · Tokenizer**
   - Arquivos: `src/kernel/dxf/tokenizer.ts` + teste
-  - Produz: `Pair = { code: number; value: string }`; `tokenize(text): Pair[]`; `sections(pairs)`; `decode(bytes: Uint8Array): string` por codepage.
-  - Testa: CRLF e LF; espaços no código; arquivo truncado gera erro com número da linha; `ANSI_1252` com acentos.
+  - Produz: `Pair = { code: number; value: string }`; `tokenize(text): Pair[]`; `sections(pairs)`. A decodificação de bytes fica no T33, fora do kernel.
+  - Testa: CRLF e LF; espaços no código; arquivo truncado gera erro com número da linha.
 
 - [ ] **T31 · Reader**
   - Arquivos: `src/kernel/dxf/{reader,aci}.ts` + teste; `dxf.read` em `entity/*.ts`; `entity/opaque.ts`
@@ -217,6 +222,7 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
 - [ ] **T33 · Arquivos**
   - Arquivos: `electron/main.ts`, `electron/preload.ts`, `src/app/files.ts`, `src/app/dxf.worker.ts`, `commands/file.ts`
   - Produz: OPEN, SAVE, SAVEAS, NEW; `Ctrl+O/S`; parse no Worker com progresso; gravação atômica (arquivo temporário + rename); aviso de alterações não salvas ao fechar.
+  - Produz também: `decode(bytes, codepage)` com `TextDecoder` no Worker (`ANSI_1252` com acentos entra nos testes daqui); `setPermissionRequestHandler` negando tudo; validação do remetente em cada handler de IPC.
   - Verifica: fechar com alterações pergunta antes; falha de gravação não corrompe o original.
 
 - [ ] **T34 · Layers e gate G3**
@@ -257,3 +263,4 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
 - [ ] **T41 · Instalador**
   - Arquivos: `electron-builder.yml`, ícone
   - Verifica: instalador NSIS x64 instala, abre, grava e desinstala em máquina limpa.
+  - Decidir: `--smoke`, `--shot` e `--bench` funcionam no build empacotado e `--shot` grava PNG em qualquer caminho; restringir a `!app.isPackaged` ou manter para o teste do instalador.
