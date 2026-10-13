@@ -27,11 +27,8 @@ function finish(code: number, reason?: string): void {
 }
 const fail = (reason: string): void => finish(1, reason)
 
-// Without these two switches frame intervals are pinned to vsync and the gate measures the display.
 let benchN = 1_000_000
 if (bench) {
-  app.commandLine.appendSwitch('disable-frame-rate-limit')
-  app.commandLine.appendSwitch('disable-gpu-vsync')
   const raw = app.commandLine.getSwitchValue('n')
   if (raw !== '') {
     benchN = /^\d+$/.test(raw) ? Number(raw) : NaN

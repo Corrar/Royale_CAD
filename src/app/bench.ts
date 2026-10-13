@@ -7,8 +7,6 @@ const SIZE = 2000
 const BASELINE_FRAMES = 60
 const WARMUP_FRAMES = 30
 const MEASURED_FRAMES = 300
-// Above this the frame-rate limit is still on (the display is 120 Hz, so vsync would give ~8.3 ms).
-const BASELINE_LIMIT_MS = 5
 
 /** `sorted` ascending, p in [0, 1], linear interpolation between ranks. */
 export function percentile(sorted: readonly number[], p: number): number {
@@ -83,6 +81,7 @@ export function runBench(canvas: HTMLCanvasElement, n: number): void {
 
   const baseline: number[] = []
   const samples: number[] = []
+  const intervals: number[] = []
   let done = false
   const report = (error?: string): void => {
     if (done) return
@@ -90,7 +89,7 @@ export function runBench(canvas: HTMLCanvasElement, n: number): void {
     const s = sorted(samples)
     const result = {
       n, frames: samples.length, p50: ms(percentile(s, 0.5)), p95: ms(percentile(s, 0.95)), max: ms(s.at(-1) ?? 0),
-      baselineP50: ms(percentile(sorted(baseline), 0.5)), width: canvas.width, height: canvas.height, dpr, renderer,
+      baselineP50: ms(percentile(sorted(baseline), 0.5)), intervalP95: ms(percentile(sorted(intervals), 0.95)), width: canvas.width, height: canvas.height, dpr, renderer,
       ...(error ? { error } : {}),
     }
     console.log(`BENCH_RESULT ${JSON.stringify(result)}`)
@@ -101,24 +100,24 @@ export function runBench(canvas: HTMLCanvasElement, n: number): void {
     if (document.visibilityState !== 'visible') report('window not visible')
   })
 
+  const pixel = new Uint8Array(4)
   let k = 0
   let prev = 0
   const step = (): void => {
     if (done) return
     if (document.visibilityState !== 'visible') return report('window not visible')
-    const t = performance.now()
-    const dt = t - prev
-    prev = t
-    if (k < BASELINE_FRAMES) {
-      if (k > 0) baseline.push(dt)
-      backend.frame(base, [])
-    } else {
-      if (k === BASELINE_FRAMES && percentile(sorted(baseline), 0.5) > BASELINE_LIMIT_MS) {
-        return report('frame rate limit still on')
-      }
-      const m = k - BASELINE_FRAMES - WARMUP_FRAMES
-      if (m >= 0) samples.push(dt)
-      backend.frame(benchView(Math.max(m, 0), MEASURED_FRAMES, base), draws)
+    const t0 = performance.now()
+    const interval = t0 - prev
+    prev = t0
+    const m = k - BASELINE_FRAMES - WARMUP_FRAMES
+    backend.frame(k < BASELINE_FRAMES ? base : benchView(Math.max(m, 0), MEASURED_FRAMES, base), k < BASELINE_FRAMES ? [] : draws)
+    // Synchronous 1-pixel readback: returns only after the GPU ran the queued work. Excludes window composition by Chromium and the OS.
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel)
+    const cost = performance.now() - t0
+    if (k < BASELINE_FRAMES) baseline.push(cost)
+    else if (m >= 0) {
+      samples.push(cost)
+      intervals.push(interval)
       if (samples.length === MEASURED_FRAMES) return report()
     }
     k++
