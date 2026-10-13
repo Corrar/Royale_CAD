@@ -104,15 +104,24 @@ function createWindow(): void {
     })
     wc.on('did-finish-load', () => {
       void (async () => {
+        // Loading is done; the load watchdog yields to a deadline sized by the requested work.
+        clearTimeout(smokeTimer)
+        const steps = play ? parsePlay(await readFile(play, 'utf8')) : []
+        const budget = 30_000 + steps.reduce<number>((sum, step) => sum + (typeof step === 'number' ? step : 0), 0)
+        let stage = 'window show'
+        smokeTimer = setTimeout(() => fail(`timeout: stage "${stage}" not finished ${budget} ms after page load`), budget)
         // The window must be shown and painted, or capturePage returns blank pixels.
         if (!win.isVisible()) await new Promise<void>((resolve) => win.once('show', () => resolve()))
+        stage = 'first frames'
         await wc.executeJavaScript('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))')
+        stage = 'fonts'
         const families: string[] = await wc.executeJavaScript(
           'Promise.all([...document.fonts].map(f => f.load().then(() => f.family)))',
         )
         if (families.length === 0) throw new Error('no @font-face registered')
         console.log(`fonts loaded: ${[...new Set(families)].join(', ')}`)
         if (loseContext) {
+          stage = 'lose-context'
           await wc.executeJavaScript(`(async () => {
             const canvas = document.getElementById('viewport')
             const ext = canvas?.getContext('webgl2')?.getExtension('WEBGL_lose_context')
@@ -134,14 +143,14 @@ function createWindow(): void {
           console.log('context lost and restored')
         }
         if (play) {
-          // Test tooling: validate every step before the first one runs.
-          const steps = parsePlay(await readFile(play, 'utf8'))
+          stage = 'play'
           for (const step of steps) {
             if (typeof step === 'number') await new Promise((r) => setTimeout(r, step))
             else wc.sendInputEvent(step)
           }
           await wc.executeJavaScript('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))')
         }
+        stage = 'capture'
         if (shot) await writeFile(shot, (await wc.capturePage()).toPNG())
         finish(0)
       })().catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)))
