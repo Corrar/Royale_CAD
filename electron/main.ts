@@ -1,10 +1,11 @@
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { app, BrowserWindow, Menu } from 'electron'
+import { app, BrowserWindow, Menu, type KeyboardInputEvent, type MouseInputEvent, type MouseWheelInputEvent } from 'electron'
 
 const smoke = app.commandLine.hasSwitch('smoke')
 const shot = app.commandLine.getSwitchValue('shot')
 const loseContext = app.commandLine.hasSwitch('lose-context')
+const play = app.commandLine.getSwitchValue('play')
 // BG, SYMBOL and BAR_H mirror --bg, --text and --titlebar-h in src/ui/tokens.css.
 const BG = '#1B1D20'
 const SYMBOL = '#E6E8EA'
@@ -22,6 +23,49 @@ function finish(code: number, reason?: string): void {
   app.exit(code)
 }
 const fail = (reason: string): void => finish(1, reason)
+
+const MOUSE_TYPES = ['mouseDown', 'mouseUp', 'mouseMove', 'mouseWheel']
+const KEY_TYPES = ['keyDown', 'keyUp', 'char']
+const MOUSE_NUMBERS = ['x', 'y', 'clickCount', 'deltaX', 'deltaY']
+
+// Returns a wait in ms or an event for sendInputEvent; copies only known fields.
+function parseStep(item: unknown, i: number): number | MouseInputEvent | MouseWheelInputEvent | KeyboardInputEvent {
+  const bad = (why: string): never => {
+    throw new Error(`--play step ${i}: ${why}`)
+  }
+  if (typeof item !== 'object' || item === null || Array.isArray(item)) return bad('not an object')
+  const o = item as Record<string, unknown>
+  if ('wait' in o) {
+    const ms = o.wait
+    if (typeof ms !== 'number' || !(ms >= 0 && ms <= 5000)) return bad('wait must be a number in 0..5000')
+    return ms
+  }
+  const type = o.type
+  if (typeof type !== 'string') return bad('missing type')
+  if (KEY_TYPES.includes(type)) {
+    if (typeof o.keyCode !== 'string') return bad('keyCode must be a string')
+    return { type, keyCode: o.keyCode } as KeyboardInputEvent
+  }
+  if (!MOUSE_TYPES.includes(type)) return bad(`unknown type ${type}`)
+  const ev: Record<string, unknown> = { type }
+  for (const key of MOUSE_NUMBERS) {
+    if (!(key in o)) continue
+    if (typeof o[key] !== 'number' || !Number.isFinite(o[key])) return bad(`${key} must be a finite number`)
+    ev[key] = o[key]
+  }
+  if (typeof ev.x !== 'number' || typeof ev.y !== 'number') return bad('x and y are required')
+  if ('button' in o) {
+    if (o.button !== 'left' && o.button !== 'middle' && o.button !== 'right') return bad('invalid button')
+    ev.button = o.button
+  }
+  return ev as unknown as MouseInputEvent
+}
+
+function parsePlay(text: string): ReturnType<typeof parseStep>[] {
+  const data: unknown = JSON.parse(text)
+  if (!Array.isArray(data)) throw new Error('--play file must be a JSON array')
+  return data.map(parseStep)
+}
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -88,6 +132,15 @@ function createWindow(): void {
             for (let i = 0; i < 2; i++) await new Promise((r) => requestAnimationFrame(r))
           })()`)
           console.log('context lost and restored')
+        }
+        if (play) {
+          // Test tooling: validate every step before the first one runs.
+          const steps = parsePlay(await readFile(play, 'utf8'))
+          for (const step of steps) {
+            if (typeof step === 'number') await new Promise((r) => setTimeout(r, step))
+            else wc.sendInputEvent(step)
+          }
+          await wc.executeJavaScript('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))')
         }
         if (shot) await writeFile(shot, (await wc.capturePage()).toPNG())
         finish(0)
