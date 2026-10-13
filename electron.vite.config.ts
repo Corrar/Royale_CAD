@@ -7,7 +7,7 @@ const DEV_CSP =
   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://localhost:*"
 
 export default defineConfig({
-  // A user-set rollupOptions replaces electron-vite's default externals, so electron is listed again.
+  // A user-set rollupOptions replaces electron-vite's default externals, so electron is listed again (main and preload).
   main: {
     build: {
       rollupOptions: { input: { main: resolve('electron/main.ts') }, external: ['electron'] },
@@ -18,6 +18,7 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: { preload: resolve('electron/preload.ts') },
+        external: ['electron'],
         output: { format: 'cjs', entryFileNames: '[name].cjs' },
       },
     },

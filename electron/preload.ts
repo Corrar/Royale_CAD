@@ -1,2 +1,2 @@
-// No API exposed yet; the file proves the sandboxed preload pipeline works.
+// No API is exposed yet; the IPC surface arrives with file I/O (T33).
 export {}

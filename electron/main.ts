@@ -4,14 +4,23 @@ import { app, BrowserWindow, Menu } from 'electron'
 
 const smoke = app.commandLine.hasSwitch('smoke')
 const shot = app.commandLine.getSwitchValue('shot')
-// Mirrors --bg in src/ui/tokens.css.
+// BG, SYMBOL and BAR_H mirror --bg, --text and --titlebar-h in src/ui/tokens.css.
 const BG = '#1B1D20'
+const SYMBOL = '#E6E8EA'
+const BAR_H = 32
 const dev = !app.isPackaged && !!process.env.ELECTRON_RENDERER_URL
 
-function fail(reason: string): void {
-  console.error(`smoke failed: ${reason}`)
-  app.exit(1)
+let smokeTimer: NodeJS.Timeout | undefined
+let exiting = false
+// The first call wins, so a later exit(0) cannot overwrite an earlier failure.
+function finish(code: number, reason?: string): void {
+  if (exiting) return
+  exiting = true
+  clearTimeout(smokeTimer)
+  if (reason) console.error(`smoke failed: ${reason}`)
+  app.exit(code)
 }
+const fail = (reason: string): void => finish(1, reason)
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -22,7 +31,7 @@ function createWindow(): void {
     title: 'Royale CAD',
     backgroundColor: BG,
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: BG, symbolColor: '#E6E8EA', height: 32 },
+    titleBarOverlay: { color: BG, symbolColor: SYMBOL, height: BAR_H },
     show: false,
     webPreferences: {
       contextIsolation: true,
@@ -35,10 +44,13 @@ function createWindow(): void {
 
   win.once('ready-to-show', () => win.show())
   wc.setWindowOpenHandler(() => ({ action: 'deny' }))
-  wc.on('will-navigate', (event) => event.preventDefault())
+  // Dev only: Vite's full reload (location.reload) navigates to the current URL.
+  wc.on('will-navigate', (event) => {
+    if (!(dev && event.url === wc.getURL())) event.preventDefault()
+  })
 
   if (smoke) {
-    const timer = setTimeout(() => fail('timeout: page not loaded in 15 s'), 15_000)
+    smokeTimer = setTimeout(() => fail('timeout: page not loaded in 15 s'), 15_000)
     wc.on('did-fail-load', (_e, code, desc) => fail(`did-fail-load ${code} ${desc}`))
     wc.on('preload-error', (_e, path, error) => fail(`preload-error ${path}: ${error.message}`))
     wc.on('render-process-gone', (_e, details) => fail(`render-process-gone: ${details.reason}`))
@@ -56,8 +68,7 @@ function createWindow(): void {
         if (families.length === 0) throw new Error('no @font-face registered')
         console.log(`fonts loaded: ${[...new Set(families)].join(', ')}`)
         if (shot) await writeFile(shot, (await wc.capturePage()).toPNG())
-        clearTimeout(timer)
-        app.exit(0)
+        finish(0)
       })().catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)))
     })
   }
