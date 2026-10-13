@@ -44,7 +44,50 @@ void main() {
 }
 `
 
-export const SEGMENT_FRAG = `#version 300 es
+// Grid: one fullscreen triangle from gl_VertexID, no buffers.
+export const GRID_VERT = `#version 300 es
+void main() {
+  gl_Position = vec4(float((gl_VertexID << 1) & 2) * 2.0 - 1.0, float(gl_VertexID & 2) * 2.0 - 1.0, 0.0, 1.0);
+}
+`
+
+// Distances are device px from the viewport centre. Phase (distance from the grid line below/left
+// of the centre) arrives precomputed in f64 on the CPU.
+export const GRID_FRAG = `#version 300 es
+precision highp float;
+uniform vec2 viewportPx;
+uniform float dpr;
+uniform vec4 bgColor;
+uniform vec4 minorColor;
+uniform vec4 majorColor;
+uniform vec2 phaseMinor;
+uniform vec2 phaseMajor;
+uniform float spacingMinor;
+uniform float spacingMajor;
+uniform float fade;
+uniform float blend;
+out vec4 outColor;
+
+// Coverage of a 1 CSS px line, antialiased over about one device px.
+float coverage(vec2 d, vec2 phase, float spacing) {
+  vec2 m = mod(d + phase, spacing);
+  vec2 dist = min(m, spacing - m);
+  vec2 c = clamp(0.5 * dpr + 0.5 - dist, 0.0, 1.0);
+  return max(c.x, c.y);
+}
+
+void main() {
+  vec2 d = gl_FragCoord.xy - 0.5 * viewportPx;
+  vec4 minor = mix(minorColor, majorColor, blend);
+  float aMinor = coverage(d, phaseMinor, spacingMinor) * minor.a * fade;
+  float aMajor = coverage(d, phaseMajor, spacingMajor) * majorColor.a;
+  // Where both levels coincide the stronger one wins; compositing both would pop at level changes.
+  vec4 line = aMajor >= aMinor ? vec4(majorColor.rgb, aMajor) : vec4(minor.rgb, aMinor);
+  outColor = vec4(mix(bgColor.rgb, line.rgb, line.a), 1.0);
+}
+`
+
+export const SEGMENT_FRAG =`#version 300 es
 precision highp float;
 flat in vec4 vColor;
 out vec4 outColor;

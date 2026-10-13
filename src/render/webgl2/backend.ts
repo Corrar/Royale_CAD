@@ -1,7 +1,8 @@
 import type { ViewState } from '../../kernel/view'
 import { SEGMENT_STRIDE, STYLE_WORDS, type BatchId, type Draw, type RenderBackend } from '../backend'
+import { gridParams } from '../grid'
 import { splitDouble } from '../hilo'
-import { SEGMENT_FRAG, SEGMENT_VERT } from './shaders'
+import { GRID_FRAG, GRID_VERT, SEGMENT_FRAG, SEGMENT_VERT } from './shaders'
 
 export interface WebGL2Backend extends RenderBackend {
   /** Removes the canvas listeners and frees every GPU resource. The canvas context stays alive. */
@@ -21,10 +22,14 @@ export function readCssColor(canvas: HTMLCanvasElement, name: string): Rgba {
   const value = getComputedStyle(canvas).getPropertyValue(name).trim()
   const ctx = document.createElement('canvas').getContext('2d')
   if (!value || !ctx) throw new Error(`cannot resolve CSS color ${name}`)
+  // An unparsable value leaves fillStyle untouched, so two different sentinels read back differently.
   ctx.fillStyle = '#010203'
   ctx.fillStyle = value
-  // fillStyle reads back as '#rrggbb' or 'rgba(r, g, b, a)'.
   const s = ctx.fillStyle
+  ctx.fillStyle = '#040506'
+  ctx.fillStyle = value
+  if (ctx.fillStyle !== s) throw new Error(`cannot resolve CSS color ${name}: ${value}`)
+  // fillStyle reads back as '#rrggbb' or 'rgba(r, g, b, a)'.
   if (s.startsWith('#')) {
     const n = parseInt(s.slice(1), 16)
     return [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, 1]
@@ -40,6 +45,8 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
   if (!gl) throw new Error('WebGL2 is not available: the canvas could not create a webgl2 context')
 
   const bg = readCssColor(canvas, '--bg')
+  const gridMinor = readCssColor(canvas, '--grid-minor')
+  const gridMajor = readCssColor(canvas, '--grid-major')
   const batches = new Map<BatchId, Batch>()
   let nextId = 1
   let styleCopy = new Uint32Array(0)
@@ -50,6 +57,12 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
   let vao: WebGLVertexArrayObject | null = null
   let styleTex: WebGLTexture | null = null
   let u!: Record<'eyeHi' | 'eyeLo' | 'pxPerUnit' | 'dpr' | 'viewportPx' | 'styles', WebGLUniformLocation | null>
+  let gridProgram: WebGLProgram | null = null
+  let gridVao: WebGLVertexArrayObject | null = null
+  let gu!: Record<
+    'viewportPx' | 'dpr' | 'bgColor' | 'minorColor' | 'majorColor' | 'phaseMinor' | 'phaseMajor' | 'spacingMinor' | 'spacingMajor' | 'fade' | 'blend',
+    WebGLUniformLocation | null
+  >
 
   function compile(type: number, src: string): WebGLShader {
     const sh = gl!.createShader(type)!
@@ -63,9 +76,9 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
     return sh
   }
 
-  function buildProgram(): void {
-    const vs = compile(gl!.VERTEX_SHADER, SEGMENT_VERT)
-    const fs = compile(gl!.FRAGMENT_SHADER, SEGMENT_FRAG)
+  function link(vertSrc: string, fragSrc: string): WebGLProgram {
+    const vs = compile(gl!.VERTEX_SHADER, vertSrc)
+    const fs = compile(gl!.FRAGMENT_SHADER, fragSrc)
     const p = gl!.createProgram()
     gl!.attachShader(p, vs)
     gl!.attachShader(p, fs)
@@ -77,6 +90,19 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
       gl!.deleteProgram(p)
       throw new Error(`program link failed: ${log}`)
     }
+    return p
+  }
+
+  function buildGrid(): void {
+    const p = link(GRID_VERT, GRID_FRAG)
+    gridProgram = p
+    gridVao = gl!.createVertexArray() // attribute-less: bound only because WebGL2 needs a VAO state
+    const names = ['viewportPx', 'dpr', 'bgColor', 'minorColor', 'majorColor', 'phaseMinor', 'phaseMajor', 'spacingMinor', 'spacingMajor', 'fade', 'blend'] as const
+    gu = Object.fromEntries(names.map((n) => [n, gl!.getUniformLocation(p, n)])) as typeof gu
+  }
+
+  function buildProgram(): void {
+    const p = link(SEGMENT_VERT, SEGMENT_FRAG)
     program = p
     u = {
       eyeHi: gl!.getUniformLocation(p, 'eyeHi'),
@@ -111,10 +137,30 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
     gl!.bufferData(gl!.ARRAY_BUFFER, b.cpu, gl!.DYNAMIC_DRAW)
   }
 
+  // Opaque and fullscreen, so it also replaces the clear.
+  function drawGrid(view: ViewState): void {
+    const g = gridParams(view)
+    const k = view.dpr
+    gl!.disable(gl!.BLEND)
+    gl!.useProgram(gridProgram)
+    gl!.bindVertexArray(gridVao)
+    gl!.uniform2f(gu.viewportPx, canvas.width, canvas.height)
+    gl!.uniform1f(gu.dpr, k)
+    gl!.uniform4fv(gu.bgColor, bg)
+    gl!.uniform4fv(gu.minorColor, gridMinor)
+    gl!.uniform4fv(gu.majorColor, gridMajor)
+    gl!.uniform2f(gu.phaseMinor, g.phaseMinor.x * k, g.phaseMinor.y * k)
+    gl!.uniform2f(gu.phaseMajor, g.phaseMajor.x * k, g.phaseMajor.y * k)
+    gl!.uniform1f(gu.spacingMinor, g.spacingPx * k)
+    gl!.uniform1f(gu.spacingMajor, g.spacingPx * 10 * k)
+    gl!.uniform1f(gu.fade, g.fade)
+    gl!.uniform1f(gu.blend, g.blend)
+    gl!.drawArrays(gl!.TRIANGLES, 0, 3)
+  }
+
   function drawFrame(view: ViewState, draws: readonly Draw[]): void {
     gl!.viewport(0, 0, canvas.width, canvas.height)
-    gl!.clearColor(bg[0], bg[1], bg[2], bg[3])
-    gl!.clear(gl!.COLOR_BUFFER_BIT)
+    drawGrid(view)
     gl!.enable(gl!.BLEND)
     gl!.blendFunc(gl!.SRC_ALPHA, gl!.ONE_MINUS_SRC_ALPHA)
     gl!.useProgram(program)
@@ -153,6 +199,7 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
     e.preventDefault()
   }
   function onRestored(): void {
+    buildGrid()
     buildProgram()
     uploadStyles()
     for (const b of batches.values()) uploadBatch(b)
@@ -161,6 +208,7 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
 
   canvas.addEventListener('webglcontextlost', onLost)
   canvas.addEventListener('webglcontextrestored', onRestored)
+  buildGrid()
   buildProgram()
   uploadStyles()
 
@@ -224,6 +272,8 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
       gl.deleteTexture(styleTex)
       gl.deleteVertexArray(vao)
       gl.deleteProgram(program)
+      gl.deleteVertexArray(gridVao)
+      gl.deleteProgram(gridProgram)
     },
   }
 }
