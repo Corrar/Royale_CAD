@@ -27,6 +27,10 @@ describe('writeStyle', () => {
     expect(t[7]).toBe(96)
     writeStyle(t, 3, 0xf2f4f5ff, 5000, true)
     expect(t[7] & 0xffff).toBe(65535)
+    writeStyle(t, 3, 0xf2f4f5ff, -1, true)
+    expect(t[7]).toBe(1 << 16)
+    writeStyle(t, 3, 0xf2f4f5ff, NaN, true)
+    expect(t[7]).toBe(1 << 16)
   })
 })
 

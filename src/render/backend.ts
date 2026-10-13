@@ -2,12 +2,14 @@ import type { ViewState } from '../kernel/view'
 import { splitDouble } from './hilo'
 
 export type BatchId = number
+// subdiv applies to the arc of each instance, so arcSubdiv(largest radius in px) is a safe upper bound.
 export interface Draw { batch: BatchId; first: number; count: number; subdiv?: number }
 export interface RenderBackend {
   createBatch(kind: 'segment' | 'arc', capacity: number): BatchId
   writeBatch(id: BatchId, first: number, instances: ArrayBufferView): void
   destroyBatch(id: BatchId): void
   setStyleTable(table: Uint32Array): void
+  // The draws array is kept for the replay after a context restore: do not mutate it after the call.
   frame(view: ViewState, draws: readonly Draw[]): void
   resize(width: number, height: number, dpr: number): void
 }
@@ -59,5 +61,7 @@ export function arcSubdiv(radiusPx: number): number {
 export function writeStyle(table: Uint32Array, styleId: number, rgba: number, widthPx: number, visible: boolean): void {
   const w = styleId * STYLE_WORDS
   table[w] = rgba
-  table[w + 1] = Math.min(65535, Math.round(widthPx * 64)) | (visible ? 1 << 16 : 0)
+  // Negative (DXF lineweights -1..-3) or NaN would wrap into a 1023 px line, so they pack as 0.
+  const width = widthPx > 0 ? Math.min(65535, Math.round(widthPx * 64)) : 0
+  table[w + 1] = width | (visible ? 1 << 16 : 0)
 }

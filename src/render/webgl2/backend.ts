@@ -62,6 +62,7 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
   const bg = readCssColor(canvas, '--bg')
   const gridMinor = readCssColor(canvas, '--grid-minor')
   const gridMajor = readCssColor(canvas, '--grid-major')
+  const maxStyleRows = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number // the style table is one row per style
   const batches = new Map<BatchId, Batch>()
   let nextId = 1
   let styleCopy = new Uint32Array(0)
@@ -261,6 +262,7 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
 
     setStyleTable(table) {
       if (table.length % STYLE_WORDS !== 0) throw new RangeError(`style table length ${table.length} is not a multiple of ${STYLE_WORDS}`)
+      if (table.length / STYLE_WORDS > maxStyleRows) throw new RangeError(`style table has ${table.length / STYLE_WORDS} rows, the limit is ${maxStyleRows}`)
       styleCopy = table.slice()
       gl.deleteTexture(styleTex)
       uploadStyles()

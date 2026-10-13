@@ -40,6 +40,17 @@ export function benchView(i: number, frames: number, base: ViewState): ViewState
   }
 }
 
+/** Median of the samples whose frame scale is >= 10x the base ('zoomedIn') or <= 1.5x ('allVisible'); 0 when none. */
+export function regimeP50(
+  samples: readonly number[], scales: readonly number[], baseScale: number, regime: 'zoomedIn' | 'allVisible',
+): number {
+  const picked = samples.filter((_, i) => {
+    const ratio = scales[i]! / baseScale
+    return regime === 'zoomedIn' ? ratio >= 10 : ratio <= 1.5
+  })
+  return picked.length === 0 ? 0 : percentile(sorted(picked), 0.5)
+}
+
 const ms = (x: number): number => (Number.isFinite(x) ? Math.round(x * 100) / 100 : 0)
 const sorted = (xs: readonly number[]): number[] => [...xs].sort((a, b) => a - b)
 
@@ -82,6 +93,7 @@ export function runBench(canvas: HTMLCanvasElement, n: number): void {
   const baseline: number[] = []
   const samples: number[] = []
   const intervals: number[] = []
+  const scales: number[] = []
   let done = false
   const report = (error?: string): void => {
     if (done) return
@@ -89,6 +101,7 @@ export function runBench(canvas: HTMLCanvasElement, n: number): void {
     const s = sorted(samples)
     const result = {
       n, frames: samples.length, p50: ms(percentile(s, 0.5)), p95: ms(percentile(s, 0.95)), max: ms(s.at(-1) ?? 0),
+      p50ZoomedIn: ms(regimeP50(samples, scales, base.scale, 'zoomedIn')), p50AllVisible: ms(regimeP50(samples, scales, base.scale, 'allVisible')),
       baselineP50: ms(percentile(sorted(baseline), 0.5)), intervalP95: ms(percentile(sorted(intervals), 0.95)), width: canvas.width, height: canvas.height, dpr, renderer,
       ...(error ? { error } : {}),
     }
@@ -99,6 +112,14 @@ export function runBench(canvas: HTMLCanvasElement, n: number): void {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') report('window not visible')
   })
+
+  // A GL error (e.g. OUT_OF_MEMORY on the big buffer) makes every draw fail fast and would pass the gate.
+  const glError = (): string | undefined => {
+    const code = gl.getError()
+    return code === gl.NO_ERROR ? undefined : `gl error 0x${code.toString(16)}`
+  }
+  const sceneError = glError()
+  if (sceneError) return report(sceneError)
 
   const pixel = new Uint8Array(4)
   let k = 0
@@ -111,14 +132,18 @@ export function runBench(canvas: HTMLCanvasElement, n: number): void {
     prev = t0
     const m = k - BASELINE_FRAMES - WARMUP_FRAMES
     backend.frame(k < BASELINE_FRAMES ? base : benchView(Math.max(m, 0), MEASURED_FRAMES, base), k < BASELINE_FRAMES ? [] : draws)
-    // Synchronous 1-pixel readback: returns only after the GPU ran the queued work. Excludes window composition by Chromium and the OS.
+    // Synchronous 1-pixel readback: returns only after the GPU ran the queued work. The sample includes
+    // that fixed readback cost (see baselineP50) and excludes window composition by Chromium and the OS.
     gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel)
     const cost = performance.now() - t0
+    // With the context lost, frame returns early and readPixels does nothing: the samples would fall to ~0.
+    if (gl.isContextLost()) return report('webgl context lost')
     if (k < BASELINE_FRAMES) baseline.push(cost)
     else if (m >= 0) {
       samples.push(cost)
       intervals.push(interval)
-      if (samples.length === MEASURED_FRAMES) return report()
+      scales.push(benchView(m, MEASURED_FRAMES, base).scale)
+      if (samples.length === MEASURED_FRAMES) return report(glError())
     }
     k++
     requestAnimationFrame(step)

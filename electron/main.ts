@@ -28,12 +28,22 @@ function finish(code: number, reason?: string): void {
 const fail = (reason: string): void => finish(1, reason)
 
 let benchN = 1_000_000
-if (bench) {
-  const raw = app.commandLine.getSwitchValue('n')
-  if (raw !== '') {
-    benchN = /^\d+$/.test(raw) ? Number(raw) : NaN
-    if (!(benchN >= 1 && benchN <= 5_000_000)) finish(1, `--n must be an integer in 1..5000000, got "${raw}"`)
-  }
+const hasPlay = app.commandLine.hasSwitch('play')
+const hasN = app.commandLine.hasSwitch('n')
+const rawN = app.commandLine.getSwitchValue('n')
+const conflict = bench && (smoke || hasPlay || loseContext)
+  ? '--bench cannot be combined with --smoke, --play or --lose-context'
+  : (hasPlay || loseContext) && !smoke
+    ? '--play and --lose-context need --smoke'
+    : hasN && !bench
+      ? '--n needs --bench'
+      : (hasPlay && play === '') || (hasN && rawN === '')
+        ? '--play and --n need a value'
+        : undefined
+if (conflict) finish(1, conflict)
+else if (bench && rawN !== '') {
+  benchN = /^\d+$/.test(rawN) ? Number(rawN) : NaN
+  if (!(benchN >= 1 && benchN <= 5_000_000)) finish(1, `--n must be an integer in 1..5000000, got "${rawN}"`)
 }
 
 const MOUSE_TYPES = ['mouseDown', 'mouseUp', 'mouseMove', 'mouseWheel']
@@ -128,9 +138,12 @@ function createWindow(): void {
         const line = event.message.slice('BENCH_RESULT '.length)
         console.log(line)
         const result: unknown = JSON.parse(line)
-        const r = result as { p95?: unknown; error?: unknown; frames?: unknown }
+        const r = result as { p95?: unknown; error?: unknown; frames?: unknown; n?: unknown; width?: unknown; height?: unknown }
         if (typeof r.error === 'string') return fail(r.error)
         if (typeof r.p95 !== 'number' || !Number.isFinite(r.p95) || r.frames !== 300) return fail('invalid result')
+        // G1 is defined for the requested scene at 1080p.
+        if (r.n !== benchN) return fail(`result n ${String(r.n)} is not the requested ${benchN}`)
+        if (r.width !== 1920 || r.height !== 1080) return fail(`drawing buffer ${String(r.width)}x${String(r.height)} is not 1920x1080`)
         if (shot) await writeFile(shot, (await wc.capturePage()).toPNG())
         finish(r.p95 <= G1_LIMIT_MS ? 0 : 2)
       })().catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)))
@@ -141,10 +154,14 @@ function createWindow(): void {
     wc.on('did-finish-load', () => {
       void (async () => {
         // Loading is done; the load watchdog yields to a deadline sized by the requested work.
+        let stage = 'reading --play file'
         clearTimeout(smokeTimer)
+        // Armed before the read so it has a deadline; re-armed below once the script's waits are known.
+        smokeTimer = setTimeout(() => fail(`timeout: stage "${stage}" not finished 30000 ms after page load`), 30_000)
         const steps = play ? parsePlay(await readFile(play, 'utf8')) : []
         const budget = 30_000 + steps.reduce<number>((sum, step) => sum + (typeof step === 'number' ? step : 0), 0)
-        let stage = 'window show'
+        stage = 'window show'
+        clearTimeout(smokeTimer)
         smokeTimer = setTimeout(() => fail(`timeout: stage "${stage}" not finished ${budget} ms after page load`), budget)
         // The window must be shown and painted, or capturePage returns blank pixels.
         if (!win.isVisible()) await new Promise<void>((resolve) => win.once('show', () => resolve()))

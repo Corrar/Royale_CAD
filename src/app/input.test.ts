@@ -55,11 +55,20 @@ describe('attachInput', () => {
   it('middle button drags the view', () => {
     const t = setup()
     t.fire('pointerdown', { button: 1, pointerId: 1, clientX: 100, clientY: 100 })
-    t.fire('pointermove', { clientX: 130, clientY: 80 })
+    t.fire('pointermove', { clientX: 130, clientY: 80, buttons: 4 })
     t.fire('pointerup', { clientX: 130, clientY: 80 })
     expect(t.view()).toEqual(panBy(V0, 30, -20))
-    t.fire('pointermove', { clientX: 200, clientY: 200 })
+    t.fire('pointermove', { clientX: 200, clientY: 200, buttons: 4 })
     expect(t.view()).toEqual(panBy(V0, 30, -20))
+  })
+
+  it('ends the drag when the button is no longer pressed (lost capture)', () => {
+    const t = setup()
+    t.fire('pointerdown', { button: 1, pointerId: 1, clientX: 100, clientY: 100 })
+    t.fire('pointermove', { clientX: 130, clientY: 80, buttons: 0 })
+    expect(t.view()).toEqual(V0)
+    t.fire('pointermove', { clientX: 200, clientY: 200, buttons: 4 })
+    expect(t.view()).toEqual(V0)
   })
 
   it('other buttons do not drag', () => {

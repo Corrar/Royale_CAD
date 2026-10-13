@@ -71,17 +71,19 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
     },
   )
 
-  const measure = (): void => {
-    const width = canvas.clientWidth
-    const height = canvas.clientHeight
+  const measure = (entries?: ResizeObserverEntry[]): void => {
     const dpr = window.devicePixelRatio
+    // The device-pixel box is exact; clientWidth is an integer and is off by 1 px at fractional scales.
+    const box = entries?.[0]?.devicePixelContentBoxSize?.[0]
+    const width = box ? box.inlineSize / dpr : canvas.clientWidth
+    const height = box ? box.blockSize / dpr : canvas.clientHeight
     backend.resize(width, height, dpr)
     view = view ? { ...view, width, height, dpr } : fit({ cx: 0, cy: 0, scale: 1, width, height, dpr }, bbox, FIT_MARGIN_PX)
     // Resizing the buffer clears the canvas, so draw in the same task or it flashes.
     loop.invalidate()
     loop.flush()
   }
-  const observer = new ResizeObserver(measure)
+  const observer = new ResizeObserver((entries) => measure(entries))
   observer.observe(canvas, { box: 'device-pixel-content-box' })
   measure()
 

@@ -26,6 +26,7 @@ export function attachInput(target: HTMLElement, host: InputHost): () => void {
   }
   const onMove = (e: PointerEvent): void => {
     if (!drag) return
+    if (!(e.buttons & 4)) return onEnd(e) // capture lost (e.g. alt-tab) without a pointerup
     host.setView(panBy(host.getView(), e.clientX - drag.x, e.clientY - drag.y))
     drag.x = e.clientX
     drag.y = e.clientY

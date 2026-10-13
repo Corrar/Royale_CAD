@@ -11,7 +11,7 @@ uniform float dpr;
 uniform vec2 viewportPx; // drawing buffer size, device px
 uniform usampler2D styles; // 2 texels per row: color 0xRRGGBBAA, width/64 px | visible << 16
 
-flat out vec4 vColor;
+out vec4 vColor;
 
 // Sets vColor and returns the half width in device px; false when the style is hidden.
 bool loadStyle(uint styleId, out float halfW) {
@@ -34,6 +34,10 @@ void drop() {
 `
 
 // Segment: one instanced quad (TRIANGLE_STRIP, corner from gl_VertexID) per segment.
+// shortcut: after the eye subtraction everything is f32 in device px, so the error grows with the distance of the
+// endpoints from the view centre: past ~5e6 px the visible stretch shifts >= 0.25 px when the eye moves, near
+// 1.7e7 px the thickness doubles and at 1e8 px the line vanishes; the Scene (T13) re-emits, clipped in f64,
+// any primitive whose extent exceeds ~4e6 device px.
 export const SEGMENT_VERT = INSTANCED_HEAD + `
 layout(location = 0) in vec4 p0; // x0hi, x0lo, y0hi, y0lo
 layout(location = 1) in vec4 p1;
@@ -59,7 +63,7 @@ void main() {
 
 // Arc: one instanced TRIANGLE_STRIP of 2 * (subdiv + 1) vertices per arc, evaluated here.
 // shortcut: r, a0 and sweep are f32 and subdiv is capped at 4096, so past r * scale of about 1e6 px an
-// arc can land a few px off; clipping the visible span on the CPU belongs to Scene (T13).
+// arc can land a few px off and lose thickness (same f32 limit as the segment); clipping the visible span on the CPU belongs to Scene (T13).
 export const ARC_VERT = INSTANCED_HEAD + `
 layout(location = 0) in vec4 c; // cxhi, cxlo, cyhi, cylo
 layout(location = 1) in vec3 shape; // r, a0, sweep
@@ -73,8 +77,8 @@ void main() {
 
   float angle = shape.y + shape.z * float(gl_VertexID >> 1) / float(subdiv);
   float side = float(gl_VertexID & 1) * 2.0 - 1.0;
-  // The width offset is radial, so the stroke keeps a constant thickness.
-  vec2 pos = toEyePx(c) + (shape.x * pxPerUnit + side * half_w) * vec2(cos(angle), sin(angle));
+  // The width offset is radial, so the stroke keeps a constant thickness. The inner radius stops at 0.
+  vec2 pos = toEyePx(c) + max(shape.x * pxPerUnit + side * half_w, 0.0) * vec2(cos(angle), sin(angle));
   gl_Position = vec4(pos / (0.5 * viewportPx), 0.0, 1.0);
 }
 `
@@ -124,7 +128,7 @@ void main() {
 
 export const SEGMENT_FRAG =`#version 300 es
 precision highp float;
-flat in vec4 vColor;
+in vec4 vColor;
 out vec4 outColor;
 void main() {
   outColor = vColor;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ViewState } from '../kernel/view'
-import { benchView, mulberry32, percentile } from './bench'
+import { benchView, mulberry32, percentile, regimeP50 } from './bench'
 
 describe('percentile', () => {
   it('interpolates linearly', () => {
@@ -34,5 +34,19 @@ describe('benchView', () => {
   it('keeps the viewport fields', () => {
     const v = benchView(77, 300, base)
     expect([v.width, v.height, v.dpr]).toEqual([1920, 1080, 1.25])
+  })
+})
+
+describe('regimeP50', () => {
+  const scales = [1, 1.4, 2, 10, 20]
+  const samples = [5, 1, 99, 3, 7]
+  it('takes the median of the frames at or above 10x the base', () => {
+    expect(regimeP50(samples, scales, 1, 'zoomedIn')).toBe(5)
+  })
+  it('takes the median of the frames at or below 1.5x the base', () => {
+    expect(regimeP50(samples, scales, 1, 'allVisible')).toBe(3)
+  })
+  it('is 0 when no frame is in the regime', () => {
+    expect(regimeP50([4], [3], 1, 'zoomedIn')).toBe(0)
   })
 })
