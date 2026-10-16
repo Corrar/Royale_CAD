@@ -92,7 +92,10 @@ export const copy: Command = function* (ctx) {
 
 const angleTo = (base: Vec2, c: Vec2): number => (Math.atan2(c.y - base.y, c.x - base.x) * 180) / Math.PI
 
-/** ROTATE about a base point; the angle is typed in degrees or given by the direction of a picked point. */
+/**
+ * ROTATE about a base point; the angle is typed in degrees or given by the direction of a picked point. The last
+ * angle is the default, as in AutoCAD, so Enter turns the next set by as much.
+ */
 export const rotate: Command = function* (ctx) {
   const es = yield* editable(ctx)
   if (es.length === 0) return
@@ -102,10 +105,11 @@ export const rotate: Command = function* (ctx) {
   const a = yield* getNumber('Specify rotation angle', {
     base,
     angle: true,
-    default: 0,
+    default: (ctx.vars.get('ROTATEANGLE') as number | undefined) ?? 0,
     preview: ghost(es, (c) => rotation(base, angleTo(base, c)), rubber(base)),
   })
   if (typeof a !== 'number') return
+  ctx.vars.set('ROTATEANGLE', a)
   apply(ctx, 'ROTATE', es, rotation(base, a), false)
 }
 
@@ -133,7 +137,10 @@ export const mirror: Command = function* (ctx) {
   apply(ctx, 'MIRROR', es, mirroring(p1, p2), erase.word === 'No')
 }
 
-/** SCALE about a base point; a picked point gives the factor as its distance from the base. */
+/**
+ * SCALE about a base point; a picked point gives the factor as its distance from the base. The last factor (1 at
+ * first) is the default, as in AutoCAD.
+ */
 export const scale: Command = function* (ctx) {
   const es = yield* editable(ctx)
   if (es.length === 0) return
@@ -141,6 +148,7 @@ export const scale: Command = function* (ctx) {
   if (!isPoint(base)) return
   const k = yield* getNumber('Specify scale factor', {
     base,
+    default: (ctx.vars.get('SCALEFACTOR') as number | undefined) ?? 1,
     positive: true,
     preview: ghost(es, (c) => {
       const d = Math.hypot(c.x - base.x, c.y - base.y)
@@ -148,5 +156,6 @@ export const scale: Command = function* (ctx) {
     }, rubber(base)),
   })
   if (typeof k !== 'number') return
+  ctx.vars.set('SCALEFACTOR', k)
   apply(ctx, 'SCALE', es, scaling(base, k), false)
 }

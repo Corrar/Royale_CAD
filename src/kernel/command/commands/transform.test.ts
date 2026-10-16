@@ -107,6 +107,20 @@ describe('MOVE, COPY, ROTATE, MIRROR, SCALE', () => {
     expect(t.interp.history.at(-1)).toBe('Value must be positive and nonzero.')
   })
 
+  it('ROTATE offers the last angle and SCALE the last factor (1 at first), as AutoCAD does', () => {
+    const t = setup()
+    t.run('RO⏎ALL⏎⏎0,0⏎90⏎')
+    t.run('RO⏎ALL⏎⏎0,0⏎')
+    expect(t.interp.prompt).toBe('Specify rotation angle <90>:')
+    t.run('⏎')
+    expect(t.lines()).toEqual([[0, 0, -10, 0]])
+    t.run('SC⏎ALL⏎⏎0,0⏎')
+    expect(t.interp.prompt).toBe('Specify scale factor <1.0000>:')
+    t.run('2⏎')
+    t.run('SC⏎ALL⏎⏎0,0⏎⏎')
+    expect(t.lines()).toEqual([[0, 0, -40, 0]])
+  })
+
   it('skips entities on locked layers', () => {
     const t = setup()
     const locked = t.doc.layers.add({ name: 'Locked', color: 1, visible: true, locked: true })
