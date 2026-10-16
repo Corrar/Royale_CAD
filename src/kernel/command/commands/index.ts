@@ -9,6 +9,7 @@ import { line } from './line'
 import { offset } from './offset'
 import { pline } from './pline'
 import { rectang } from './rectang'
+import { aliasedit, dsettings, osnap } from './settings'
 import { text } from './text'
 import { copy, mirror, move, rotate, scale } from './transform'
 import { trim } from './trim'
@@ -46,4 +47,7 @@ export const BUILTIN_COMMANDS: Readonly<Record<string, Command>> = {
   NEW: create,
   QSAVE: qsave,
   SAVEAS: saveas,
+  OSNAP: osnap,
+  DSETTINGS: dsettings,
+  ALIASEDIT: aliasedit,
 }

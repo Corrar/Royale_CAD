@@ -424,3 +424,241 @@
     transition: none;
   }
 }
+
+.statusbar-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.statusbar-icon:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.settings {
+  position: fixed;
+  top: calc(var(--titlebar-h) + 48px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(440px, calc(100% - 32px));
+  max-height: calc(100vh - var(--titlebar-h) - 200px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 16px 48px rgb(0 0 0 / 0.45);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 8px 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 2px;
+  margin-right: auto;
+}
+
+.settings-tab {
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.settings-tab:hover {
+  color: var(--text);
+}
+
+.settings-tab[aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.settings-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.settings-icon:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px 16px 16px;
+}
+
+[role='tabpanel'] {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.settings-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.settings-modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-modes label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.settings-modes input,
+.settings-modes kbd {
+  flex: none;
+}
+
+.settings-modes span {
+  flex: 1;
+}
+
+.settings kbd {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.settings input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-button:hover:not(:disabled) {
+  border-color: var(--text-muted);
+}
+
+.settings-button:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.settings-input {
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  user-select: text;
+}
+
+.settings-row .settings-input:first-child {
+  width: 88px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
+.settings-row select.settings-input {
+  flex: 1;
+}
+
+.settings-input.wide {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.settings-aliases {
+  min-height: 0;
+  max-height: 40vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.settings-aliases li {
+  display: grid;
+  grid-template-columns: 80px 1fr 28px;
+  align-items: center;
+  padding: 0 4px 0 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.settings-aliases li:nth-child(even) {
+  background: var(--surface-2);
+}
+
+.settings-aliases .settings-empty {
+  display: block;
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+}

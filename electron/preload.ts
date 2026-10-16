@@ -17,3 +17,9 @@ contextBridge.exposeInMainWorld('royale', {
   },
   closeNow: () => ipcRenderer.send('file:close-now'),
 })
+
+// window.royaleSettings: settings.json, read and written whole (src/app/settings.ts, SettingsApi).
+contextBridge.exposeInMainWorld('royaleSettings', {
+  read: () => ipcRenderer.invoke('settings:read'),
+  write: (text: string) => ipcRenderer.invoke('settings:write', text),
+})

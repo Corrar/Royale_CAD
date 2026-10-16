@@ -103,6 +103,8 @@ export interface InterpreterHost {
   files?: FileHost
   /** Shows the layer panel (LAYER, LA). */
   showLayers?(): void
+  /** Shows the settings at a tab: object snap (OSNAP, DSETTINGS) or aliases (ALIASEDIT). */
+  showSettings?(tab: 'osnap' | 'aliases'): void
 }
 
 export interface FileHost {
@@ -157,6 +159,8 @@ export interface Interpreter {
   osnap: boolean
   /** Squares points to the base point's axes (F8). Typed coordinates are exempt; a snap wins over it. */
   ortho: boolean
+  /** The command aliases (acad.pgp): typed word to command name. Replaced whole, as the settings change. */
+  aliases: Readonly<Record<string, string>>
   /** Where a click at the cursor would land now, and the snap that put it there; null without a cursor. */
   readonly tracked: { p: Vec2; snap: SnapHit | null } | null
   /** A line in the history from outside a command: what the app has to say (a file saved, a load failed). */
@@ -213,7 +217,7 @@ const SCALE_WORD = /^(\d+\.?\d*|\.\d+)x$/i
 export function createInterpreter(doc: Document, selection: Selection, opts: InterpreterOptions): Interpreter {
   const commands = opts.commands
   const names = new Set(Object.keys(commands))
-  const aliases = opts.aliases ?? DEFAULT_ALIASES
+  let aliases = opts.aliases ?? DEFAULT_ALIASES
   const host = opts.host ?? {}
   const listeners = new Set<() => void>()
   const history: string[] = []
@@ -579,6 +583,12 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
       if (on === ortho) return
       ortho = on
       emit()
+    },
+    get aliases() {
+      return aliases
+    },
+    set aliases(next) {
+      aliases = next
     },
     get tracked() {
       return cursor && resolve(cursor)

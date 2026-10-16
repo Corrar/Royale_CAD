@@ -4,7 +4,7 @@ import { createDocument, docExtents, type Layer } from '../kernel/document'
 import type { BBox, Vec2 } from '../kernel/geom/vec'
 import { pick, pickBox } from '../kernel/pick'
 import { createSelection } from '../kernel/selection'
-import { APERTURE_PX, SNAP, snap } from '../kernel/snap'
+import { APERTURE_PX, snap } from '../kernel/snap'
 import { createSpatialIndex } from '../kernel/spatial'
 import { FIT_MARGIN_PX, fit, screenToWorld, type ViewState } from '../kernel/view'
 import { drawOverlay, type OverlayTheme } from '../render/overlay'
@@ -15,6 +15,7 @@ import { createFiles, type FileState } from './files'
 import { canvasRaster, GLYPH_CAP_PX, GLYPH_SPREAD_PX, GLYPH_SUPERSAMPLE } from './glyph-raster'
 import { attachInput, attachKeyboard } from './input'
 import { parseInWorker } from './parse-worker'
+import { DEFAULT_SETTINGS, parseSettings, settingsText, type Settings } from './settings'
 import { createStore, derivedStore, type Store } from './stores'
 import { packRgba, readBackendTheme, readCssColor } from './theme'
 
@@ -67,6 +68,25 @@ export interface LayerActions {
   toggle(): void
 }
 
+export type SettingsTab = 'osnap' | 'aliases'
+
+export interface SettingsState {
+  settings: Settings
+  /** The settings panel shows, at this tab; null when closed. */
+  open: SettingsTab | null
+}
+
+/** What the settings panel can do; every change is saved at once. */
+export interface SettingsActions {
+  show(tab: SettingsTab | null): void
+  setOsnap(modes: number): void
+  /** Adds or changes an alias; null removes it. */
+  setAlias(alias: string, command: string | null): void
+  resetAliases(): void
+  /** The commands an alias can name. */
+  commands: readonly string[]
+}
+
 export interface AppSession {
   commandLine: Store<CommandLineState>
   status: Store<StatusState>
@@ -76,6 +96,8 @@ export interface AppSession {
   layerActions: LayerActions
   /** The command under way, by name; null at the Command prompt. */
   active: Store<string | null>
+  settings: Store<SettingsState>
+  settingsActions: SettingsActions
   /** A toolbar button: ends the command under way, then types inputs (a command and its first answers). */
   runCommand(inputs: readonly string[]): void
   toggleHistory(): void
@@ -83,8 +105,6 @@ export interface AppSession {
   dispose(): void
 }
 
-/** The object snap modes in use (OSMODE); the settings (T40) will make them editable. QUA, NEA and NOD wait there. */
-const SNAP_MODES = SNAP.END | SNAP.MID | SNAP.CEN | SNAP.INT | SNAP.PER
 
 export function createFrameLoop(
   requestFrame: (cb: () => void) => void,
@@ -154,7 +174,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     extents: () => docExtents(doc),
     pick: (p) => pick(doc, index, p, PICKBOX_PX / view!.scale),
     pickBox: (b, crossing) => pickBox(doc, index, b, crossing),
-    snap: (p, base) => snap(doc, index, p, view!, SNAP_MODES, APERTURE_PX, base),
+    snap: (p, base) => snap(doc, index, p, view!, settings.get().settings.osnap, APERTURE_PX, base),
     query: (b) => index.query(b),
   }
   const interp = createInterpreter(doc, selection, { commands: BUILTIN_COMMANDS, host })
@@ -182,6 +202,43 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
   if (files) host.files = files
   const panelOpen = createStore(false)
   host.showLayers = () => panelOpen.set(true)
+
+  // Settings: the defaults until settings.json is read; then what it says, its problems said in the command line.
+  const settings = createStore<SettingsState>({ settings: DEFAULT_SETTINGS, open: null })
+  const commandNames = Object.keys(BUILTIN_COMMANDS).sort()
+  const applySettings = (next: Settings): void => {
+    settings.set({ ...settings.get(), settings: next })
+    interp.aliases = next.aliases
+    loop.invalidate() // the snap marker may change with the modes
+  }
+  const saveSettings = (next: Settings): void => {
+    applySettings(next)
+    void window.royaleSettings?.write(settingsText(next)).then(
+      (r) => r && interp.print(`Settings were not saved: ${r.error}`),
+      (error: unknown) => interp.print(`Settings were not saved: ${error instanceof Error ? error.message : String(error)}`),
+    )
+  }
+  window.royaleSettings?.read().then(
+    (text) => {
+      const { settings: read, warnings } = parseSettings(text, new Set(commandNames))
+      applySettings(read)
+      for (const w of warnings) interp.print(w)
+    },
+    (error: unknown) => interp.print(`Settings could not be read (${error instanceof Error ? error.message : String(error)}); the defaults are used.`),
+  )
+  host.showSettings = (tab) => settings.set({ ...settings.get(), open: tab })
+  const settingsActions: SettingsActions = {
+    show: (tab) => settings.set({ ...settings.get(), open: tab }),
+    setOsnap: (modes) => saveSettings({ ...settings.get().settings, osnap: modes }),
+    setAlias(alias, command) {
+      const aliases = { ...settings.get().settings.aliases }
+      if (command === null) delete aliases[alias]
+      else aliases[alias] = command
+      saveSettings({ ...settings.get().settings, aliases })
+    },
+    resetAliases: () => saveSettings({ ...settings.get().settings, aliases: DEFAULT_SETTINGS.aliases }),
+    commands: commandNames,
+  }
 
   const loop = createFrameLoop(
     (cb) => requestAnimationFrame(cb),
@@ -406,6 +463,8 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     layers,
     layerActions,
     active,
+    settings,
+    settingsActions,
     runCommand(inputs) {
       const [name, ...answers] = inputs
       if (name === undefined) return

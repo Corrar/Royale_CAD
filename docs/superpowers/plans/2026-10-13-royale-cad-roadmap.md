@@ -336,9 +336,11 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
   - Contraste (WCAG, calculado): ícones `--text-muted` (#9AA0A6) sobre `--surface` (#24272B) 5,7:1; texto da dica sobre `--surface-2` 10,8:1 e o alias em `--accent` 9,2:1; ativo `--accent` sobre o fundo realçado (#2C3E44) 7,7:1.
   - Verificado no app: dica ao passar o mouse, LINE pressionado durante o comando, Tab chega nas ferramentas com anel de foco e dica, Enter inicia CIRCLE.
 
-- [ ] **T40 · Ajustes**
+- [x] **T40 · Ajustes**
   - Arquivos: `src/app/settings.ts`, `src/ui/Settings.tsx`
   - Produz: tabela de aliases e modos de osnap em JSON no `userData`; JSON inválido volta ao padrão com aviso.
+  - Feito: `settings.json` (`{ version, osnap: ["END", …], aliases: { "L": "LINE", … } }`) em `userData`, lido e gravado inteiro pelo processo principal (`electron/settings.ts`: só do quadro principal da janela, gravação atômica, pasta criada, limite de 1 MB; `--settings=<arquivo>` para testes, e smoke/bench sem ele não tocam o do usuário). `parseSettings` nunca falha: arquivo que não é JSON volta inteiro ao padrão, parte ruim volta ao padrão dela, entrada ruim (modo desconhecido, alias que não é palavra ou que aponta para comando inexistente) sai — cada caso com um aviso na linha de comando. A tabela de aliases do arquivo substitui a padrão inteira, como o acad.pgp; o interpretador troca de aliases em execução (`Interpreter.aliases`) e o snap usa os modos lidos. Painel Ajustes (`role="dialog"`, abas com setas): Object Snap (nove modos, Select All, Clear All) e Aliases (adicionar ou trocar, filtrar, remover, Restore defaults); cada mudança grava na hora. Abre por OSNAP/OS, DSETTINGS/DS/SE, ALIASEDIT, pela engrenagem da barra de status e com clique direito em OSNAP, como no AutoCAD; Esc fecha.
+  - Verificado no app: arquivo com modo e alias inválidos dá os dois avisos e usa o resto; marcar Nearest grava o arquivo (pasta criada, sem temporário sobrando).
 
 - [ ] **T41 · Instalador**
   - Arquivos: `electron-builder.yml`, ícone

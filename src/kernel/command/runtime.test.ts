@@ -41,6 +41,20 @@ describe('createInterpreter', () => {
     expect(t.interp.history).toContain('Command: LINE')
   })
 
+  it('aliases can be replaced while it runs (the settings): a new one works, a dropped one no longer does', () => {
+    const t = commandBench()
+    t.interp.aliases = { LL: 'LINE', Q: 'NOSUCH' }
+    t.run('LL⏎')
+    expect(t.interp.command).toBe('LINE')
+    t.interp.cancel()
+    t.run('L⏎')
+    expect(t.interp.history.at(-1)).toBe('Unknown command "L".')
+    // An alias of a command that does not exist is no command.
+    t.run('Q⏎')
+    expect(t.interp.history.at(-1)).toBe('Unknown command "Q".')
+    expect(t.interp.aliases).toEqual({ LL: 'LINE', Q: 'NOSUCH' })
+  })
+
   it('reports unknown commands and stays idle', () => {
     const t = commandBench()
     t.run('FOO⏎')

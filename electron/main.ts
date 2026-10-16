@@ -2,6 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { app, BrowserWindow, Menu, session, type KeyboardInputEvent, type MouseInputEvent, type MouseWheelInputEvent } from 'electron'
 import { registerFiles } from './files'
+import { registerSettings } from './settings'
 
 const smoke = app.commandLine.hasSwitch('smoke')
 const shot = app.commandLine.getSwitchValue('shot')
@@ -9,6 +10,8 @@ const loseContext = app.commandLine.hasSwitch('lose-context')
 const play = app.commandLine.getSwitchValue('play')
 // A DXF to open at start: for smoke runs now, for file associations later.
 const openPath = app.commandLine.getSwitchValue('open') || null
+// The settings file: --settings for a test run; a smoke or bench run without it leaves the user's alone.
+const settingsSwitch = app.commandLine.getSwitchValue('settings') || null
 // BG, SYMBOL and BAR_H mirror --bg, --text and --titlebar-h in src/ui/tokens.css.
 const BG = '#1B1D20'
 const SYMBOL = '#E6E8EA'
@@ -172,6 +175,7 @@ function createWindow(): void {
   // G3 opens the file once the app has started, so its own start does not count as the file's.
   let started = (): void => {}
   if (!bench || g3) registerFiles(win, openPath, g3 ? new Promise<void>((r) => (started = r)) : undefined)
+  registerSettings(win, settingsSwitch ?? (smoke || bench ? null : join(app.getPath('userData'), 'settings.json')))
 
   win.once('ready-to-show', () => win.show())
   wc.setWindowOpenHandler(() => ({ action: 'deny' }))

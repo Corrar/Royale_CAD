@@ -4,6 +4,7 @@ import { startApp, type AppSession } from '../app/controller'
 import { GLYPH_CAP_PX, textFont } from '../app/glyph-raster'
 import { CommandLine } from './CommandLine'
 import { LayerPanel } from './LayerPanel'
+import { SettingsPanel } from './Settings'
 import { StatusBar } from './StatusBar'
 import { TitleBar } from './TitleBar'
 import { Toolbar } from './Toolbar'
@@ -47,8 +48,9 @@ export function App() {
       {/* In reading order, which Tab follows: tools, layer, status, command line. */}
       {session && <Toolbar active={session.active} onRun={session.runCommand} />}
       {session && <LayerPanel store={session.layers} actions={session.layerActions} />}
-      {session && <StatusBar store={session.status} onToggle={session.toggle} />}
+      {session && <StatusBar store={session.status} onToggle={session.toggle} onSettings={() => session.settingsActions.show('osnap')} />}
       {session && <CommandLine store={session.commandLine} onToggleHistory={session.toggleHistory} />}
+      {session && <SettingsPanel store={session.settings} actions={session.settingsActions} />}
     </>
   )
 }
