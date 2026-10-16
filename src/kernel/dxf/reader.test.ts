@@ -97,6 +97,23 @@ describe('readDxf', () => {
     expect(d.warnings).toEqual(['line 43: INSERT kept as is: block DOOR is not defined.', '1 HATCH kept as is (not drawn).', '1 entity in paper space kept as is (not drawn).'])
   })
 
+  it('invisible entities (60 = 1) are kept as is, not drawn, in model space and in blocks', () => {
+    const line: G = [0, 'LINE', 8, '0', 60, 1, 10, 0, 20, 0, 11, 1, 21, 1]
+    const circle: G = [0, 'CIRCLE', 8, '0', 60, 1, 10, 0, 20, 0, 40, 1]
+    const shown: G = [0, 'LINE', 8, '0', 60, 0, 10, 0, 20, 0, 11, 1, 21, 1]
+    const insert: G = [0, 'INSERT', 8, '0', 2, 'B', 10, 0, 20, 0]
+    const d = readDxf(lines([
+      0, 'SECTION', 2, 'BLOCKS', 0, 'BLOCK', 8, '0', 2, 'B', 70, 0, 10, 0, 20, 0, ...circle, ...shown, 0, 'ENDBLK', 0, 'ENDSEC',
+      0, 'SECTION', 2, 'ENTITIES', ...line, ...circle, ...shown, ...insert, 0, 'ENDSEC', 0, 'EOF',
+    ]))
+    const [l, c, s, i] = all(d) as [Opaque, Opaque, Line, Insert]
+    expect(l).toMatchObject({ type: 'opaque', name: 'LINE', raw: lines(line) })
+    expect(c).toMatchObject({ type: 'opaque', name: 'CIRCLE', raw: lines(circle) })
+    expect(s.type).toBe('line')
+    expect(i.block.entities.map((e) => e.type)).toEqual(['line'])
+    expect(d.warnings).toEqual(['2 invisible entities kept as is (not drawn).', '1 entity in blocks not drawn.'])
+  })
+
   it('ELLIPSE: in WCS; an extrusion of (0, 0, -1) runs it the other way; 0 to 2π is the whole ellipse', () => {
     const e: G = [0, 'ELLIPSE', 8, '0', 10, 10, 20, 20, 30, 0, 11, 6, 21, 8, 31, 0, 40, 0.5, 41, 0.5, 42, 4]
     const mirrored: G = [...e, 210, 0, 220, 0, 230, -1]
@@ -192,6 +209,46 @@ describe('readDxf', () => {
     expect(d.warnings.join(' ')).toMatch(/external/)
   })
 
+  it('numbers whose geometry a double cannot hold keep the entity as is, with a warning; the rest opens', () => {
+    const huge: G = [0, 'CIRCLE', 8, '0', 10, 1e308, 20, 0, 40, 1e308]
+    const blocks: G = [0, 'BLOCK', 8, '0', 2, 'B', 70, 0, 10, 0, 20, 0, 0, 'LINE', 8, '0', 10, 0, 20, 0, 11, 1e10, 21, 0, ...huge, 0, 'ENDBLK']
+    const entities: G = [
+      ...huge,
+      0, 'LWPOLYLINE', 8, '0', 90, 2, 70, 0, 10, 0, 20, 0, 42, 1e300, 10, 1, 20, 0,
+      0, 'ELLIPSE', 8, '0', 10, 1e308, 20, 0, 11, 1e308, 21, 0, 40, 1,
+      0, 'INSERT', 8, '0', 2, 'B', 10, 0, 20, 0, 41, 1e300, 42, 1e300,
+      0, 'INSERT', 8, '0', 2, 'B', 10, 0, 20, 0, 41, 0,
+      0, 'INSERT', 8, '0', 2, 'B', 10, 0, 20, 0,
+    ]
+    const d = readDxf(lines([0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES', ...entities, 0, 'ENDSEC', 0, 'EOF']))
+    const list = all(d)
+    expect(list.map((e) => e.type)).toEqual(['opaque', 'opaque', 'opaque', 'opaque', 'opaque', 'insert'])
+    // The block keeps its line; its circle is not drawn.
+    expect((list[5] as Insert).block.entities.map((e) => e.type)).toEqual(['line'])
+    expect(d.warnings).toEqual([
+      'line 47: CIRCLE kept as is: its geometry overflows.',
+      'line 57: LWPOLYLINE kept as is: its geometry overflows.',
+      'line 75: ELLIPSE kept as is: its geometry overflows.',
+      'line 89: INSERT kept as is: its geometry overflows.',
+      'line 103: INSERT kept as is: insert scale must not be zero, got 0, 1.',
+      '1 entity in blocks not drawn.',
+    ])
+  })
+
+  it('a spline whose flattening would pass the largest double is kept as is: wide control points, heavy weights', () => {
+    const knots = [0, 0, 0, 0, 1, 1, 1, 1].flatMap((k) => [40, k])
+    const spline = (pts: number[][], weights: number[] = []): G => [
+      0, 'SPLINE', 8, '0', 70, weights.length > 0 ? 12 : 8, 71, 3, 72, 8, 73, 4, ...knots, ...weights.flatMap((w) => [41, w]), ...pts.flatMap(([x, y]) => [10, x!, 20, y!, 30, 0]),
+    ]
+    const wide = spline([[0, 0], [1e308, 0], [-1e308, 0], [0, 1]])
+    // 1e10 × 1e300 is past the largest double: flattening it never ends.
+    const heavy = spline([[0, 0], [1e10, 1e10], [2e10, 0], [3e10, 1e10]], [1, 1e300, 1e300, 1])
+    const fine = spline([[0, 0], [1e10, 1e10], [2e10, 0], [3e10, 1e10]], [1, 2, 2, 1])
+    const d = readDxf(file([...wide, ...heavy, ...fine]))
+    expect(all(d).map((e) => e.type)).toEqual(['opaque', 'opaque', 'spline'])
+    expect(d.warnings).toEqual(['line 25: SPLINE kept as is: its geometry overflows.', 'line 77: SPLINE kept as is: its geometry overflows.'])
+  })
+
   it('layers: color, off, frozen, locked and true color from the table; an unknown layer is created', () => {
     const d = readDxf(file(
       [0, 'LINE', 8, 'Nowhere', 10, 0, 20, 0, 11, 1, 21, 1],
@@ -205,6 +262,15 @@ describe('readDxf', () => {
     expect(layer('True')!.color).toBe(TRUE_COLOR | 0x123456)
     expect(layer('Nowhere')).toEqual({ name: 'Nowhere', color: 7, visible: true, locked: false })
     expect(all(d)[0]!.layer).toBe(d.doc.layers.indexOf('Nowhere'))
+  })
+
+  it('999 comments after 0/SECTION and 0/TABLE: the LAYER table is read, the section spans its 0/SECTION', () => {
+    const tables: G = [0, 'SECTION', 999, 'tables', 2, 'TABLES', 0, 'TABLE', 999, 'layer table', 2, 'LAYER', 70, 1, 0, 'LAYER', 2, 'Off', 70, 0, 62, -2, 0, 'ENDTAB', 0, 'ENDSEC']
+    const d = readDxf(lines([...tables, 0, 'SECTION', 2, 'ENTITIES', 0, 'LINE', 8, 'Off', 10, 0, 20, 0, 11, 1, 21, 1, 0, 'ENDSEC', 0, 'EOF']))
+    expect(d.doc.layers.get(d.doc.layers.indexOf('Off'))).toEqual({ name: 'Off', color: 2, visible: false, locked: false })
+    const s = d.source.sections[0]!
+    expect(s.name).toBe('TABLES')
+    expect(d.source.text.slice(s.start, s.end)).toBe(lines(tables))
   })
 
   it('colors: 256 is ByLayer, ByBlock (0) shows white, 420 true color wins over 62', () => {

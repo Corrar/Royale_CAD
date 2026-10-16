@@ -71,7 +71,28 @@ describe('tokenize', () => {
   it('refuses binary DXF', () => {
     expect(() => tokenize('AutoCAD Binary DXF\r\n\u001a\u0000...')).toThrow('line 1: binary DXF is not supported')
   })
+
+  it('quotes at most 40 characters of a line: a file without line breaks is one long line', () => {
+    const long = ' 12345' + 'x'.repeat(100_000)
+    expect(messageOf(() => tokenize(long))).toBe(`line 1: invalid group code "${long.trim().slice(0, 40)}…"`)
+    expect(messageOf(() => sections(tokenizeList(dxf('0', 'y'.repeat(1000)))))).toBe(`line 1: expected 0/SECTION, found 0/${'y'.repeat(40)}…`)
+  })
+
+  it('refuses a file whose lines end in CR alone (classic Mac OS) in a short message', () => {
+    const cr = ['0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF'].join('\r') + '\r'
+    expect(messageOf(() => tokenize(cr))).toBe('line 1: lines end in CR alone (classic Mac OS), which is not supported')
+  })
 })
+
+/** The message of what f throws; '' when it does not. */
+function messageOf(f: () => unknown): string {
+  try {
+    f()
+  } catch (error) {
+    return (error as Error).message
+  }
+  return ''
+}
 
 describe('sections', () => {
   it('names each section and the range of its pairs, between the name and ENDSEC', () => {
@@ -79,8 +100,8 @@ describe('sections', () => {
       dxf('999', 'comment', '0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1015', '0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF'),
     )
     expect(sections(pairs)).toEqual([
-      { name: 'HEADER', start: 3, end: 5 },
-      { name: 'ENTITIES', start: 8, end: 8 },
+      { name: 'HEADER', section: 1, start: 3, end: 5 },
+      { name: 'ENTITIES', section: 6, start: 8, end: 8 },
     ])
     expect(pairs.pair(3)).toEqual({ code: 9, value: '$ACADVER' })
     // Text spans: pair 1 starts on line 3; the end is past the last line break.
@@ -91,9 +112,30 @@ describe('sections', () => {
     expect(pairs.is(2, 0, 'HEADER')).toBe(false)
   })
 
+  it('steps over 999 comments between 0/SECTION and its name', () => {
+    const pairs = tokenizeList(dxf('0', 'SECTION', '999', 'made by hand', '999', 'twice', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF'))
+    expect(sections(pairs)).toEqual([{ name: 'ENTITIES', section: 0, start: 4, end: 4 }])
+  })
+
   it('a section cut short is an error that names the line where the file ends', () => {
     const pairs = tokenizeList(dxf('0', 'SECTION', '2', 'ENTITIES', '0', 'LINE', '8', '0'))
     expect(() => sections(pairs)).toThrow('line 9: section ENTITIES is not closed (file truncated?)')
+  })
+
+  it('a section without its ENDSEC is an error at the 0/SECTION or 0/EOF that comes first, not a section swallowing the next', () => {
+    const blocks = tokenizeList(dxf('0', 'SECTION', '2', 'BLOCKS', '0', 'BLOCK', '2', 'A', '0', 'ENDBLK', '0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF'))
+    expect(() => sections(blocks)).toThrow('line 11: section BLOCKS is not closed (0/SECTION before 0/ENDSEC)')
+    const header = tokenizeList(dxf('0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1015', '0', 'SECTION', '2', 'TABLES', '0', 'ENDSEC', '0', 'EOF'))
+    expect(() => sections(header)).toThrow('line 9: section HEADER is not closed (0/SECTION before 0/ENDSEC)')
+    const entities = tokenizeList(dxf('0', 'SECTION', '2', 'ENTITIES', '0', 'LINE', '8', '0', '0', 'EOF'))
+    expect(() => sections(entities)).toThrow('line 9: section ENTITIES is not closed (0/EOF before 0/ENDSEC)')
+  })
+
+  it('a file without 0/EOF is an error at its end: cut after an ENDSEC, or empty', () => {
+    expect(() => sections(tokenizeList(dxf('0', 'SECTION', '2', 'HEADER', '0', 'ENDSEC')))).toThrow('line 7: 0/EOF missing (file truncated?)')
+    expect(() => sections(tokenizeList(dxf('999', 'comment')))).toThrow('line 3: 0/EOF missing (file truncated?)')
+    expect(() => sections(tokenizeList(''))).toThrow('line 1: 0/EOF missing (file truncated?)')
+    expect(sections(tokenizeList(dxf('0', 'EOF')))).toEqual([])
   })
 
   it('anything but a section at the top level is an error', () => {

@@ -35,13 +35,17 @@ const SPACE = (c: number): boolean => c === 32 || c === 9
 
 /**
  * The pairs of an ASCII DXF, each a group-code line and a value line, up to and including 0/EOF (anything after
- * it is ignored). LF and CRLF both end lines; codes may be padded with spaces; values keep theirs.
+ * it is ignored). LF and CRLF both end lines; codes may be padded with spaces; values keep theirs. A text whose
+ * lines end in CR alone is refused.
  */
 export function tokenize(text: string): PairList {
   const n = text.length
   let pos = text.charCodeAt(0) === 0xfeff ? 1 : 0
   const first = pos
   if (text.startsWith('AutoCAD Binary DXF', pos)) throw new DxfError(1, 'binary DXF is not supported')
+  // Split on LF it would be one line. Not split on CR instead: a save keeps the file's line breaks, and the writer
+  // knows only LF and CRLF.
+  if (text.indexOf('\n', pos) < 0 && text.indexOf('\r', pos) >= 0) throw new DxfError(1, 'lines end in CR alone (classic Mac OS), which is not supported')
   // About 12 characters per pair in real files; grown by half when short.
   let cap = Math.max(16, Math.ceil(n / 12))
   let codes = new Int16Array(cap)
@@ -64,7 +68,7 @@ export function tokenize(text: string): PairList {
     const ce = nextLine()
     if (ce < 0) break
     const code = parseCode(text, lineStart, ce)
-    if (code === null) throw new DxfError(line, `invalid group code "${text.slice(lineStart, ce).trim()}"`)
+    if (code === null) throw new DxfError(line, `invalid group code "${excerpt(text.slice(lineStart, ce))}"`)
     const ve = nextLine()
     if (ve < 0) throw new DxfError(line + 1, `group code ${code} has no value (file truncated?)`)
     if (count === cap) {
@@ -102,6 +106,12 @@ export function tokenize(text: string): PairList {
   return list
 }
 
+/** A line as a message quotes it: trimmed, and cut short, since one line can be the whole file. */
+function excerpt(s: string): string {
+  const t = s.trim()
+  return t.length > 40 ? `${t.slice(0, 40)}…` : t
+}
+
 function grow<T extends Int16Array | Uint32Array>(from: T, to: T): T {
   to.set(from)
   return to
@@ -130,28 +140,39 @@ function trimmedIs(text: string, s: number, e: number, word: string): boolean {
   return e - s === word.length && text.startsWith(word, s)
 }
 
-/** A section: its name, and the range [start, end) of its pairs, between the name pair and 0/ENDSEC. */
-export interface SectionRange { name: string; start: number; end: number }
+/** A section: its name, its 0/SECTION pair, and the range [start, end) of its pairs, between the name pair and 0/ENDSEC. */
+export interface SectionRange { name: string; section: number; start: number; end: number }
 
-/** The sections of a tokenized file, in order. 999 comments between sections are skipped. */
+/** The sections of a tokenized file, in order, up to its 0/EOF. 999 comments between sections and before a name are skipped. */
 export function sections(pairs: PairList): SectionRange[] {
   const lineOf = (i: number): number => 2 * i + 1
   const out: SectionRange[] = []
   let i = 0
-  while (i < pairs.length) {
+  for (;;) {
+    // Without it, a file cut between two sections would open as if whole.
+    if (i >= pairs.length) throw new DxfError(lineOf(i), '0/EOF missing (file truncated?)')
     if (pairs.code(i) === 999) {
       i++
       continue
     }
-    if (pairs.is(i, 0, 'EOF')) break
-    if (!pairs.is(i, 0, 'SECTION')) throw new DxfError(lineOf(i), `expected 0/SECTION, found ${pairs.code(i)}/${pairs.value(i).trim()}`)
-    if (i + 1 >= pairs.length || pairs.code(i + 1) !== 2) throw new DxfError(lineOf(i + 1), 'a section starts with its name (code 2)')
-    const name = pairs.value(i + 1).trim()
-    let j = i + 2
-    while (j < pairs.length && !pairs.is(j, 0, 'ENDSEC')) j++
+    if (pairs.is(i, 0, 'EOF')) return out
+    if (!pairs.is(i, 0, 'SECTION')) throw new DxfError(lineOf(i), `expected 0/SECTION, found ${pairs.code(i)}/${excerpt(pairs.value(i))}`)
+    // 999 comments may come before the name.
+    let n = i + 1
+    while (n < pairs.length && pairs.code(n) === 999) n++
+    if (n >= pairs.length || pairs.code(n) !== 2) throw new DxfError(lineOf(n), 'a section starts with its name (code 2)')
+    const name = pairs.value(n).trim()
+    let j = n + 1
+    for (; j < pairs.length; j++) {
+      if (pairs.codes[j] !== 0) continue
+      if (pairs.is(j, 0, 'ENDSEC')) break
+      // Sections do not nest: without this, the section would swallow the ones after it.
+      if (pairs.is(j, 0, 'SECTION') || pairs.is(j, 0, 'EOF')) {
+        throw new DxfError(lineOf(j), `section ${name} is not closed (0/${pairs.value(j).trim()} before 0/ENDSEC)`)
+      }
+    }
     if (j >= pairs.length) throw new DxfError(lineOf(pairs.length), `section ${name} is not closed (file truncated?)`)
-    out.push({ name, start: i + 2, end: j })
+    out.push({ name, section: i, start: n + 1, end: j })
     i = j + 1
   }
-  return out
 }

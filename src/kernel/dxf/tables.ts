@@ -7,7 +7,11 @@ export interface TableRange { table: number; entries: number[]; endtab: number }
 /** The table `name` (LAYER, BLOCK_RECORD…) among the pairs [start, end); null when the file has none. */
 export function findTable(pairs: PairList, start: number, end: number, name: string): TableRange | null {
   for (let i = start; i + 1 < end; i++) {
-    if (!pairs.is(i, 0, 'TABLE') || !pairs.is(i + 1, 2, name)) continue
+    if (!pairs.is(i, 0, 'TABLE')) continue
+    // 999 comments may come before the name.
+    let n = i + 1
+    while (n < end && pairs.code(n) === 999) n++
+    if (n >= end || !pairs.is(n, 2, name)) continue
     const entries: number[] = []
     let j = i + 1
     for (; j < end && !pairs.is(j, 0, 'ENDTAB'); j++) if (pairs.code(j) === 0) entries.push(j)
