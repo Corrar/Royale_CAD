@@ -1,6 +1,6 @@
 import { arcDistance, ellipsePieces, flattenPieces } from '../geom/curve'
 import { TAU, normAngle } from '../geom/tol'
-import { affineDet, applyAffine, bboxIntersects, segmentDistance, type Affine, type BBox, type Vec2 } from '../geom/vec'
+import { affineDet, applyAffine, bboxIntersects, segmentDistance, triangleDistance, type Affine, type BBox, type Vec2 } from '../geom/vec'
 import { DEFAULT_TOL } from './free'
 import { typeOf } from './registry'
 import { BY_BLOCK, SNAP, type Attrib, type Block, type BlockEntity, type Entity, type EntityType, type Insert, type PrimSink } from './types'
@@ -107,6 +107,13 @@ function mapped(m: Affine, out: PrimSink, owner: Insert | BlockEntity, tol: numb
       const p = applyAffine(m, x, y)
       out.glyph?.(cp, p.x, p.y, m.a * ux + m.c * uy, m.b * ux + m.d * uy, m.a * vx + m.c * vy, m.b * vx + m.d * vy)
     },
+    tri(x0, y0, x1, y1, x2, y2) {
+      // An affine keeps a triangle a triangle, whatever it does.
+      const a = applyAffine(m, x0, y0)
+      const b = applyAffine(m, x1, y1)
+      const c = applyAffine(m, x2, y2)
+      out.tri?.(a.x, a.y, b.x, b.y, c.x, c.y)
+    },
   }
 }
 
@@ -191,6 +198,7 @@ export const insertType: EntityType<Insert> = {
     insertType.primitives(e, 0, {
       segment: (x0, y0, x1, y1) => void (best = Math.min(best, segmentDistance(p.x, p.y, x0, y0, x1, y1))),
       arc: (cx, cy, r, a0, sweep) => void (best = Math.min(best, arcDistance(p.x, p.y, cx, cy, r, a0, sweep))),
+      tri: (...c) => void (best = Math.min(best, triangleDistance(p.x, p.y, ...c))),
     })
     return best
   },

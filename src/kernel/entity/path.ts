@@ -192,7 +192,7 @@ function polylinePath(e: Polyline, tol: number): Path {
 /** The path of a curve; null for what has no length to walk (a point, an opaque entity). */
 export function pathOf(e: Entity): Path | null {
   // Ellipses and splines wait for TRIM and EXTEND support of their own; a block is not trimmed, as in AutoCAD.
-  if (e.type === 'point' || e.type === 'opaque' || e.type === 'ellipse' || e.type === 'spline' || e.type === 'insert' || e.type === 'text' || e.type === 'mtext') return null
+  if (e.type === 'point' || e.type === 'opaque' || e.type === 'ellipse' || e.type === 'spline' || e.type === 'insert' || e.type === 'text' || e.type === 'mtext' || e.type === 'solid') return null
   const tol = lengthTol(e)
   switch (e.type) {
     case 'line':

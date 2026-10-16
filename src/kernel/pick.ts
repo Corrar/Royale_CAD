@@ -1,7 +1,7 @@
 import type { Document } from './document'
 import { typeOf } from './entity/registry'
 import type { Entity } from './entity/types'
-import { arcTouchesBox, clipSegment } from './geom/clip'
+import { arcTouchesBox, clipSegment, triangleTouchesBox } from './geom/clip'
 import { bboxContains, type BBox, type Vec2 } from './geom/vec'
 import type { SpatialIndex } from './spatial'
 import { advanceOf, DESCENT } from './text/font'
@@ -41,7 +41,10 @@ function quadTouches(b: BBox, ox: number, oy: number, ux: number, uy: number, vx
   return s >= 0 && s <= 1 && t >= 0 && t <= 1
 }
 
-/** Whether any primitive of e reaches into the closed box b. A letter counts by its cell: advance by descent to cap. */
+/**
+ * Whether any primitive of e reaches into the closed box b. A letter counts by its cell: advance by descent to cap; a
+ * filled triangle by its fill.
+ */
 function touches(e: Entity, b: BBox): boolean {
   let hit = false
   typeOf(e).primitives(e, 0, {
@@ -54,6 +57,9 @@ function touches(e: Entity, b: BBox): boolean {
     glyph(cp, x, y, ux, uy, vx, vy) {
       const w = advanceOf(cp)
       hit ||= quadTouches(b, x - DESCENT * vx, y - DESCENT * vy, w * ux, w * uy, (1 + DESCENT) * vx, (1 + DESCENT) * vy)
+    },
+    tri(x0, y0, x1, y1, x2, y2) {
+      hit ||= triangleTouchesBox(b, x0, y0, x1, y1, x2, y2)
     },
   })
   return hit

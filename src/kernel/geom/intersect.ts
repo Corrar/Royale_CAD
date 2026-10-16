@@ -7,20 +7,36 @@ import { bboxIntersects, type BBox, type Vec2 } from './vec'
 /** A primitive in local coordinates: a segment, or a circle with the sweep that bounds it (an arc). */
 type Prim = { kind: 'seg'; x0: number; y0: number; x1: number; y1: number } | { kind: 'arc'; cx: number; cy: number; r: number; a0: number; sweep: number }
 
-/** The primitives of e, moved by (−ox, −oy); with near, only those whose box reaches it. */
+/**
+ * The primitives of e, moved by (−ox, −oy); with near, only those whose box reaches it. A filled triangle is its
+ * edges, less those two triangles share: the diagonal that splits a quad lies inside the fill.
+ */
 function primsOf(e: Entity, ox: number, oy: number, near: BBox | undefined): Prim[] {
   const out: Prim[] = []
   const reaches = (b: BBox): boolean => !near || bboxIntersects(b, near)
+  const segment = (x0: number, y0: number, x1: number, y1: number): void => {
+    if (reaches({ minX: Math.min(x0, x1), minY: Math.min(y0, y1), maxX: Math.max(x0, x1), maxY: Math.max(y0, y1) })) {
+      out.push({ kind: 'seg', x0: x0 - ox, y0: y0 - oy, x1: x1 - ox, y1: y1 - oy })
+    }
+  }
+  // Each edge by its ends in either order; met twice, it is shared.
+  const edges = new Map<string, [number, number, number, number]>()
+  const edge = (x0: number, y0: number, x1: number, y1: number): void => {
+    const key = x0 < x1 || (x0 === x1 && y0 <= y1) ? `${x0} ${y0} ${x1} ${y1}` : `${x1} ${y1} ${x0} ${y0}`
+    if (!edges.delete(key)) edges.set(key, [x0, y0, x1, y1])
+  }
   typeOf(e).primitives(e, 0, {
-    segment(x0, y0, x1, y1) {
-      if (reaches({ minX: Math.min(x0, x1), minY: Math.min(y0, y1), maxX: Math.max(x0, x1), maxY: Math.max(y0, y1) })) {
-        out.push({ kind: 'seg', x0: x0 - ox, y0: y0 - oy, x1: x1 - ox, y1: y1 - oy })
-      }
-    },
+    segment,
     arc(cx, cy, r, a0, sweep) {
       if (reaches(arcBBox(cx, cy, r, a0, sweep))) out.push({ kind: 'arc', cx: cx - ox, cy: cy - oy, r, a0, sweep })
     },
+    tri(x0, y0, x1, y1, x2, y2) {
+      edge(x0, y0, x1, y1)
+      edge(x1, y1, x2, y2)
+      edge(x2, y2, x0, y0)
+    },
   }, near)
+  for (const s of edges.values()) segment(...s)
   return out
 }
 

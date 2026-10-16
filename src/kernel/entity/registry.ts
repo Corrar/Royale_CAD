@@ -6,6 +6,7 @@ import { lineType } from './line'
 import { opaqueType } from './opaque'
 import { pointType } from './point'
 import { polylineType } from './polyline'
+import { solidType } from './solid'
 import { splineType } from './spline'
 import { mtextType, textType } from './text'
 import type { Entity, EntityType } from './types'
@@ -34,3 +35,4 @@ register(splineType)
 register(insertType)
 register(textType)
 register(mtextType)
+register(solidType)

@@ -457,7 +457,7 @@ function vertexRecords(c: Ctx, o: Emitter, e: Polyline, owner: string | null, s:
 
 const DXF_NAME: Readonly<Record<Entity['type'], string>> = {
   line: 'LINE', point: 'POINT', circle: 'CIRCLE', arc: 'ARC', polyline: 'LWPOLYLINE', opaque: '', ellipse: 'ELLIPSE', spline: 'SPLINE',
-  insert: 'INSERT', text: 'TEXT', mtext: 'MTEXT',
+  insert: 'INSERT', text: 'TEXT', mtext: 'MTEXT', solid: 'SOLID',
 }
 
 /**

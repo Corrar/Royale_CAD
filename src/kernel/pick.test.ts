@@ -15,6 +15,8 @@ function setup(drafts: Draft[]) {
 }
 
 const line = (x0: number, y0: number, x1: number, y1: number, layer = 0): Draft => ({ type: 'line', layer, x0, y0, x1, y1 })
+/** A SOLID by its corners in DXF order. */
+const solid = (...c: number[]): Draft => ({ type: 'solid', layer: 0, x0: c[0]!, y0: c[1]!, x1: c[2]!, y1: c[3]!, x2: c[4]!, y2: c[5]!, x3: c[6]!, y3: c[7]! })
 
 describe('pick', () => {
   it('chooses the nearest of overlapping entities', () => {
@@ -38,6 +40,12 @@ describe('pick', () => {
   it('ignores entities on hidden layers', () => {
     const { doc, index, ids } = setup([line(0, 0, 10, 0), line(0, 0.1, 10, 0.1, 1)])
     expect(pick(doc, index, { x: 5, y: 0.1 }, 1)).toBe(ids[0])
+  })
+
+  it('a solid is picked anywhere on its fill', () => {
+    const { doc, index, ids } = setup([solid(0, 0, 100, 0, 0, 100, 100, 100)])
+    expect(pick(doc, index, { x: 50, y: 50 }, 1)).toBe(ids[0])
+    expect(pick(doc, index, { x: 101.5, y: 50 }, 1)).toBeNull()
   })
 })
 
@@ -91,5 +99,17 @@ describe('pickBox', () => {
   it('ignores entities on hidden layers', () => {
     const { doc, index, ids } = setup([line(1, 1, 2, 2), line(3, 3, 4, 4, 1)])
     expect(pickBox(doc, index, box, true)).toEqual([ids[0]])
+  })
+
+  it('crossing takes a solid whose fill reaches into the box, even one that covers it whole', () => {
+    const { doc, index, ids } = setup([
+      solid(-100, -100, 100, -100, 0, 100, 0, 100), // a triangle around the box
+      solid(9, 13, 13, 9, 9, 13, 9, 13), // flat, its box over the corner (10, 10), missing it
+      solid(8, 11.5, 11.5, 8, 15, 15, 15, 15), // the edge from (8, 11.5) to (11.5, 8) cuts the corner
+      solid(8, 14, 14, 8, 20, 20, 20, 20), // its edge passes the corner by
+      { type: 'insert', layer: 0, block: { name: 'S', x: 0, y: 0, entities: [solid(0, 0, 3, 0, 0, 3, 3, 3)] }, x: -1, y: -1, sx: 1, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 } as Draft,
+    ])
+    expect(pickBox(doc, index, box, true)).toEqual([ids[0], ids[2], ids[4]])
+    expect(pickBox(doc, index, box, false)).toEqual([])
   })
 })

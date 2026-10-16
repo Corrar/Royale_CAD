@@ -51,6 +51,7 @@ export function offsetOf(e: Entity, dist: Dist, p: Vec2): Entity | string {
     case 'insert':
     case 'text':
     case 'mtext':
+    case 'solid':
       return 'Cannot offset that object.'
   }
 }
