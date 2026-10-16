@@ -88,6 +88,13 @@ describe('layoutMText', () => {
     }
   })
 
+  it('spaces that start a paragraph indent it, with a width as without; those where a line wraps go', () => {
+    const indent = 2 * advanceOf(32)
+    for (const width of [0, 100]) expect(layoutMText(mtext({ value: 'A\\P  Indented', width })).glyphs[1]!.x).toBeCloseTo(indent, 12)
+    const wrapped = layoutMText(mtext({ value: 'HHHH  HHHH', width: widthOf('HHHH') + 0.01 }))
+    expect(wrapped.glyphs.filter((g) => g.y < -1)[0]!.x).toBe(0)
+  })
+
   it('a tab (^I) goes to the next stop, every 4 heights from where the line starts; control characters draw nothing', () => {
     const list = layoutMText(mtext({ value: '\\pxi-3,l3,t3;1.^IALL\\P10.^IALL' }))
     expect(list.glyphs.map((g) => String.fromCodePoint(g.cp)).join('')).toBe('1.ALL10.ALL')

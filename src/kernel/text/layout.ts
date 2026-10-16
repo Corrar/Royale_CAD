@@ -94,13 +94,16 @@ function wrap(paragraphs: readonly string[], maxWidth: number): string[] {
   if (maxWidth === Infinity) return [...paragraphs]
   const lines: string[] = []
   for (const p of paragraphs) {
-    let line = ''
-    for (const word of p.split(' ')) {
-      const next = line === '' ? word : `${line} ${word}`
-      if (line !== '' && widthOf(next) > maxWidth) {
+    // Spaces that start a paragraph indent it, as when it is not wrapped; those where a line wraps go.
+    let line = /^ */.exec(p)![0]
+    let bare = true // nothing on the line yet but the indent
+    for (const word of p.slice(line.length).split(' ')) {
+      const next = bare ? line + word : `${line} ${word}`
+      if (!bare && widthOf(next) > maxWidth) {
         lines.push(line)
         line = word
       } else line = next
+      bare = line === ''
     }
     lines.push(line)
   }
