@@ -60,3 +60,25 @@ export function bulgeToArc(a: Vec2, b: Vec2, bulge: number): ArcGeom | null {
   const r = (Math.hypot(dx, dy) * (1 + bulge * bulge)) / (4 * Math.abs(bulge))
   return { cx, cy, r, a0: Math.atan2(a.y - cy, a.x - cx), sweep: 4 * Math.atan(bulge) }
 }
+
+/**
+ * The arc from p1 through p2 to p3: sweep positive when that turn is counter-clockwise. Null when the points are
+ * collinear (or two coincide). Computed from p1, so large coordinates keep their small digits.
+ */
+export function arcThrough(p1: Vec2, p2: Vec2, p3: Vec2): ArcGeom | null {
+  const bx = p2.x - p1.x
+  const by = p2.y - p1.y
+  const cx = p3.x - p1.x
+  const cy = p3.y - p1.y
+  const d = 2 * (bx * cy - by * cx)
+  const scale = Math.max(Math.hypot(bx, by), Math.hypot(cx, cy))
+  if (!(Math.abs(d) > 1e-12 * scale * scale)) return null
+  const b2 = bx * bx + by * by
+  const c2 = cx * cx + cy * cy
+  const ux = (cy * b2 - by * c2) / d
+  const uy = (bx * c2 - cx * b2) / d
+  const a0 = Math.atan2(-uy, -ux)
+  const a3 = Math.atan2(cy - uy, cx - ux)
+  const sweep = d > 0 ? normAngle(a3 - a0) : -normAngle(a0 - a3)
+  return { cx: p1.x + ux, cy: p1.y + uy, r: Math.hypot(ux, uy), a0, sweep }
+}
