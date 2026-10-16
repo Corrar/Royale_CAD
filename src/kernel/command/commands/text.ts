@@ -1,4 +1,6 @@
 import type { Vec2 } from '../../geom/vec'
+import { decodeText } from '../../text/codes'
+import { widthOf } from '../../text/layout'
 import { formatNumber, getNumber, getPoint, type Command, type Request, type Input } from '../runtime'
 
 /** Between baselines of the lines a TEXT types, in heights: MTEXT's spacing 1. */
@@ -76,23 +78,33 @@ export const text: Command = function* (ctx) {
     ctx.vars.set('TEXTROTATION', rotation)
   }
   const [halign, valign] = option === 'Align' ? [3, 0] : option === 'Fit' ? [5, 0] : PLACES[option]!
-  // Down the page, one line: both points move together.
-  const down = { x: Math.sin(rotation) * height * LINE_GAP, y: -Math.cos(rotation) * height * LINE_GAP }
+  const span = Math.hypot(p1.x - p0.x, p1.y - p0.y)
+  // Down the page: both points move together.
+  const down = (p: Vec2, d: number): Vec2 => ({ x: p.x + Math.sin(rotation) * d, y: p.y - Math.cos(rotation) * d })
+  // The points of the line above and its height; none above the first line, nor after a click.
   let [a, b] = [p0, p1]
+  let above: number | null = null
   for (;;) {
     const r: Input = yield { kind: 'text', prompt: 'Enter text', spaces: true, acceptPoint: true } satisfies Request
     if (r.kind === 'point') {
       // A click starts the next line there, as DTEXT does; Align's and Fit's second point keeps its place from the first.
       ;[a, b] = [r.p, { x: r.p.x + b.x - a.x, y: r.p.y + b.y - a.y }]
+      above = null
       continue
     }
     if (r.kind !== 'text' || r.text === '') return
     const value = r.text
+    // Align scales each line's height to the span, as the layout does: that is the height kept, and the one that
+    // spaces it from the line above, by the taller of the two.
+    const w = widthOf(decodeText(value))
+    const h = halign === 3 && w > 0 ? span / w : height
+    const gap = above === null ? 0 : LINE_GAP * Math.max(above, h)
+    ;[a, b] = [down(a, gap), down(b, gap)]
+    above = h
     const [x, y, x2, y2] = [a.x, a.y, b.x, b.y]
     ctx.doc.transact('TEXT', (tx) => void tx.add({
-      type: 'text', layer: ctx.layer, value, x, y, x2, y2, height, rotation, widthFactor: 1, oblique: 0,
+      type: 'text', layer: ctx.layer, value, x, y, x2, y2, height: h, rotation, widthFactor: 1, oblique: 0,
       halign, valign, backward: false, upsideDown: false,
     }))
-    ;[a, b] = [{ x: a.x + down.x, y: a.y + down.y }, { x: b.x + down.x, y: b.y + down.y }]
   }
 }

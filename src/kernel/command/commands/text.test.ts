@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { textType } from '../../entity/text'
 import type { Text } from '../../entity/types'
+import { widthOf } from '../../text/layout'
 import { commandBench } from '../testing'
 
 const texts = (t: ReturnType<typeof commandBench>): Text[] => [...t.doc.entities()].filter((e): e is Text => e.type === 'text')
@@ -87,6 +89,20 @@ describe('TEXT', () => {
     const [, b, c] = texts(t)
     expect([b!.value, b!.x, b!.y]).toEqual(['B', 50, 40])
     expect([round(c!.x), round(c!.y)]).toEqual([50, round(40 - (2 * 5) / 3)])
+  })
+
+  it('Align: each line is as tall as its span makes it, kept so, and the next goes clear below it', () => {
+    const t = commandBench()
+    t.run('TEXT⏎J⏎A⏎0,0⏎100,0⏎Hi⏎There⏎⏎')
+    t.run('TEXT⏎J⏎A⏎0,0⏎0,60⏎FLOOR PLAN⏎SCALE 1:50⏎⏎')
+    const [hi, there, title, scale] = texts(t)
+    // The height the layout gives an aligned line: its span over its width.
+    expect(hi!.height).toBeCloseTo(100 / widthOf('Hi'), 9)
+    expect(there!.height).toBeCloseTo(100 / widthOf('There'), 9)
+    expect(textType.bbox(there!).maxY).toBeLessThan(textType.bbox(hi!).minY)
+    // Turned 90°, down the page is +x.
+    expect(title!.height).toBeCloseTo(60 / widthOf('FLOOR PLAN'), 9)
+    expect(textType.bbox(scale!).minX).toBeGreaterThan(textType.bbox(title!).maxX)
   })
 
   it('refuses a second endpoint on the first', () => {
