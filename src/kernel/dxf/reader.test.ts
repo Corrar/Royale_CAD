@@ -228,6 +228,17 @@ describe('readDxf', () => {
     ])
   })
 
+  it('MTEXT with columns (R2018): the groups of its embedded object, after 101, are not the text\'s own', () => {
+    // As ezdxf and AutoCAD 2018 write static columns: after 101 come the direction, the insert, sizes and spacing.
+    const d = readDxf(file([
+      0, 'MTEXT', 5, '4D', 100, 'AcDbEntity', 8, '0', 100, 'AcDbMText', 10, 300, 20, 400, 30, 0, 40, 3, 41, 30, 46, 40, 71, 1, 1, 'one\\Ntwo',
+      101, 'Embedded Object', 70, 1, 10, 1, 20, 0, 30, 0, 11, 300, 21, 400, 31, 0, 40, 30, 41, 40, 42, 65, 43, 40, 71, 1, 72, 2, 44, 30, 45, 5, 73, 0, 74, 0,
+    ]))
+    expect(d.warnings).toEqual([])
+    const [m] = all(d) as [MText]
+    expect(m).toMatchObject({ x: 300, y: 400, height: 3, width: 30, attachment: 1, rotation: 0, spacing: 1 })
+  })
+
   it('TEXT and MTEXT without a positive height stay as is', () => {
     const d = readDxf(file([0, 'TEXT', 8, '0', 10, 0, 20, 0, 1, 'x', 0, 'MTEXT', 8, '0', 10, 0, 20, 0, 40, -1, 1, 'y']))
     expect(all(d).map((e) => e.type)).toEqual(['opaque', 'opaque'])

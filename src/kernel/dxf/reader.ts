@@ -603,7 +603,7 @@ function parser(pairs: PairList) {
 
   /**
    * MTEXT: its value is the 3 chunks then the 1 group, codes kept. The direction 11/21 (WCS), when given, wins
-   * over the rotation 50 (degrees, as AutoCAD writes it).
+   * over the rotation 50 (degrees, as AutoCAD writes it). Its columns, after 101, are left out.
    */
   const mtext = (a: number, b: number): Parsed => {
     const chunks: string[] = []
@@ -619,6 +619,8 @@ function parser(pairs: PairList) {
     let spacing = 1
     for (let i = a + 1; i < b; i++) {
       const c = codes[i]!
+      // R2018's columns: an embedded object, its own direction, insert and sizes.
+      if (c === 101) break
       if (c === 1) last = pairs.value(i)
       else if (c === 3) chunks.push(pairs.value(i))
       else if (c === 10) x = num(i)

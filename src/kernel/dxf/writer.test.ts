@@ -574,6 +574,23 @@ describe('writeDxf', () => {
     for (const l of span(6).split('\r\n')) expect(l.length).toBeLessThanOrEqual(255)
   })
 
+  it('MTEXT with columns (R2018): an edit patches its own groups; the embedded object keeps its sizes and follows its insert', () => {
+    const MTEXT: G = [0, 'MTEXT', 5, '4D', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbMText', 10, 300, 20, 400, 30, 0, 40, 3, 41, 30, 46, 40, 71, 1, 1, 'one\\Ntwo',
+      101, 'Embedded Object', 70, 1, 10, 1, 20, 0, 30, 0, 11, 300, 21, 400, 31, 0, 40, 30, 41, 40, 42, 65, 43, 40, 71, 1, 72, 2, 44, 30, 45, 5, 73, 0, 74, 0]
+    const t = commandBench()
+    const d = drawingFrom(t.doc, parseDxf(file(MTEXT, 'AC1032')))
+    t.run('MOVE⏎ALL⏎⏎0,0⏎5,0⏎')
+    const out = writeDxf(t.doc, d.source)
+    expect(out).toContain(lines([100, 'AcDbMText', 10, '305.0', 20, '400.0', 30, 0, 40, '3.0', 41, '30.0', 46, 40, 71, 1, 1, 'one\\Ntwo',
+      101, 'Embedded Object', 70, 1, 10, '1.0', 20, '0.0', 30, 0, 11, '305.0', 21, '400.0', 31, 0, 40, 30, 41, 40, 42, 65, 43, 40, 71, 1, 72, 2, 44, 30, 45, 5, 73, 0, 74, 0]))
+    t.run('SCALE⏎ALL⏎⏎305,400⏎2⏎')
+    const scaled = writeDxf(t.doc, d.source)
+    expect(scaled).toContain(lines([40, '6.0', 41, '60.0', 46, '80.0', 71, 1, 1, 'one\\Ntwo',
+      101, 'Embedded Object', 70, 1, 10, '1.0', 20, '0.0', 30, 0, 11, '305.0', 21, '400.0', 31, 0, 40, '60.0', 41, '80.0', 42, '130.0', 43, '80.0', 71, 1, 72, 2, 44, '60.0', 45, '10.0']))
+    const [m] = [...readDxf(scaled).doc.entities()] as [MText]
+    expect(m).toMatchObject({ x: 305, y: 400, height: 6, width: 60, rotation: 0, spacing: 1 })
+  })
+
   it('SOLID: edits are patched in place in its OCS (handle, thickness, linetype kept), new ones written fresh (R2000 and R12)', () => {
     const QUAD: G = [0, 'SOLID', 5, '70', 330, '1F', 100, 'AcDbEntity', 8, 'Walls', 6, 'DASHED', 100, 'AcDbTrace', 39, 2, 10, 1, 20, 1, 30, 1, 11, 11, 21, 1, 31, 1, 12, 1, 22, 5, 32, 1, 13, 11, 23, 5, 33, 1, 210, 0, 220, 0, 230, -1]
     const TRI: G = [0, 'SOLID', 5, '71', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbTrace', 10, 0, 20, 0, 30, 2, 11, 4, 21, 0, 31, 2, 12, 2, 22, 3, 32, 2, 1001, 'ROYALE', 1000, 'kept']

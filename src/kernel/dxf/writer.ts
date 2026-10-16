@@ -598,10 +598,16 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
         gs.splice(k + 1, 0, [13, real(s * e.x3)], [23, real(e.y3)], [33, gs[at(32)]?.[1] ?? real(0)])
       }
       break
-    case 'mtext':
+    case 'mtext': {
+      // R2018's columns, after 101: an embedded object with its own direction, insert and sizes, set apart.
+      const cut = gs.findIndex((g) => g[0] === 101)
+      const columns = cut >= 0 ? gs.splice(cut) : []
+      const k = e.height / (was as MText).height
       put(10, e.x)
       put(20, e.y)
       put(40, e.height)
+      // The defined height, as the sizes of the columns.
+      if (k !== 1 && at(46) >= 0) put(46, Number(gs[at(46)]![1]) * k)
       // In AutoCAD's order: 10 40 41 71 72 3… 1 7 11 50 73 44.
       opt(41, real(e.width), e.width === 0, [40])
       opt(71, String(e.attachment), e.attachment === 1, [41, 40])
@@ -614,7 +620,14 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
       opt(44, real(e.spacing), e.spacing === 1, [73, 50, 31, 7, 1])
       // The value is in chunks: a new one is written fresh.
       if (e.value !== (was as MText).value) ok = false
+      for (const g of columns) {
+        const v = g[0] === 10 ? Math.cos(e.rotation) : g[0] === 20 ? Math.sin(e.rotation) : g[0] === 11 ? e.x : g[0] === 21 ? e.y : NaN
+        if (!Number.isNaN(v)) g[1] = real(v)
+        else if (k !== 1 && g[0] >= 40 && g[0] <= 45) g[1] = real(Number(g[1]) * k)
+      }
+      gs.push(...columns)
       break
+    }
     case 'polyline': {
       if (name === 'POLYLINE') {
         // The head here, the vertices after it. A curve or spline fit no longer matches them: plain, as shown.
