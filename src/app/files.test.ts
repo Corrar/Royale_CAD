@@ -127,6 +127,27 @@ describe('createFiles', () => {
     expect(t.lines.at(-1)).toBe('Saved Plant.dxf.')
   })
 
+  it('a file before AC1021 with a UTF-8 byte order mark is saved in its code page: it reads back the same', async () => {
+    const t = setup()
+    const utf8 = new TextEncoder().encode(PLANT)
+    t.fake.answers.opened = { token: 1, name: 'Plant.dxf', size: 0, bytes: new Uint8Array([0xef, 0xbb, 0xbf, ...utf8]) }
+    t.files.open(false)
+    await t.settle()
+    expect(t.doc.layers.get(1)!.name).toBe('Ação')
+    t.doc.layers.add({ name: 'Seção', color: 1, visible: true, locked: false })
+    t.files.save()
+    await t.settle()
+    const written = decodeDxf(t.fake.saved[0]!)
+    expect(written.encoding).toBe('windows-1252')
+    expect(written.text).toContain('\r\nAção\r\n')
+    expect(written.text).toContain('\r\nSeção\r\n')
+    // Opened again: the same names.
+    t.fake.answers.opened = { token: 2, name: 'Plant.dxf', size: 0, bytes: t.fake.saved[0]! }
+    t.files.open(false)
+    await t.settle()
+    expect([1, 2].map((i) => t.doc.layers.get(i)!.name)).toEqual(['Ação', 'Seção'])
+  })
+
   it('a failed or cancelled save keeps the changes and stops what was to follow', async () => {
     const t = setup()
     t.doc.transact('draw', (tx) => void tx.add({ type: 'line', layer: 0, x0: 0, y0: 0, x1: 1, y1: 1 }))

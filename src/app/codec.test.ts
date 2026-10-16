@@ -36,6 +36,16 @@ describe('decodeDxf and encodeDxf', () => {
     expect(decodeDxf(new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(dxf('AC1015', 'ANSI_1252', 'ç'))])).text).toContain('\r\nç\r\n')
   })
 
+  it('a byte order mark before AC1021 is read as UTF-8, and the file written back in the code page its header names', () => {
+    const text = dxf('AC1015', 'ANSI_1252', 'Ação Δ')
+    const d = decodeDxf(new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(text)]))
+    expect(d).toEqual({ text, encoding: 'windows-1252', warning: null })
+    // Read again without the mark, as every reader does from the header: the same text, Δ escaped as AutoCAD does.
+    const back = decodeDxf(encodeDxf(d.text, d.encoding))
+    expect(back.encoding).toBe('windows-1252')
+    expect(back.text).toBe(text.replace('Δ', '\\U+0394'))
+  })
+
   it('a double-byte code page round-trips', () => {
     const text = dxf('AC1015', 'ANSI_932', '日本語ﾃｽﾄ')
     const bytes = encodeDxf(text, 'shift_jis')

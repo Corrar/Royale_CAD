@@ -35,19 +35,24 @@ function headerValue(head: string, name: string): string | null {
 
 export interface Decoded {
   text: string
+  /** What the file is in, and is written back in: the header's (a byte order mark only changes how it is read). */
   encoding: string
   /** Set when the code page is unknown and the text was read as windows-1252. */
   warning: string | null
 }
 
-/** The text of a DXF file. A UTF-8 byte order mark wins; otherwise the header decides. */
+/**
+ * The text of a DXF file. A UTF-8 byte order mark wins; otherwise the header decides. A file before AC1021 with a
+ * mark (a text editor's "UTF-8 with BOM") is still written back in its header's code page: written as UTF-8 without
+ * the mark, every reader, this one too, would take its bytes for that code page.
+ */
 export function decodeDxf(bytes: Uint8Array): Decoded {
-  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return { text: new TextDecoder('utf-8').decode(bytes), encoding: 'utf-8', warning: null }
   // The header is ASCII: any single-byte reading of the start finds it.
   const head = new TextDecoder('windows-1252').decode(bytes.subarray(0, 1 << 16))
   const codepage = headerValue(head, '$DWGCODEPAGE')
   const known = encodingOf(headerValue(head, '$ACADVER'), codepage)
   const encoding = known ?? DEFAULT_ENCODING
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return { text: new TextDecoder('utf-8').decode(bytes), encoding, warning: null }
   const warning = known ? null : `Code page ${codepage} is not supported: the text was read as ${DEFAULT_ENCODING}.`
   return { text: new TextDecoder(encoding).decode(bytes), encoding, warning }
 }
