@@ -447,6 +447,23 @@ describe('replace', () => {
   })
 })
 
+describe('append', () => {
+  it('adds in one change that cannot be undone; an invalid draft adds none', () => {
+    const doc = createDocument()
+    doc.transact('a', (tx) => void tx.add(L(0, 0, 1, 1)))
+    const changes: Change[] = []
+    doc.onChange((c) => changes.push(c))
+    const added = doc.append([L(1, 1, 2, 2), L(2, 2, 3, 3)])
+    expect(added.map((e) => e.id)).toEqual([2, 3])
+    expect(changes).toEqual([{ added, removed: [], changed: [], bulk: true }])
+    expect(doc.undo()).toBe('a') // the earlier step, not the append
+    expect(doc.size).toBe(2)
+    expect(() => doc.append([L(0, 0, 1, 1), { type: 'circle', layer: 0, cx: 0, cy: 0, r: 0 }])).toThrow()
+    expect(doc.size).toBe(2)
+    expect(doc.append([L(5, 5, 6, 6)])[0]!.id).toBe(4)
+  })
+})
+
 describe('clearHistory', () => {
   it('leaves nothing to undo or redo, and is refused inside a group', () => {
     const doc = createDocument()

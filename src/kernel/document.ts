@@ -14,7 +14,13 @@ export interface Tx {
   remove(id: number): void
 }
 
-export interface Change { added: Entity[]; removed: Entity[]; changed: [before: Entity, after: Entity][] }
+export interface Change {
+  added: Entity[]
+  removed: Entity[]
+  changed: [before: Entity, after: Entity][]
+  /** A slice of a bulk load (Document.append): more are coming, so a listener may rebuild once instead of tracking each. */
+  bulk?: true
+}
 
 export interface Layer { readonly name: string; readonly color: Color; readonly visible: boolean; readonly locked: boolean }
 
@@ -55,6 +61,11 @@ export interface Document {
    * a layer or a draft is invalid, it throws and nothing changes. Returns the entities added, in order.
    */
   replace(layers: readonly Layer[], drafts: readonly Draft[]): Entity[]
+  /**
+   * Adds entities that cannot be undone, in one change: the slices of a file being read. Throws, adding none, if
+   * a draft is invalid. Not inside a transaction or a group. Returns the entities added, in order.
+   */
+  append(drafts: readonly Draft[]): Entity[]
   readonly layers: LayerTable
 }
 
@@ -395,6 +406,20 @@ export function createDocument(): Document {
       // The new layers before the change goes out: a listener that reads the layer of an added entity finds it.
       layers.reset(list)
       deliver({ added, removed, changed: [] })
+      return added
+    },
+    append(drafts) {
+      if (open || groupDepth > 0) throw new Error('append cannot run inside a transaction or a group')
+      const added: Entity[] = new Array(drafts.length)
+      for (let k = 0; k < drafts.length; k++) {
+        const e = { ...drafts[k]!, id: nextId + k } as Entity
+        validate(e)
+        added[k] = e
+      }
+      for (const e of added) items.set(e.id, e)
+      nextId += added.length
+      count += added.length
+      if (added.length > 0) deliver({ added, removed: [], changed: [], bulk: true })
       return added
     },
     onChange: (fn) => subscribe(listeners, fn),

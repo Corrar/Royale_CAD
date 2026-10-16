@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
 import type { Arc, Circle, Entity, Line, Opaque, Point, Polyline } from '../entity/types'
 import { createDocument } from '../document'
-import { drawingFrom, parseDxf, readDxf } from './reader'
+import { drawingFrom, loader, parseDxf, readDxf } from './reader'
 
 type G = (string | number)[]
 
@@ -167,5 +167,24 @@ describe('readDxf', () => {
     expect(d.source.handleOf(2)).toBe('2A')
     expect(doc.layers.get(1)!.name).toBe('Walls')
     expect(doc.undo()).toBeUndefined()
+  })
+
+  it('drawingFrom is all or nothing: a bad draft leaves the drawing as it was', () => {
+    const parsed = parseDxf(file([0, 'LINE', 8, '0', 10, 0, 20, 0, 11, 1, 21, 1]))
+    const doc = createDocument()
+    doc.transact('old', (tx) => void tx.add({ type: 'circle', layer: 0, cx: 0, cy: 0, r: 1 }))
+    expect(() => drawingFrom(doc, { ...parsed, drafts: [...parsed.drafts, { type: 'circle', layer: 0, cx: 0, cy: 0, r: 0 }] })).toThrow()
+    expect([...doc.entities()].map((e) => e.type)).toEqual(['circle'])
+  })
+
+  it('loads in slices; an entity added between them has no source, and the others keep theirs', () => {
+    const parsed = parseDxf(file([0, 'LINE', 5, '2A', 8, '0', 10, 0, 20, 0, 11, 1, 21, 1, 0, 'LINE', 5, '2B', 8, '0', 10, 2, 20, 2, 11, 3, 21, 3]))
+    const doc = createDocument()
+    const l = loader(doc, parsed)
+    l.add(parsed.drafts.slice(0, 1))
+    doc.transact('meanwhile', (tx) => void tx.add({ type: 'circle', layer: 0, cx: 0, cy: 0, r: 1 }))
+    l.add(parsed.drafts.slice(1))
+    const d = l.finish()
+    expect([...doc.entities()].map((e) => d.source.handleOf(e.id))).toEqual(['2A', null, '2B'])
   })
 })

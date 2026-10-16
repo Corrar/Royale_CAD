@@ -4,6 +4,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('royale', {
   initial: () => ipcRenderer.invoke('file:initial'),
   open: () => ipcRenderer.invoke('file:open'),
+  chunk: (token: number, offset: number, length: number) => ipcRenderer.invoke('file:chunk', token, offset, length),
   adopt: (token: number) => ipcRenderer.invoke('file:adopt', token),
   save: (bytes: Uint8Array, suggested: string) => ipcRenderer.invoke('file:save', bytes, suggested),
   saveAs: (bytes: Uint8Array, suggested: string) => ipcRenderer.invoke('file:save-as', bytes, suggested),

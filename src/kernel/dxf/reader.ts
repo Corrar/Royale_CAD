@@ -483,35 +483,83 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
   }
 }
 
-/** Puts a parsed file in place of doc's drawing (Document.replace) and returns what the writer needs of it. */
-export function drawingFrom(doc: Document, parsed: ParsedDxf): DxfDrawing {
-  const originals = doc.replace(parsed.layers, parsed.drafts)
-  const firstId = originals[0]?.id ?? 1
-  const { text, spans } = parsed
+/** What parseDxf gives besides the drafts. */
+export type ParsedMeta = Omit<ParsedDxf, 'drafts'>
+
+/** Entities first … first + n - 1 came from drafts k … k + n - 1 of the file. */
+interface Run { first: number; k: number; n: number }
+
+/** What the writer needs of a file whose drafts became `originals`, in runs of consecutive ids. */
+function drawingOf(doc: Document, meta: ParsedMeta, originals: readonly Entity[], runs: readonly Run[]): DxfDrawing {
+  const { spans } = meta
   const loaded = (id: number): LoadedSpan | null => {
-    const k = id - firstId
-    if (!(k >= 0 && k < originals.length)) return null
+    // The last run that begins at or before id.
+    let lo = 0
+    let hi = runs.length - 1
+    let r = -1
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      if (runs[mid]!.first <= id) {
+        r = mid
+        lo = mid + 1
+      } else hi = mid - 1
+    }
+    const run = runs[r]
+    if (!run || id - run.first >= run.n) return null
+    const k = run.k + id - run.first
     return { entity: originals[k]!, start: spans[2 * k]!, end: spans[2 * k + 1]! }
   }
   return {
     doc,
-    warnings: [...parsed.warnings],
+    warnings: [...meta.warnings],
     source: {
-      text,
-      newline: parsed.newline,
-      header: parsed.header,
-      handseed: parsed.handseed,
-      sections: parsed.sections,
+      // Read when first needed (a save, a handle): the app may decode the file's text only then.
+      get text() {
+        return meta.text
+      },
+      newline: meta.newline,
+      header: meta.header,
+      handseed: meta.handseed,
+      sections: meta.sections,
       loaded,
       handleOf(id) {
         const span = loaded(id)
         if (!span) return null
-        const own = tokenize(text.slice(span.start, span.end))
+        const own = tokenize(meta.text.slice(span.start, span.end))
         for (let i = 1; i < own.length && own.code(i) !== 0; i++) if (own.code(i) === 5) return own.value(i).trim()
         return null
       },
     },
   }
+}
+
+/**
+ * Puts a parsed file in place of doc's drawing in slices, so a big file never holds the thread for long: the
+ * file's layers at once (Document.replace), then add() for each slice of drafts in file order (Document.append),
+ * then finish() for what the writer needs. Entities added by others between slices have no source. None of it
+ * can be undone; a bad draft throws with the slices before it in.
+ */
+export function loader(doc: Document, meta: ParsedMeta): { add(drafts: readonly Draft[]): void; finish(): DxfDrawing } {
+  doc.replace(meta.layers, [])
+  const originals: Entity[] = []
+  const runs: Run[] = []
+  return {
+    add(drafts) {
+      const added = doc.append(drafts)
+      if (added.length > 0) runs.push({ first: added[0]!.id, k: originals.length, n: added.length })
+      for (const e of added) originals.push(e)
+    },
+    finish: () => drawingOf(doc, meta, originals, runs),
+  }
+}
+
+/**
+ * Puts a parsed file in place of doc's drawing at once and returns what the writer needs of it. A bad draft
+ * throws and changes nothing.
+ */
+export function drawingFrom(doc: Document, parsed: ParsedDxf): DxfDrawing {
+  const originals = doc.replace(parsed.layers, parsed.drafts)
+  return drawingOf(doc, parsed, originals, originals.length > 0 ? [{ first: originals[0]!.id, k: 0, n: originals.length }] : [])
 }
 
 /** parseDxf and drawingFrom in one go, into a new document. */

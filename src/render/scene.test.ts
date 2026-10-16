@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { trueColor } from '../kernel/color'
 import { createDocument, type Document, type Draft } from '../kernel/document'
 import { typeOf } from '../kernel/entity/registry'
@@ -9,7 +9,8 @@ import { createScene } from './scene'
 
 const DRAW = 0xf2f4f5ff
 const HIGHLIGHT = 0x67e8f9ff
-const OPTS = { drawColor: DRAW, highlightColor: HIGHLIGHT }
+// Rebuilds all at once unless a test asks for slices.
+const OPTS = { drawColor: DRAW, highlightColor: HIGHLIGHT, sliceFrom: Infinity }
 
 type Kind = 'segment' | 'arc'
 interface FakeBatch { kind: Kind; capacity: number; bytes: Uint8Array }
@@ -103,13 +104,105 @@ function rng(seed: number): () => number {
   }
 }
 
-function setup(doc: Document = createDocument()) {
+function setup(doc: Document = createDocument(), sliceFrom = Infinity) {
   const f = fakeBackend()
-  const scene = createScene(doc, f.backend, OPTS)
+  const scene = createScene(doc, f.backend, { ...OPTS, sliceFrom })
   return { doc, f, scene }
 }
 
 describe('createScene', () => {
+  it('rebuilds a big drawing in slices: the old draws stay until the new pools are whole', () => {
+    const { doc, f, scene } = setup(createDocument(), 20_000)
+    doc.transact('small', (tx) => void tx.add(line(0, 0, 1, 1)))
+    const all = view(500, 500, 0.5, 2000, 2000)
+    expect(drawn(f, scene.draws(all))).toHaveLength(1)
+    const rand = rng(3)
+    doc.append(Array.from({ length: 120_000 }, () => line(rand() * 1000, rand() * 1000, rand() * 1000, rand() * 1000)))
+    let frames = 0
+    let first: Instance[] | null = null
+    do {
+      const d = scene.draws(all)
+      first ??= drawn(f, d)
+      frames++
+    } while (scene.building)
+    expect(frames).toBeGreaterThan(1)
+    expect(first).toHaveLength(1) // the drawing as it was, while the rebuild ran
+    expect(drawn(f, scene.draws(all))).toHaveLength(120_001)
+  })
+
+  it('a change during a sliced rebuild drops it, with its batches, and a new one begins', () => {
+    const { doc, f, scene } = setup(createDocument(), 20_000)
+    const rand = rng(5)
+    doc.append(Array.from({ length: 110_000 }, () => line(rand() * 1000, rand() * 1000, rand() * 1000, rand() * 1000)))
+    const all = view(500, 500, 0.5, 2000, 2000)
+    // Slices until the rebuild has made some batches.
+    do scene.draws(all)
+    while (scene.building && f.batches.size === 0)
+    const made = f.batches.size
+    doc.transact('add', (tx) => void tx.add(line(0, 0, 2, 2)))
+    expect(made).toBeGreaterThan(0)
+    expect(f.batches.size).toBe(0) // nothing was drawn before; the dropped rebuild left no batch
+    expect(scene.building).toBe(true) // the caller keeps the frames coming for the next one
+    do scene.draws(all)
+    while (scene.building)
+    expect(drawn(f, scene.draws(all))).toHaveLength(110_001)
+  })
+
+  it('build() carries a sliced rebuild without frames: it begins on a call without changes', () => {
+    const { doc, f, scene } = setup(createDocument(), 20_000)
+    const rand = rng(11)
+    doc.append(Array.from({ length: 100_000 }, () => line(rand() * 1000, rand() * 1000, rand() * 1000, rand() * 1000)))
+    scene.build(8)
+    expect(f.log).not.toContain('create') // the change came since the last call: not yet
+    let calls = 0
+    while (scene.building) {
+      scene.build(8)
+      calls++
+    }
+    expect(calls).toBeGreaterThan(1)
+    expect(drawn(f, scene.draws(view(500, 500, 0.5, 2000, 2000)))).toHaveLength(100_000)
+  })
+
+  it('the slices of a file (Document.append) skip the open pools and wait for one rebuild', () => {
+    const { doc, f, scene } = setup(createDocument(), 1)
+    const rand = rng(9)
+    const all = view(500, 500, 0.5, 2000, 2000)
+    const now = vi.spyOn(performance, 'now').mockReturnValue(0)
+    try {
+      for (let k = 0; k < 3; k++) {
+        doc.append(Array.from({ length: 512 }, () => line(rand() * 1000, rand() * 1000, rand() * 1000, rand() * 1000)))
+        expect(drawn(f, scene.draws(all))).toEqual([])
+      }
+      expect(f.log).not.toContain('create')
+      expect(drawn(f, scene.draws(all))).toHaveLength(3 * 512)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  it('a sliced rebuild waits for a frame without changes: a file read in slices makes no batch to drop', () => {
+    const { doc, f, scene } = setup(createDocument(), 20_000)
+    const rand = rng(7)
+    const lines = (n: number): Draft[] => Array.from({ length: n }, () => line(rand() * 1000, rand() * 1000, rand() * 1000, rand() * 1000))
+    doc.append(lines(100_000))
+    const all = view(500, 500, 0.5, 2000, 2000)
+    // The clock stands still: a rebuild that begins ends in the same frame, batches and all.
+    const now = vi.spyOn(performance, 'now').mockReturnValue(0)
+    try {
+      for (let k = 0; k < 5; k++) {
+        doc.append(lines(512))
+        scene.draws(all)
+        expect(scene.building).toBe(true)
+      }
+      expect(f.log).not.toContain('create')
+      scene.draws(all) // the first frame without a change
+      expect(scene.building).toBe(false)
+    } finally {
+      now.mockRestore()
+    }
+    expect(drawn(f, scene.draws(all))).toHaveLength(100_000 + 5 * 512)
+  })
+
   it('adding one entity is one write', () => {
     const { doc, f, scene } = setup()
     scene.draws(FAR)

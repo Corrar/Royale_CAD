@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { createDocument } from '../kernel/document'
 import type { Line } from '../kernel/entity/types'
 import { decodeDxf } from './codec'
-import { createFiles, parseHere, type FileApi, type Opened, type Saved } from './files'
+import { packDrafts } from '../kernel/dxf/pack'
+import { createFiles, parseHere, type FileApi, type Opened, type Parse, type Saved } from './files'
 
 const PLANT = ['0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1015', '9', '$DWGCODEPAGE', '3', 'ANSI_1252', '0', 'ENDSEC',
   '0', 'SECTION', '2', 'ENTITIES', '0', 'LINE', '5', '2A', '8', 'Ação', '10', '0', '20', '0', '11', '10', '21', '0', '0', 'ENDSEC', '0', 'EOF', ''].join('\r\n')
@@ -13,13 +14,14 @@ function fakeApi() {
   const calls: string[] = []
   const saved: Uint8Array[] = []
   let closeHandler: (() => void) | null = null
-  const answers = { opened: null as Opened | null, saveAnswer: { name: 'Plant.dxf' } as Saved }
+  const answers = { opened: null as (Opened & { bytes: Uint8Array }) | null, saveAnswer: { name: 'Plant.dxf' } as Saved }
   const api: FileApi = {
     initial: async () => null,
     open: async () => {
       calls.push('open')
-      return answers.opened
+      return answers.opened && { token: answers.opened.token, name: answers.opened.name, size: answers.opened.bytes.length }
     },
+    chunk: async (_token: number, offset: number, length: number) => answers.opened!.bytes.slice(offset, offset + length),
     adopt: async (token: number) => void calls.push(`adopt ${token}`),
     save: async (bytes: Uint8Array, suggested: string) => {
       calls.push(`save ${suggested}`)
@@ -42,12 +44,12 @@ function fakeApi() {
   return { api, answers, calls, saved, requestClose: () => closeHandler?.() }
 }
 
-function setup() {
+function setup(parse: Parse = parseHere) {
   const doc = createDocument()
   const lines: string[] = []
   let replaced = 0
   const fake = fakeApi()
-  const files = createFiles({ api: fake.api, doc, parse: parseHere, print: (l) => lines.push(l), replaced: () => replaced++, currentLayer: () => '0' })
+  const files = createFiles({ api: fake.api, doc, parse, print: (l) => lines.push(l), replaced: () => replaced++, currentLayer: () => '0' })
   /** Lets the async operation started by a call finish. */
   const settle = () => new Promise((r) => setTimeout(r, 0))
   return { doc, files, lines, fake, settle, replaced: () => replaced }
@@ -56,7 +58,7 @@ function setup() {
 describe('createFiles', () => {
   it('OPEN reads the file, puts the drawing in place and adopts the file; nothing is dirty', async () => {
     const t = setup()
-    t.fake.answers.opened = { token: 7, name: 'Plant.dxf', bytes: latin1(PLANT.replace('Ação', 'A\xe7\xe3o')) }
+    t.fake.answers.opened = { token: 7, name: 'Plant.dxf', size: 0, bytes: latin1(PLANT.replace('Ação', 'A\xe7\xe3o')) }
     t.files.open(false)
     await t.settle()
     expect(t.doc.size).toBe(1)
@@ -69,7 +71,7 @@ describe('createFiles', () => {
 
   it('an edit makes it dirty (told once); saving writes the file back in its code page and cleans it', async () => {
     const t = setup()
-    t.fake.answers.opened = { token: 1, name: 'Plant.dxf', bytes: latin1(PLANT.replace('Ação', 'A\xe7\xe3o')) }
+    t.fake.answers.opened = { token: 1, name: 'Plant.dxf', size: 0, bytes: latin1(PLANT.replace('Ação', 'A\xe7\xe3o')) }
     t.files.open(false)
     await t.settle()
     const line = [...t.doc.entities()][0] as Line
@@ -104,12 +106,50 @@ describe('createFiles', () => {
   it('a file that does not parse leaves the drawing alone and says why', async () => {
     const t = setup()
     t.doc.transact('draw', (tx) => void tx.add({ type: 'line', layer: 0, x0: 0, y0: 0, x1: 1, y1: 1 }))
-    t.fake.answers.opened = { token: 2, name: 'Bad.dxf', bytes: latin1('0\r\nSECTION\r\n2\r\nENTITIES\r\n10\r\n') }
+    t.fake.answers.opened = { token: 2, name: 'Bad.dxf', size: 0, bytes: latin1('0\r\nSECTION\r\n2\r\nENTITIES\r\n10\r\n') }
     t.files.open(false)
     await t.settle()
     expect(t.doc.size).toBe(1)
     expect(t.lines).toEqual(['Could not open Bad.dxf: line 6: group code 10 has no value (file truncated?)'])
     expect(t.fake.calls).not.toContain('adopt 2')
+  })
+
+  it('a file that fails partway leaves an empty new drawing, not half of it under the old name', async () => {
+    let broken = false
+    // The second slice of a broken file holds a circle of radius 0: the document refuses it.
+    const t = setup(async (bytes, progress) => {
+      const r = await parseHere(bytes, progress)
+      if (!broken) return r
+      const lines = Array.from({ length: 2000 }, (_, k) => ({ type: 'line' as const, layer: 0, x0: k, y0: 0, x1: k, y1: 1 }))
+      return { ...r, pack: packDrafts([...lines, { type: 'circle', layer: 0, cx: 0, cy: 0, r: 0 }]) }
+    })
+    t.fake.answers.opened = { token: 4, name: 'Plant.dxf', size: 0, bytes: latin1(PLANT) }
+    t.files.open(false)
+    await t.settle()
+    broken = true
+    t.fake.answers.opened = { token: 5, name: 'Broken.dxf', size: 0, bytes: latin1(PLANT) }
+    t.files.open(false)
+    for (let k = 0; k < 10 && t.files.state.get().busy !== null; k++) await t.settle()
+    expect(t.lines.at(-1)).toMatch(/^Could not open Broken\.dxf: /)
+    expect(t.doc.size).toBe(0)
+    expect(t.files.state.get()).toEqual({ name: 'Drawing2.dxf', dirty: false, busy: null })
+    expect(t.fake.calls).not.toContain('adopt 5')
+    expect(t.fake.calls.at(-1)).toBe('forget')
+  })
+
+  it('an edit made while a file comes in counts: the drawing is dirty once it has loaded', async () => {
+    const t = setup()
+    t.fake.answers.opened = { token: 6, name: 'Plant.dxf', size: 0, bytes: latin1(PLANT) }
+    // An edit between two slices of the file: here, in the middle of the first one.
+    const off = t.doc.onChange((c) => {
+      if (!c.bulk) return
+      off()
+      t.doc.transact('draw', (tx) => void tx.add({ type: 'line', layer: 0, x0: 5, y0: 5, x1: 6, y1: 6 }))
+    })
+    t.files.open(false)
+    await t.settle()
+    expect(t.doc.size).toBe(2)
+    expect(t.files.state.get()).toEqual({ name: 'Plant.dxf', dirty: true, busy: null })
   })
 
   it('NEW begins an empty drawing with the next name; the file is forgotten', async () => {
@@ -126,7 +166,7 @@ describe('createFiles', () => {
 
   it('one operation at a time; a close request saves, then lets the window close', async () => {
     const t = setup()
-    t.fake.answers.opened = { token: 3, name: 'Plant.dxf', bytes: latin1(PLANT) }
+    t.fake.answers.opened = { token: 3, name: 'Plant.dxf', size: 0, bytes: latin1(PLANT) }
     t.files.open(false)
     t.files.save()
     expect(t.lines).toEqual(['Wait: Working…'])

@@ -1,5 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { app, BrowserWindow, Menu, session, type KeyboardInputEvent, type MouseInputEvent, type MouseWheelInputEvent } from 'electron'
 import { registerFiles } from './files'
 
@@ -24,6 +24,36 @@ const G2_LIMITS = { memoryMB: 400, rebuildMs: 200, pickMs: 1 }
 // rebuild after each of the 6 edit rounds (1 warm-up + 5 measured).
 const G2_WORK = { minPickHits: 900, coldBuilds: 1, indexRebuilds: 7 }
 const BENCH_TIMEOUT_MS = 120_000
+// G3: a big DXF opens in the real app while it keeps drawing frames, from the open until the scene and the spatial
+// index are built, and half a second more. The UI counts as frozen when a frame waits longer than this.
+const G3_MAX_FRAME_GAP_MS = 200
+/** The app counts as started when no frame gap or task has passed 50 ms for this long. */
+const G3_SETTLED_MS = 500
+/**
+ * Watches the renderer: the longest frame gap and main-thread task, and every one over 100 ms. slow is when the
+ * last gap or task over 50 ms ended; __resetFrames() starts the count again.
+ */
+const FRAME_MONITOR = `(() => {
+  const f = (window.__frames = { max: 0, gaps: [], last: performance.now(), start: 0, longest: 0, tasks: [], slow: performance.now() })
+  const reset = (window.__resetFrames = () => void Object.assign(f, { max: 0, gaps: [], start: performance.now(), longest: 0, tasks: [] }))
+  reset()
+  new PerformanceObserver((list) => {
+    for (const e of list.getEntries()) {
+      if (e.duration > f.longest) f.longest = e.duration
+      if (e.duration > 100) f.tasks.push(Math.round(e.duration) + '@' + Math.round(e.startTime - f.start))
+      if (e.duration > 50) f.slow = Math.max(f.slow, e.startTime + e.duration)
+    }
+  }).observe({ type: 'longtask' })
+  const tick = (t) => {
+    const gap = t - f.last
+    if (gap > f.max) f.max = gap
+    if (gap > 100) f.gaps.push(Math.round(gap) + '@' + Math.round(f.last - f.start))
+    if (gap > 50) f.slow = t
+    f.last = t
+    requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+})()`
 
 /**
  * Renderer memory after a full collection, in MB, through the DevTools protocol. usedSize is the V8 heap alone;
@@ -64,9 +94,11 @@ const conflict = bench && (smoke || hasPlay || loseContext)
       ? '--n and --gate need --bench'
       : (hasPlay && play === '') || (hasN && rawN === '')
         ? '--play and --n need a value'
-        : gate !== 'g1' && gate !== 'g2'
-          ? `--gate must be g1 or g2, got "${gate}"`
-          : undefined
+        : gate !== 'g1' && gate !== 'g2' && gate !== 'g3'
+          ? `--gate must be g1, g2 or g3, got "${gate}"`
+          : gate === 'g3' && !openPath
+            ? '--gate=g3 needs --open=<a DXF file>'
+            : undefined
 if (conflict) finish(1, conflict)
 else if (bench && rawN !== '') {
   benchN = /^\d+$/.test(rawN) ? Number(rawN) : NaN
@@ -136,7 +168,10 @@ function createWindow(): void {
     },
   })
   const wc = win.webContents
-  if (!bench) registerFiles(win, openPath)
+  const g3 = bench && gate === 'g3'
+  // G3 opens the file once the app has started, so its own start does not count as the file's.
+  let started = (): void => {}
+  if (!bench || g3) registerFiles(win, openPath, g3 ? new Promise<void>((r) => (started = r)) : undefined)
 
   win.once('ready-to-show', () => win.show())
   wc.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -157,7 +192,42 @@ function createWindow(): void {
     })
   }
 
-  if (bench) {
+  if (g3) {
+    wc.on('did-finish-load', () => {
+      void (async () => {
+        await wc.executeJavaScript(FRAME_MONITOR)
+        // Started: frames have come smoothly for a while. Then the count begins and the file opens.
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 100))
+          if (await wc.executeJavaScript(`performance.now() - window.__frames.slow > ${G3_SETTLED_MS}`)) break
+        }
+        await wc.executeJavaScript('window.__resetFrames()')
+        started()
+        // Opened: the title names the file, nothing is under way any more, and the scene and the index have been
+        // built since the file was read (a big drawing builds in tasks after the load).
+        const name = basename(openPath!)
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 100))
+          const done: boolean = await wc.executeJavaScript(
+            `document.title.startsWith(${JSON.stringify(name)}) && !document.querySelector('.titlebar-busy') && (performance.getEntriesByName('royale:built').at(-1)?.startTime ?? -1) >= (performance.getEntriesByName('royale:framed').at(-1)?.startTime ?? Infinity)`,
+          )
+          if (done) break
+        }
+        // A few more frames of the drawing on screen.
+        await new Promise((r) => setTimeout(r, 500))
+        const r = (await wc.executeJavaScript(
+          `({ ...window.__frames, loadMs: Math.round(performance.now() - window.__frames.start - 500), last: document.querySelector('.cmdline-history li:last-child')?.textContent ?? null, objects: performance.getEntriesByName('royale:loaded').at(-1)?.detail?.objects ?? null, marks: performance.getEntriesByType('mark').filter((m) => m.name.startsWith('royale:')).map((m) => m.name.slice(7) + ' ' + Math.round(m.startTime - window.__frames.start)) })`,
+        )) as { max: number; gaps: string[]; longest: number; tasks: string[]; loadMs: number; last: string | null; objects: number | null; marks: string[] }
+        const opened = r.objects
+        console.log(JSON.stringify({ gate: 'g3', file: name, opened, loadMs: r.loadMs, longestTaskMs: Math.round(r.longest), tasksOver100Ms: r.tasks, maxFrameGapMs: Math.round(r.max), gapsOver100Ms: r.gaps, marks: r.marks }))
+        if (opened === null) return fail(`the file did not open: ${r.last ?? 'no message'}`)
+        if (shot) await writeFile(shot, (await wc.capturePage()).toPNG())
+        finish(r.max <= G3_MAX_FRAME_GAP_MS ? 0 : 2)
+      })().catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)))
+    })
+  }
+
+  if (bench && !g3) {
     let received = false
     wc.on('console-message', (event) => {
       if (received || !event.message.startsWith('BENCH_RESULT ')) return
@@ -254,7 +324,7 @@ function createWindow(): void {
     })
   }
 
-  const query = bench ? { bench: String(benchN), gate } : undefined
+  const query = bench && !g3 ? { bench: String(benchN), gate } : undefined
   if (dev) void win.loadURL(process.env.ELECTRON_RENDERER_URL! + (query ? `?${new URLSearchParams(query)}` : ''))
   else void win.loadFile(join(import.meta.dirname, '../renderer/index.html'), { query })
 }

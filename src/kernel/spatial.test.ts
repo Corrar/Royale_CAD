@@ -146,6 +146,66 @@ describe('createSpatialIndex', () => {
     expect(index.coldBuilds).toBe(index.rebuilds)
   })
 
+  it('a big cold build goes in steps (build), and queries meanwhile scan and stay exact', () => {
+    const rand = rng(21)
+    const doc = createDocument()
+    doc.transact('load', (tx) => {
+      for (let i = 0; i < 3000; i++) tx.add(randomDraft(rand))
+    })
+    const index = createSpatialIndex(doc, { sliceFrom: 1000 })
+    const boxes = Array.from({ length: 30 }, () => randomBox(rand))
+    expect(index.building).toBe(true)
+    for (const b of boxes) expect(sorted(index.query(b))).toEqual(brute(doc, b))
+    expect(index.rebuilds).toBe(0) // the queries did not build
+    let steps = 0
+    while (index.building) {
+      index.build(() => false)
+      steps++
+    }
+    expect(steps).toBeGreaterThan(2)
+    expect(index.coldBuilds).toBe(1)
+    for (const b of boxes) expect(sorted(index.query(b))).toEqual(brute(doc, b))
+  })
+
+  it('a change drops the build under way; the next begins on a call without changes since the last', () => {
+    const rand = rng(22)
+    const doc = createDocument()
+    const index = createSpatialIndex(doc, { sliceFrom: 1000 })
+    doc.append(Array.from({ length: 3000 }, () => randomDraft(rand)))
+    index.build(() => true)
+    expect(index.coldBuilds).toBe(0) // the change came since the last call
+    index.build(() => false) // a step of a build
+    doc.append(Array.from({ length: 500 }, () => randomDraft(rand)))
+    index.build(() => true)
+    expect(index.coldBuilds).toBe(0)
+    index.build(() => true)
+    expect(index.building).toBe(false)
+    expect(index.coldBuilds).toBe(1)
+    const b = { minX: 7_400_000, minY: 9_100_000, maxX: 7_400_500, maxY: 9_100_500 }
+    expect(sorted(index.query(b))).toEqual(brute(doc, b))
+  })
+
+  it('an edit a merge cannot place makes a cold build in steps, not a full sort in the query', () => {
+    const rand = rng(23)
+    const doc = createDocument()
+    doc.transact('load', (tx) => {
+      for (let i = 0; i < 3000; i++) tx.add(randomDraft(rand))
+    })
+    const index = createSpatialIndex(doc, { sliceFrom: 1000, maxDirty: 10 })
+    index.build(() => true)
+    expect(index.coldBuilds).toBe(1)
+    doc.transact('far', (tx) => {
+      for (let i = 0; i < 20; i++) tx.add({ type: 'line', layer: 0, x0: 0, y0: i, x1: 1, y1: i })
+    })
+    const far = { minX: -1, minY: -1, maxX: 2, maxY: 200 }
+    expect(sorted(index.query(far))).toEqual(brute(doc, far))
+    expect(index.coldBuilds).toBe(1)
+    expect(index.building).toBe(true)
+    while (index.building) index.build(() => true)
+    expect(index.coldBuilds).toBe(2)
+    expect(sorted(index.query(far))).toEqual(brute(doc, far))
+  })
+
   it('stays exact after the document is emptied and refilled (no tree shares arrays with the spare)', () => {
     const doc = createDocument()
     const index = createSpatialIndex(doc, { maxDirty: 4 })

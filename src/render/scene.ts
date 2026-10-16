@@ -17,11 +17,23 @@ export interface SceneOptions {
   drawColor: number
   /** 0xRRGGBBAA of highlighted (selected) entities. */
   highlightColor: number
+  /** From this many entities a rebuild runs in slices (draws, build; default 20 000); below, all at once. */
+  sliceFrom?: number
 }
 
 export interface Scene {
   /** Brings the GPU up to date with the document and returns the draws that can reach the view. */
   draws(view: ViewState): Draw[]
+  /**
+   * A big rebuild under way or waiting to begin, a slice per draws() or build(): the caller keeps calling until it
+   * ends. Meanwhile the draws show the drawing as it was before.
+   */
+  readonly building: boolean
+  /**
+   * Works on the rebuild due for up to ms, between frames: when frames are slow (a software GPU), a slice per
+   * frame would make a big rebuild wait on them. A big rebuild begins only on a call without changes since the last.
+   */
+  build(ms: number): void
   /** Entities drawn again on top, in the highlight style. Ids not in the document are ignored. */
   setHighlight(ids: Iterable<number>): void
   dispose(): void
@@ -42,6 +54,30 @@ const DIRTY_LIST = 64
 /** Edits beyond these sizes rebuild the packed pools instead of filling the open ones. */
 const BULK_MIN = 16384
 const OPEN_MIN = 65536
+/** From this many entities a rebuild runs in slices instead of all at once (SceneOptions.sliceFrom). */
+const SLICE_FROM = 20_000
+/** The time a slice of rebuild may take in one draws(), ms. */
+const BUILD_SLICE_MS = 8
+/** Entities gathered, or slots packed, between looks at the clock. */
+const GATHER_STEP = 2048
+const PACK_STEP = 8192
+
+/** Runs a sliced task to its end in one go. */
+function drain<T>(g: Generator<void, T>): T {
+  for (;;) {
+    const r = g.next()
+    if (r.done) return r.value
+  }
+}
+
+/** Handles per entity id: one[id] = handle + 1 for a single primitive, -1 when the list is in `multi`, 0 for none. */
+interface Handles { one: Float64Array; multi: Map<number, number[]> }
+
+/** Style rows: 0 hidden, 1 highlight, then one per (layer, color) in use. */
+interface Styles { table: Uint32Array; count: number; byKey: Map<number, number>; layer: number[]; color: (Color | undefined)[] }
+
+/** What a rebuild makes, put in place of the current pools in one go. */
+interface Generation { pools: Pool[]; handles: Handles; styles: Styles; packedLive: number }
 
 /** A run of slots with the bounds of their primitives; extent is a segment's length or an arc's radius. */
 interface Bucket { first: number; count: number; minX: number; minY: number; maxX: number; maxY: number; maxExtent: number }
@@ -121,26 +157,31 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   let holes = 0
   let needsRebuild = doc.size > 0
   let disposed = false
+  /** A rebuild in slices; its result goes in place when it ends. */
+  let building: Generator<void, Generation> | null = null
+  /** The pools the sliced rebuild has made so far, destroyed if it is dropped. */
+  let buildingPools: Pool[] = []
+  /** The document changed since the last draws() or build(). */
+  let changed = false
 
-  // Handles per entity id: one[id] = handle + 1 for a single primitive, -1 when the list is in `multi`, 0 for none.
-  let one = new Float64Array(1024)
-  let multi = new Map<number, number[]>()
+  let handles: Handles = { one: new Float64Array(1024), multi: new Map() }
 
-  function addHandle(id: number, h: number): void {
-    if (id >= one.length) {
-      const grown = new Float64Array(Math.max(Math.ceil(1.5 * one.length), id + 1))
-      grown.set(one)
-      one = grown
+  function addHandle(hs: Handles, id: number, h: number): void {
+    if (id >= hs.one.length) {
+      const grown = new Float64Array(Math.max(Math.ceil(1.5 * hs.one.length), id + 1))
+      grown.set(hs.one)
+      hs.one = grown
     }
-    const v = one[id]!
-    if (v === 0) one[id] = h + 1
+    const v = hs.one[id]!
+    if (v === 0) hs.one[id] = h + 1
     else if (v > 0) {
-      multi.set(id, [v - 1, h])
-      one[id] = -1
-    } else multi.get(id)!.push(h)
+      hs.multi.set(id, [v - 1, h])
+      hs.one[id] = -1
+    } else hs.multi.get(id)!.push(h)
   }
 
   function takeHandles(id: number): number[] {
+    const { one, multi } = handles
     const v = one[id] ?? 0
     if (v === 0) return []
     one[id] = 0
@@ -151,43 +192,48 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   }
 
   // --- styles: row 0 hidden, then one row per (layer, color) in use -------------------------------------------
-  let table = new Uint32Array(64 * STYLE_WORDS)
-  let styleCount = FIRST_STYLE
   let stylesDirty = true
-  const styleByKey = new Map<number, number>()
-  const styleLayer: number[] = [-1, -1]
-  const styleColor: (Color | undefined)[] = [undefined, undefined]
-  writeStyle(table, HIGHLIGHT_STYLE, opts.highlightColor, HIGHLIGHT_WIDTH_PX, true)
+  const newStyles = (): Styles => {
+    const st: Styles = { table: new Uint32Array(64 * STYLE_WORDS), count: FIRST_STYLE, byKey: new Map(), layer: [-1, -1], color: [undefined, undefined] }
+    writeStyle(st.table, HIGHLIGHT_STYLE, opts.highlightColor, HIGHLIGHT_WIDTH_PX, true)
+    return st
+  }
+  let styles = newStyles()
+  // The rows of a sliced rebuild, which go in place with its pools.
+  let buildingStyles: Styles | null = null
 
   const rgbaOf = (c: Color): number => (c === ACI_DEFAULT ? opts.drawColor : ((colorRgb(c) << 8) | 0xff) >>> 0)
 
-  function writeRow(id: number): void {
-    const l = doc.layers.get(styleLayer[id]!)!
-    writeStyle(table, id, rgbaOf(styleColor[id] ?? l.color), LINE_WIDTH_PX, l.visible)
-    stylesDirty = true
+  function writeRow(st: Styles, id: number): void {
+    const l = doc.layers.get(st.layer[id]!)!
+    writeStyle(st.table, id, rgbaOf(st.color[id] ?? l.color), LINE_WIDTH_PX, l.visible)
+    if (st === styles) stylesDirty = true
   }
 
-  function styleOf(e: Entity): number {
+  function styleIn(st: Styles, e: Entity): number {
     // Colors fit in 25 bits and 0 is not a color, so it stands for ByLayer.
     const key = e.layer * 2 ** 25 + (e.color ?? 0)
-    let id = styleByKey.get(key)
+    let id = st.byKey.get(key)
     if (id === undefined) {
-      id = styleCount++
-      if (styleCount * STYLE_WORDS > table.length) {
-        const t = new Uint32Array(2 * table.length)
-        t.set(table)
-        table = t
+      id = st.count++
+      if (st.count * STYLE_WORDS > st.table.length) {
+        const t = new Uint32Array(2 * st.table.length)
+        t.set(st.table)
+        st.table = t
       }
-      styleByKey.set(key, id)
-      styleLayer[id] = e.layer
-      styleColor[id] = e.color
-      writeRow(id)
+      st.byKey.set(key, id)
+      st.layer[id] = e.layer
+      st.color[id] = e.color
+      writeRow(st, id)
     }
     return id
   }
+  const styleOf = (e: Entity): number => styleIn(styles, e)
 
   const offLayers = doc.layers.onChange((index) => {
-    for (let id = FIRST_STYLE; id < styleCount; id++) if (styleLayer[id] === index) writeRow(id)
+    for (const st of buildingStyles ? [styles, buildingStyles] : [styles]) {
+      for (let id = FIRST_STYLE; id < st.count; id++) if (st.layer[id] === index) writeRow(st, id)
+    }
     if (highlight.size > 0) hlDirty = true // hidden layers drop out of the highlight
   })
 
@@ -271,7 +317,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     p.owner[slot] = id
     p.live++
     openLive++
-    addHandle(id, p.index * SLOTS + slot)
+    addHandle(handles, id, p.index * SLOTS + slot)
     markDirty(p, slot)
     const k = p.buckets[0]!
     k.count = p.count
@@ -314,13 +360,23 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     }
   }
 
+  /** Drops a sliced rebuild: the document changed under it. The next draws() begins another. */
+  function abortBuild(): void {
+    for (const p of buildingPools) backend.destroyBatch(p.batch)
+    buildingPools = []
+    buildingStyles = null
+    building = null
+  }
+
   function onChange(c: Change): void {
+    changed = true
     if (highlight.size > 0 && !hlDirty) {
       const touches = (e: Entity): boolean => highlight.has(e.id)
       hlDirty = c.added.some(touches) || c.removed.some(touches) || c.changed.some(([, e]) => touches(e))
     }
+    if (building) abortBuild()
     if (needsRebuild) return
-    if (c.added.length + c.changed.length > Math.max(BULK_MIN, doc.size / 4)) {
+    if (c.bulk || c.added.length + c.changed.length > Math.max(BULK_MIN, doc.size / 4)) {
       needsRebuild = true
       return
     }
@@ -340,12 +396,12 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   })
 
   /**
-   * Packs rows of `cols` (all when rows is null) into a new pool of `into`, in Hilbert order of their bbox centres.
-   * Only the main pools record handles.
+   * Packs rows of `cols` (all when rows is null) into a new pool of `into`, in Hilbert order of their bbox centres,
+   * yielding now and then. Handles go to `hs` (the main pools only). Returns how many it packed.
    */
-  function pack(kind: Kind, band: number, cols: Columns, rows: Uint32Array | null, into: Pool[]): void {
+  function* pack(kind: Kind, band: number, cols: Columns, rows: Uint32Array | null, into: Pool[], hs: Handles | null): Generator<void, number> {
     const n = rows ? rows.length : cols.n
-    if (n === 0) return
+    if (n === 0) return 0
     const row = (k: number): number => (rows ? rows[k]! : k)
     const w = cols.width
     const v = cols.v
@@ -356,12 +412,14 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       cx[k] = kind === 'segment' ? v[o]! + v[o + 2]! : v[o]!
       cy[k] = kind === 'segment' ? v[o + 1]! + v[o + 3]! : v[o + 1]!
     }
+    yield
     const order = hilbertOrder(cx, cy, n)
+    yield
     const p = createPool(kind, band, true, n, into)
-    const handles = into === pools
     const size = bucketSize(n)
     let bucket = emptyBucket()
     for (let slot = 0; slot < n; slot++) {
+      if (slot % PACK_STEP === PACK_STEP - 1) yield
       const i = row(order[slot]!)
       const o = w * i
       let minX: number, minY: number, maxX: number, maxY: number, extent: number
@@ -387,7 +445,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         extent = r
       }
       p.owner[slot] = cols.owner[i]!
-      if (handles) addHandle(cols.owner[i]!, p.index * SLOTS + slot)
+      if (hs) addHandle(hs, cols.owner[i]!, p.index * SLOTS + slot)
       if (bucket.count === size) {
         p.buckets.push(bucket)
         bucket = emptyBucket()
@@ -403,12 +461,12 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     p.buckets.push(bucket)
     p.count = n
     p.live = n
-    if (handles) packedLive += n
     markDirty(p, 0, n)
+    return n
   }
 
-  /** Collects the primitives of `entities` and packs them into `into`: segments, then arcs by radius band. */
-  function packAll(entities: Iterable<Entity>, styleFor: (e: Entity) => number, into: Pool[], sizeHint: number): void {
+  /** Gathers the primitives of `entities` and packs them into `into`, yielding now and then. Returns the count. */
+  function* packAll(entities: Iterable<Entity>, styleFor: (e: Entity) => number, into: Pool[], sizeHint: number, hs: Handles | null): Generator<void, number> {
     const segs = new Columns(4, Math.max(16, sizeHint))
     const arcs = new Columns(5, 16)
     let style = 0
@@ -430,12 +488,14 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         arcs.v[o + 4] = sweep
       },
     }
+    let k = 0
     for (const e of entities) {
+      if (++k % GATHER_STEP === 0) yield
       style = styleFor(e)
       owner = e.id
       typeOf(e).primitives(e, 0, sink)
     }
-    pack('segment', 0, segs, null, into)
+    let packed = yield* pack('segment', 0, segs, null, into, hs)
     const byBand = new Map<number, number[]>()
     for (let i = 0; i < arcs.n; i++) {
       const band = bandOf(arcs.v[5 * i + 2]!)
@@ -443,26 +503,69 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       if (!rows) byBand.set(band, (rows = []))
       rows.push(i)
     }
-    for (const band of [...byBand.keys()].sort((a, b) => a - b)) pack('arc', band, arcs, Uint32Array.from(byBand.get(band)!), into)
+    for (const band of [...byBand.keys()].sort((a, b) => a - b)) packed += yield* pack('arc', band, arcs, Uint32Array.from(byBand.get(band)!), into, hs)
+    return packed
   }
 
+  /** A new generation of pools for every entity, with its own handles and style rows (re-keyed: unused rows go). */
+  function* generation(into: Pool[]): Generator<void, Generation> {
+    const st = newStyles()
+    buildingStyles = st
+    const hs: Handles = { one: new Float64Array(handles.one.length), multi: new Map() }
+    const packedLive = yield* packAll(doc.entities(), (e) => styleIn(st, e), into, doc.size, hs)
+    return { pools: into, handles: hs, styles: st, packedLive }
+  }
+
+  /** Puts a generation in place of the current pools. */
+  function install(g: Generation): void {
+    for (const p of pools) backend.destroyBatch(p.batch)
+    pools = g.pools
+    handles = g.handles
+    styles = g.styles
+    buildingStyles = null
+    stylesDirty = true
+    open = new Map()
+    openLive = 0
+    packedLive = g.packedLive
+    holes = 0
+    needsRebuild = false
+  }
+
+  /** All at once: the old pools go first, so the memory of both never adds up. */
   function rebuild(): void {
     for (const p of pools) backend.destroyBatch(p.batch)
     pools = []
-    // Styles are re-keyed from the entities alive now: rows of colors no longer used are freed.
-    styleByKey.clear()
-    styleCount = FIRST_STYLE
-    styleLayer.length = FIRST_STYLE
-    styleColor.length = FIRST_STYLE
-    stylesDirty = true
-    open = new Map()
-    one = new Float64Array(one.length)
-    multi = new Map()
-    openLive = 0
-    packedLive = 0
-    holes = 0
-    packAll(doc.entities(), styleOf, pools, doc.size)
-    needsRebuild = false
+    install(drain(generation([])))
+  }
+
+  /** A slice of the rebuild under way, ms long at most; the result goes in place when it ends. */
+  function buildSlice(ms: number): void {
+    const start = performance.now()
+    for (;;) {
+      const r = building!.next()
+      if (r.done) {
+        building = null
+        buildingPools = []
+        install(r.value)
+        return
+      }
+      if (performance.now() - start >= ms) return
+    }
+  }
+
+  /** Begins the rebuild due, if any, and works on a big one for up to ms. */
+  function advance(ms: number): void {
+    if (needsRebuild && !building) {
+      if (doc.size < (opts.sliceFrom ?? SLICE_FROM)) rebuild()
+      else if (!changed) {
+        // Only without changes since the last call: while they keep coming (a file read in slices), the next one
+        // would drop the rebuild and the batches it made.
+        buildingPools = []
+        building = generation(buildingPools)
+      }
+    }
+    changed = false
+    if (building) buildSlice(ms)
   }
 
   function rebuildHighlight(): void {
@@ -473,7 +576,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       const e = doc.get(id)
       if (e && doc.layers.get(e.layer)!.visible) shown.push(e)
     }
-    packAll(shown, () => HIGHLIGHT_STYLE, hlPools, shown.length)
+    drain(packAll(shown, () => HIGHLIGHT_STYLE, hlPools, shown.length, null))
     hlDirty = false
   }
 
@@ -605,12 +708,12 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   return {
     draws(view) {
       if (disposed) throw new Error('the scene is disposed')
-      if (needsRebuild) rebuild()
+      advance(BUILD_SLICE_MS)
       if (hlDirty) rebuildHighlight()
       for (const p of pools) flush(p)
       for (const p of hlPools) flush(p)
       if (stylesDirty) {
-        backend.setStyleTable(table.subarray(0, styleCount * STYLE_WORDS))
+        backend.setStyleTable(styles.table.subarray(0, styles.count * STYLE_WORDS))
         stylesDirty = false
       }
       // The stroke reaches half its width past the geometry; one more px covers antialiasing.
@@ -632,6 +735,15 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       return out
     },
 
+    build(ms) {
+      if (disposed) throw new Error('the scene is disposed')
+      advance(ms)
+    },
+
+    get building() {
+      return building !== null || (needsRebuild && doc.size >= (opts.sliceFrom ?? SLICE_FROM))
+    },
+
     setHighlight(ids) {
       highlight = new Set(ids)
       hlDirty = true
@@ -643,6 +755,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       offDoc()
       offLayers()
       offRestore()
+      abortBuild()
       for (const p of [...pools, ...hlPools]) backend.destroyBatch(p.batch)
       if (clip) backend.destroyBatch(clip.batch)
       pools = []

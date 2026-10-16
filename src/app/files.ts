@@ -1,12 +1,19 @@
 import type { FileHost } from '../kernel/command/runtime'
-import type { Document } from '../kernel/document'
-import { drawingFrom, parseDxf, type DxfSource, type ParsedDxf } from '../kernel/dxf/reader'
+import type { Document, Draft } from '../kernel/document'
+import { packDrafts, unpackDrafts, type DraftPack } from '../kernel/dxf/pack'
+import { typeOf } from '../kernel/entity/registry'
+import type { Entity } from '../kernel/entity/types'
+import { bboxEmpty, bboxUnion, type BBox } from '../kernel/geom/vec'
+import { loader, parseDxf, type DxfSource, type ParsedMeta } from '../kernel/dxf/reader'
 import { writeDxf } from '../kernel/dxf/writer'
 import { DEFAULT_ENCODING, decodeDxf, encodeDxf } from './codec'
 import { createStore, type Store } from './stores'
 
-/** A file the main process read for us; `token` makes it the drawing's file once it has loaded (adopt). */
-export interface Opened { token: number; name: string; bytes: Uint8Array }
+/**
+ * A file the main process read for us: its bytes come in chunks (chunk), and `token` makes it the drawing's file
+ * once it has loaded (adopt).
+ */
+export interface Opened { token: number; name: string; size: number }
 
 /** Where a save went, why it failed, or null when the user cancelled the dialog. */
 export type Saved = { name: string } | { error: string } | null
@@ -17,6 +24,8 @@ export interface FileApi {
   initial(): Promise<Opened | null>
   /** Asks for a DXF and reads it; null when cancelled. */
   open(): Promise<Opened | null>
+  /** Bytes [offset, offset + length) of the file read last; after the last chunk the main process lets them go. */
+  chunk(token: number, offset: number, length: number): Promise<Uint8Array>
   /** The opened file became the drawing: later saves go to it. */
   adopt(token: number): Promise<void>
   /** To the drawing's file, or to one asked for when it has none. */
@@ -33,7 +42,33 @@ export interface FileApi {
   closeNow(): void
 }
 
-export interface ParseResult { parsed: ParsedDxf; encoding: string; warning: string | null }
+/**
+ * A parsed file as a worker hands it over: the drafts packed in typed arrays, the file's bytes back instead of
+ * its text (a 100 MB string takes most of a second to copy across; the bytes move), the extents for the view.
+ */
+export interface ParseResult {
+  meta: Omit<ParsedMeta, 'text'>
+  pack: DraftPack
+  bytes: Uint8Array
+  encoding: string
+  warning: string | null
+  extents: BBox | null
+}
+
+function extentsOf(drafts: readonly Draft[]): BBox | null {
+  let box: BBox | null = null
+  for (const d of drafts) {
+    const b = typeOf(d as Entity).bbox(d as Entity)
+    if (!bboxEmpty(b)) box = box ? bboxUnion(box, b) : b
+  }
+  return box
+}
+
+/** Splits a parsed file for the hand-over. */
+export function toResult(parsed: ReturnType<typeof parseDxf>, bytes: Uint8Array, encoding: string, warning: string | null): ParseResult {
+  const { drafts, text: _text, ...meta } = parsed
+  return { meta, pack: packDrafts(drafts), bytes, encoding, warning, extents: extentsOf(drafts) }
+}
 
 /** Bytes to a parsed drawing; the app runs it in a worker. */
 export type Parse = (bytes: Uint8Array, progress: (done: number) => void) => Promise<ParseResult>
@@ -41,8 +76,18 @@ export type Parse = (bytes: Uint8Array, progress: (done: number) => void) => Pro
 /** The same work on this thread: for tests, and where workers are missing. */
 export const parseHere: Parse = async (bytes, progress) => {
   const { text, encoding, warning } = decodeDxf(bytes)
-  return { parsed: parseDxf(text, progress), encoding, warning }
+  return toResult(parseDxf(text, progress), bytes, encoding, warning)
 }
+
+/** Lets the thread draw a frame and take input between slices of work. */
+const yieldToUI = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+
+/** The time one slice of loading may take, ms: frames keep coming at ~60 Hz even on a big file. */
+const SLICE_MS = 12
+/** Drafts between looks at the clock while loading. */
+const SLICE_STEP = 512
+/** Bytes per message from the main process: each one copies quickly. */
+const CHUNK_BYTES = 8 << 20
 
 export interface FileState {
   /** The drawing's file name, or DrawingN.dxf before its first save. */
@@ -58,8 +103,11 @@ export interface FilesOptions {
   parse: Parse
   /** A line in the command history. */
   print(line: string): void
-  /** A drawing was put in place (opened or new): the view frames it, the selection goes, its layer is current. */
-  replaced(currentLayer: string | null): void
+  /**
+   * A drawing was put in place (opened or new): the view frames it (extents when known, else the app works them
+   * out), the selection goes, its layer is current.
+   */
+  replaced(currentLayer: string | null, extents?: BBox | null): void
   /** The current layer's name, which the file keeps ($CLAYER). */
   currentLayer(): string
 }
@@ -86,19 +134,29 @@ export function createFiles(o: FilesOptions): Files {
   const patch = (p: Partial<FileState>): void => state.set({ ...state.get(), ...p })
   let source: DxfSource | null = null
   let encoding = DEFAULT_ENCODING
-  let replacing = false
+  /** Changes made now put another drawing in place: they are not edits. */
+  let quiet = false
 
   const setDirty = (dirty: boolean): void => {
     if (state.get().dirty === dirty) return
     patch({ dirty })
     api.setDirty(dirty)
   }
-  const offDoc = doc.onChange(() => {
-    if (!replacing) setDirty(true)
+  // The slices of a file being read (bulk) are not edits either; what is drawn meanwhile is.
+  const offDoc = doc.onChange((c) => {
+    if (!quiet && !c.bulk) setDirty(true)
   })
   const offLayers = doc.layers.onChange(() => {
-    if (!replacing) setDirty(true)
+    if (!quiet) setDirty(true)
   })
+  const quietly = <T>(fn: () => T): T => {
+    quiet = true
+    try {
+      return fn()
+    } finally {
+      quiet = false
+    }
+  }
 
   /** Runs one file operation at a time. */
   const run = (task: () => Promise<void>): Promise<void> => {
@@ -112,13 +170,9 @@ export function createFiles(o: FilesOptions): Files {
       .finally(() => patch({ busy: null }))
   }
 
+  /** Puts another drawing in place at once. */
   const replace = (fn: () => void): void => {
-    replacing = true
-    try {
-      fn()
-    } finally {
-      replacing = false
-    }
+    quietly(fn)
     setDirty(false)
     o.replaced(source?.header.get('$CLAYER') ?? null)
   }
@@ -146,17 +200,60 @@ export function createFiles(o: FilesOptions): Files {
     patch({ busy: `Reading ${f.name}…` })
     let result: ParseResult
     try {
-      result = await o.parse(f.bytes, (done) => patch({ busy: `Reading ${f.name}… ${Math.round(done * 100)}%` }))
+      const bytes = new Uint8Array(f.size)
+      for (let at = 0; at < f.size; ) {
+        const chunk = await api.chunk(f.token, at, CHUNK_BYTES)
+        if (chunk.length === 0) throw new Error('the file ended early')
+        bytes.set(chunk, at)
+        at += chunk.length
+        patch({ busy: `Reading ${f.name}… ${Math.round((40 * at) / f.size)}%` })
+      }
+      performance.mark('royale:bytes')
+      result = await o.parse(bytes, (done) => patch({ busy: `Reading ${f.name}… ${40 + Math.round(done * 50)}%` }))
     } catch (error) {
       o.print(`Could not open ${f.name}: ${messageOf(error)}`)
       return
     }
     let warnings: readonly string[] = []
-    replace(() => {
-      const d = drawingFrom(doc, result.parsed)
+    performance.mark('royale:parsed')
+    // The text is decoded again here only when it is needed: the bytes came back, the text did not.
+    let text: string | null = null
+    const meta: ParsedMeta = {
+      ...result.meta,
+      get text() {
+        return (text ??= decodeDxf(result.bytes).text)
+      },
+    }
+    let gone = false
+    try {
+      const l = quietly(() => loader(doc, meta))
+      // The drawing before is gone: what is drawn from here on belongs to this one.
+      gone = true
+      source = null
+      setDirty(false)
+      const { pack } = result
+      // Slices of the drafts, each as long as fits in SLICE_MS: the UI keeps drawing while a big file comes in.
+      for (let k = 0; k < pack.n; ) {
+        const t = performance.now()
+        while (k < pack.n && performance.now() - t < SLICE_MS) {
+          const to = Math.min(pack.n, k + SLICE_STEP)
+          l.add(unpackDrafts(pack, k, to))
+          k = to
+        }
+        patch({ busy: `Reading ${f.name}… ${90 + Math.round((10 * k) / pack.n)}%` })
+        if (k < pack.n) await yieldToUI()
+      }
+      const d = l.finish()
       source = d.source
       warnings = d.warnings
-    })
+    } catch (error) {
+      // Part of this one came in: neither half may be saved over a file.
+      if (gone) await blank()
+      o.print(`Could not open ${f.name}: ${messageOf(error)}`)
+      return
+    }
+    o.replaced(source.header.get('$CLAYER') ?? null, result.extents)
+    performance.mark('royale:loaded', { detail: { objects: doc.size } })
     encoding = result.encoding
     patch({ name: f.name })
     await api.adopt(f.token)
@@ -164,6 +261,15 @@ export function createFiles(o: FilesOptions): Files {
     if (result.warning) o.print(result.warning)
     for (const w of warnings.slice(0, WARNINGS_SHOWN)) o.print(w)
     if (warnings.length > WARNINGS_SHOWN) o.print(`…and ${warnings.length - WARNINGS_SHOWN} more.`)
+  }
+
+  /** An empty drawing with the next name, tied to no file. */
+  async function blank(): Promise<void> {
+    source = null
+    replace(() => void doc.replace([{ name: '0', color: 7, visible: true, locked: false }], []))
+    encoding = DEFAULT_ENCODING
+    patch({ name: `Drawing${++untitled}.dxf` })
+    await api.forget()
   }
 
   const offClose = api.onSaveAndClose(() => {
@@ -179,6 +285,7 @@ export function createFiles(o: FilesOptions): Files {
     open(saveFirst) {
       void run(async () => {
         if (saveFirst && !(await save(false))) return
+        performance.mark('royale:open')
         const f = await api.open()
         if (f) await load(f)
       })
@@ -186,11 +293,7 @@ export function createFiles(o: FilesOptions): Files {
     create(saveFirst) {
       void run(async () => {
         if (saveFirst && !(await save(false))) return
-        source = null
-        replace(() => doc.replace([{ name: '0', color: 7, visible: true, locked: false }], []))
-        encoding = DEFAULT_ENCODING
-        patch({ name: `Drawing${++untitled}.dxf` })
-        await api.forget()
+        await blank()
       })
     },
     save() {
@@ -201,6 +304,7 @@ export function createFiles(o: FilesOptions): Files {
     },
     openInitial: () =>
       run(async () => {
+        performance.mark('royale:open')
         const f = await api.initial()
         if (f) await load(f)
       }),

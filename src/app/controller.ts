@@ -1,7 +1,7 @@
 import { BUILTIN_COMMANDS } from '../kernel/command/commands'
 import { createInterpreter, type InterpreterHost } from '../kernel/command/runtime'
 import { createDocument, docExtents, type Layer } from '../kernel/document'
-import type { Vec2 } from '../kernel/geom/vec'
+import type { BBox, Vec2 } from '../kernel/geom/vec'
 import { pick, pickBox } from '../kernel/pick'
 import { createSelection } from '../kernel/selection'
 import { APERTURE_PX, SNAP, snap } from '../kernel/snap'
@@ -22,6 +22,8 @@ export const PICKBOX_PX = 5
 /** What an empty drawing frames: an A3 sheet in millimetres, like AutoCAD's metric limits. */
 const DEFAULT_EXTENTS = { minX: 0, minY: 0, maxX: 420, maxY: 297 }
 
+/** Work on a big rebuild (scene or index) per task between frames, ms: input and frames get their turn in between. */
+const BUILD_TASK_MS = 12
 /** Lines of history the command line can show. */
 const HISTORY_KEEP = 200
 
@@ -129,6 +131,8 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
   let cursor: Vec2 | null = null // CSS px over the viewport; kept when it leaves, for the rubber band
   let inside = false
   let sceneDirty = true
+  /** Tasks are working on the scene's rebuild or the index's between frames (buildBetweenFrames). */
+  let building = false
 
   const host: InterpreterHost = {
     getView: () => view!,
@@ -140,8 +144,8 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     query: (b) => index.query(b),
   }
   const interp = createInterpreter(doc, selection, { commands: BUILTIN_COMMANDS, host })
-  const frame = (): void => {
-    if (view) setView(fit(view, docExtents(doc) ?? DEFAULT_EXTENTS, FIT_MARGIN_PX))
+  const frame = (extents?: BBox | null): void => {
+    if (view) setView(fit(view, (extents === undefined ? docExtents(doc) : extents) ?? DEFAULT_EXTENTS, FIT_MARGIN_PX))
   }
   const files = window.royale
     ? createFiles({
@@ -149,11 +153,14 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
         doc,
         parse: parseInWorker,
         print: (line) => interp.print(line),
-        replaced: (currentLayer) => {
+        replaced: (currentLayer, extents) => {
           selection.clear()
           const i = currentLayer === null ? -1 : doc.layers.indexOf(currentLayer)
           interp.layer = i >= 0 ? i : 0
-          frame()
+          frame(extents)
+          performance.mark('royale:framed')
+          // A small drawing is whole already; a big one is when buildBetweenFrames ends.
+          if (!scene.building && !index.building) performance.mark('royale:built')
         },
         currentLayer: () => doc.layers.get(interp.layer)!.name,
       })
@@ -169,6 +176,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
       if (sceneDirty) {
         sceneDirty = false
         backend.frame(view, scene.draws(view))
+        if (scene.building || index.building) buildBetweenFrames()
       }
       const r = interp.request
       const tracked = interp.tracked
@@ -193,6 +201,31 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     sceneDirty = true
     loop.invalidate()
   }
+  /**
+   * Works on a big rebuild of the scene, then of the spatial index, in tasks until both end, then draws the result.
+   * Tasks, not frames: the drawing on screen does not change meanwhile, and frames that wait on a slow GPU would
+   * hold the rebuild back. Until the index is whole, picks and snaps scan every bbox.
+   */
+  function buildBetweenFrames(): void {
+    if (building) return
+    building = true
+    const step = (): void => {
+      if (view === null) return // disposed
+      if (scene.building) scene.build(BUILD_TASK_MS)
+      else {
+        const end = performance.now() + BUILD_TASK_MS
+        index.build(() => performance.now() < end)
+      }
+      if (scene.building || index.building) {
+        setTimeout(step, 0)
+        return
+      }
+      building = false
+      performance.mark('royale:built')
+      redrawScene()
+    }
+    setTimeout(step, 0)
+  }
   function setView(v: ViewState): void {
     view = v
     interp.cursor = cursor && screenToWorld(v, cursor.x, cursor.y)
@@ -203,7 +236,8 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
 
   const offDoc = doc.onChange((c) => {
     if (c.removed.length > 0) selection.remove(c.removed.map((e) => e.id))
-    redrawScene()
+    // The slices of a file being read: the scene shows them when the reading ends and replaced() frames them.
+    if (!c.bulk) redrawScene()
   })
   const offLayers = doc.layers.onChange(redrawScene)
   const offRestore = backend.onRestore(redrawScene)

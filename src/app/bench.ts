@@ -98,7 +98,9 @@ export function runBench(canvas: HTMLCanvasElement, n: number): void {
     }
   })
   const scene = createScene(doc, backend, colors)
-  scene.draws(base) // the rebuild and the upload happen here, before any measured frame
+  // The rebuild (in slices on a scene this big) and the upload happen here, before any measured frame.
+  do scene.draws(base)
+  while (scene.building)
 
   const baseline: number[] = []
   const samples: number[] = []
@@ -239,8 +241,15 @@ export function runBenchG2(canvas: HTMLCanvasElement, n: number): void {
   const loadMs = time(() => doc.transact('load', (tx: Tx) => {
     for (let i = 0; i < n; i++) tx.add(g2Draft(rand))
   }))
-  const sceneMs = time(() => scene.draws(base))
-  const coldBuildMs = time(() => index.query(nowhere))
+  const sceneMs = time(() => {
+    do scene.draws(base)
+    while (scene.building)
+  })
+  // A tree this big is built in steps (between frames, in the app): here all at once, timed.
+  const coldBuildMs = time(() => {
+    do index.build(() => true)
+    while (index.building)
+  })
 
   // Each round moves 2% of the drawing: past the dirty limit, so the next query rebuilds by merging.
   const ids = Array.from(doc.entities(), (e) => e.id)

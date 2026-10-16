@@ -10,6 +10,17 @@ export interface SpatialIndex {
    * its last change event: inside an open transaction the pending edits are not seen.
    */
   query(b: BBox): number[]
+  /**
+   * A cold build of a big tree (SpatialIndexOptions.sliceFrom) due or under way: the caller calls build() until it
+   * ends. Meanwhile queries scan every bbox, exact but slower.
+   */
+  readonly building: boolean
+  /**
+   * Works on the cold build due, a step (a few thousand items) and then more while `more()` says so. A build begins
+   * only on a call without changes since the last: while they keep coming (a file read in slices), the next one
+   * would drop it.
+   */
+  build(more: () => boolean): void
   /** How many times the tree was rebuilt, and how many of those sorted everything; for tests and benchmarks. */
   readonly rebuilds: number
   readonly coldBuilds: number
@@ -19,9 +30,23 @@ export interface SpatialIndex {
 export interface SpatialIndexOptions {
   /** Edits kept outside the tree before the next query rebuilds it. Default: max(4096, tree size / 64). */
   maxDirty?: number
+  /** From this many entities a cold build goes in steps (build) instead of in the query. Default: SLICE_FROM. */
+  sliceFrom?: number
 }
 
 const NODE = 16
+/** From this many entities a cold build goes in steps (SpatialIndexOptions.sliceFrom). */
+const SLICE_FROM = 20_000
+/** Items between the yields of a cold build. */
+const BUILD_STEP = 8192
+
+/** Runs a generator to its end. */
+function drain<T>(g: Generator<void, T>): T {
+  for (;;) {
+    const r = g.next()
+    if (r.done) return r.value
+  }
+}
 
 /**
  * Packed R-tree of n items. Level 0 holds the items sorted by the Hilbert key of their bbox centre (`keys`,
@@ -94,30 +119,41 @@ function copyBox(from: Float64Array, i: number, to: Float64Array, j: number): vo
   to[4 * j + 3] = from[4 * i + 3]!
 }
 
-/** Full build: sorts every item. `cache` holds 4 bbox values per id. Rare (loads, big edits): its scratch is not kept. */
-function coldBuild(ids: Float64Array, cache: Float64Array, spare: Tree | null): Tree {
+/**
+ * Full build: sorts every item, yielding every BUILD_STEP items. `cache` holds 4 bbox values per id and must not
+ * change until the end. Rare (loads, big edits): its scratch is not kept.
+ */
+function* coldBuild(ids: Float64Array, cache: Float64Array, spare: Tree | null): Generator<void, Tree> {
   const n = ids.length
   // Doubled bbox centres and their keys.
   const cx = new Float64Array(n)
   const cy = new Float64Array(n)
   const keys = new Uint32Array(n)
   for (let i = 0; i < n; i++) {
+    if (i % BUILD_STEP === BUILD_STEP - 1) yield
     const o = 4 * ids[i]!
     cx[i] = cache[o]! + cache[o + 2]!
     cy[i] = cache[o + 1]! + cache[o + 3]!
   }
   // The margin lets later edits near the edges merge instead of forcing another cold build.
   const frame = hilbertFrame(cx, cy, n, 0.25)
-  for (let i = 0; i < n; i++) keys[i] = hilbertKey(frame, cx[i]!, cy[i]!)
+  for (let i = 0; i < n; i++) {
+    if (i % BUILD_STEP === BUILD_STEP - 1) yield
+    keys[i] = hilbertKey(frame, cx[i]!, cy[i]!)
+  }
+  yield
   const order = radixOrder(keys, n)
+  yield
   const t = allocTree(n, frame, spare)
   for (let i = 0; i < n; i++) {
+    if (i % BUILD_STEP === BUILD_STEP - 1) yield
     const j = order[i]!
     const id = ids[j]!
     t.ids[i] = id
     t.keys[i] = keys[j]!
     copyBox(cache, id, t.boxes, i)
   }
+  yield
   packLevels(t)
   return t
 }
@@ -195,7 +231,8 @@ function searchTree(t: Tree, b: BBox, isStale: (id: number) => boolean, out: num
  * Packed Hilbert R-tree rebuilt on demand. Each id's bbox is cached in a dense array (ids are small increasing
  * integers), so a rebuild never walks the document. Edits since the build form a dirty list scanned by every
  * query: `extra` holds the added and changed ids, stale ids mask their entries in the tree. A rebuild after edits
- * merges the sorted extras into the old leaf order instead of sorting everything again.
+ * merges the sorted extras into the old leaf order instead of sorting everything again. A big tree that must be
+ * sorted again goes in steps (build); until it is whole, queries scan the cache.
  */
 export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}): SpatialIndex {
   let cache = new Float64Array(4 * 1024)
@@ -210,6 +247,11 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
   let rebuilds = 0
   let coldBuilds = 0
   let disposed = false
+  /** The cold build under way (build), dropped by any change. */
+  let pending: Generator<void, Tree> | null = null
+  /** The document changed since the last build() call. */
+  let changed = false
+  const big = (): boolean => liveCount >= (opts.sliceFrom ?? SLICE_FROM)
 
   const isStale = (id: number): boolean => (flags[id]! & STALE) !== 0
 
@@ -247,17 +289,22 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
 
   const limit = (): number => opts.maxDirty ?? Math.max(4096, (tree?.n ?? 0) / 64)
 
+  /** Drops what tracks edits since the build: the tree is to be sorted again. */
+  function unbuild(): void {
+    built = false
+    for (const id of staleIds) flags[id]! &= ~STALE
+    staleIds.length = 0
+    extra.clear()
+  }
+
   const off = doc.onChange((c) => {
+    changed = true
+    pending = null // it read the cache as it was
     // A change that rivals the tree (a load, a mass erase) goes straight to a cold build: tracking it entity by
     // entity would cost more than the build, and a merge would gain nothing over a full sort.
     const dirty = staleIds.length + extra.size + c.added.length + c.changed.length + c.removed.length
-    const bulk = !built || dirty > Math.max(limit(), (tree?.n ?? 0) / 4)
-    if (bulk) {
-      built = false
-      for (const id of staleIds) flags[id]! &= ~STALE
-      staleIds.length = 0
-      extra.clear()
-    }
+    const bulk = c.bulk === true || !built || dirty > Math.max(limit(), (tree?.n ?? 0) / 4)
+    if (bulk) unbuild()
     for (const e of c.removed) {
       if (!(flags[e.id]! & LIVE)) continue // never indexed
       liveCount--
@@ -274,19 +321,32 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
     for (const e of c.added) if (put(e) && !bulk) extra.add(e.id)
   })
 
+  /** A cold build of every live id. The old tree is about to go: its arrays can take the new one. */
+  function startCold(): Generator<void, Tree> {
+    const ids = new Float64Array(liveCount)
+    let k = 0
+    for (let id = 1; id < flags.length; id++) if (flags[id]! & LIVE) ids[k++] = id
+    return coldBuild(ids, cache, spare ?? tree)
+  }
+
+  /**
+   * Brings the tree up to date now: a merge of the edits, or a cold build of a small tree. A big tree the merge
+   * cannot take is left to build() (built stays false).
+   */
   function rebuild(): void {
     let next: Tree | null = null
     if (liveCount > 0) {
       next = tree && built ? mergeBuild(tree, spare, [...extra], isStale, cache, liveCount) : null
       if (!next) {
-        const ids = new Float64Array(liveCount)
-        let k = 0
-        for (let id = 1; id < flags.length; id++) if (flags[id]! & LIVE) ids[k++] = id
-        // The old tree is about to go: its arrays can take the new one, but not while a merge reads them.
-        next = coldBuild(ids, cache, spare ?? tree)
+        if (big()) return unbuild()
+        next = drain(startCold())
         coldBuilds++
       }
     }
+    install(next)
+  }
+
+  function install(next: Tree | null): void {
     // The outgoing tree becomes the spare unless its arrays now hold the new tree; a spare whose arrays were
     // just taken is dropped, or the next merge would write into the leaves it reads.
     const prev = tree
@@ -300,17 +360,53 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
     rebuilds++
   }
 
+  /** Every live id whose cached bbox meets b: what a query answers while a big tree is not built. */
+  function scan(b: BBox, out: number[]): void {
+    for (let id = 1; id < flags.length; id++) {
+      if (!(flags[id]! & LIVE)) continue
+      const o = 4 * id
+      if (cache[o]! <= b.maxX && b.minX <= cache[o + 2]! && cache[o + 1]! <= b.maxY && b.minY <= cache[o + 3]!) out.push(id)
+    }
+  }
+
   return {
     query(b) {
       if (disposed) throw new Error('the spatial index is disposed')
-      if (!built || staleIds.length + extra.size > limit()) rebuild()
+      if (built ? staleIds.length + extra.size > limit() : !big()) rebuild()
       const out: number[] = []
+      if (!built) {
+        scan(b, out)
+        return out
+      }
       if (tree) searchTree(tree, b, isStale, out)
       for (const id of extra) {
         const o = 4 * id
         if (cache[o]! <= b.maxX && b.minX <= cache[o + 2]! && cache[o + 1]! <= b.maxY && b.minY <= cache[o + 3]!) out.push(id)
       }
       return out
+    },
+    get building() {
+      return !built && big()
+    },
+    build(more) {
+      if (disposed) throw new Error('the spatial index is disposed')
+      const quiet = !changed
+      changed = false
+      if (built) return
+      if (!big()) return rebuild()
+      if (!pending) {
+        if (!quiet) return
+        pending = startCold()
+      }
+      do {
+        const r = pending.next()
+        if (r.done) {
+          pending = null
+          coldBuilds++
+          install(r.value)
+          return
+        }
+      } while (more())
     },
     get rebuilds() {
       return rebuilds
