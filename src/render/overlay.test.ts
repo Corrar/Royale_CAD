@@ -19,7 +19,8 @@ function fakeContext() {
       return true
     },
   })
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, calls, named: (n: string) => calls.filter((c) => c[0] === n) }
+  // The test project has no DOM lib: the fake stands in for a CanvasRenderingContext2D.
+  return { ctx: ctx as never, calls, named: (n: string) => calls.filter((c) => c[0] === n) }
 }
 
 const state = (s: Partial<OverlayState>): OverlayState => ({ view: VIEW, cursor: null, pickbox: false, preview: null, corner: null, ...s })
