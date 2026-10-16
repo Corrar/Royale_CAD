@@ -1,13 +1,25 @@
+import { createDocument, docExtents, type Document } from '../kernel/document'
 import { fit, type ViewState } from '../kernel/view'
-import { ARC_STRIDE, SEGMENT_STRIDE, arcSubdiv, writeArc, writeSegment, writeStyle } from '../render/backend'
+import { createScene } from '../render/scene'
 import { createWebGL2Backend } from '../render/webgl2/backend'
 import { attachInput, FIT_MARGIN_PX } from './input'
 import { packRgba, readBackendTheme, readCssColor } from './theme'
 
-// Temporary demo scene (removed in T13): a triangle a few millimetres wide at UTM coordinates.
-const A = { x: 7_400_000.001, y: 9_100_000.001 }
-const B = { x: 7_400_000.005, y: 9_100_000.001 }
-const C = { x: 7_400_000.003, y: 9_100_000.004 }
+/** What an empty drawing frames: an A3 sheet in millimetres, like AutoCAD's metric limits. */
+const DEFAULT_EXTENTS = { minX: 0, minY: 0, maxX: 420, maxY: 297 }
+
+// Temporary demo drawing until the command line can draw (T19): shapes a few millimetres wide at UTM coordinates.
+function seedDemo(doc: Document): void {
+  const a = { x: 7_400_000.001, y: 9_100_000.001 }
+  const b = { x: 7_400_000.005, y: 9_100_000.001 }
+  const c = { x: 7_400_000.003, y: 9_100_000.004 }
+  doc.transact('demo', (tx) => {
+    for (const [p, q] of [[a, b], [b, c], [c, a]] as const) tx.add({ type: 'line', layer: 0, x0: p.x, y0: p.y, x1: q.x, y1: q.y })
+    tx.add({ type: 'circle', layer: 0, cx: 7_400_000.003, cy: 9_100_000.0025, r: 0.0015 })
+    tx.add({ type: 'arc', layer: 0, cx: a.x, cy: a.y, r: 0.002, a0: 0, a1: Math.PI / 2 })
+    tx.add({ type: 'arc', layer: 0, cx: b.x, cy: b.y, r: 0.002, a0: Math.PI / 2, a1: Math.PI })
+  })
+}
 
 export function createFrameLoop(
   requestFrame: (cb: () => void) => void,
@@ -37,40 +49,19 @@ export function createFrameLoop(
 
 export function startApp(canvas: HTMLCanvasElement): () => void {
   const backend = createWebGL2Backend(canvas, readBackendTheme(canvas))
+  const doc = createDocument()
+  seedDemo(doc)
+  const scene = createScene(doc, backend, { drawColor: packRgba(readCssColor(canvas, '--draw')) })
 
-  const buf = new ArrayBuffer(3 * SEGMENT_STRIDE)
-  const f32 = new Float32Array(buf)
-  const u32 = new Uint32Array(buf)
-  writeSegment(f32, u32, 0, A.x, A.y, B.x, B.y, 0)
-  writeSegment(f32, u32, 1, B.x, B.y, C.x, C.y, 0)
-  writeSegment(f32, u32, 2, C.x, C.y, A.x, A.y, 0)
-  const batch = backend.createBatch('segment', 3)
-  backend.writeBatch(batch, 0, f32)
-
-  const arcBuf = new ArrayBuffer(3 * ARC_STRIDE)
-  const af32 = new Float32Array(arcBuf)
-  const au32 = new Uint32Array(arcBuf)
-  writeArc(af32, au32, 0, 7_400_000.003, 9_100_000.0025, 0.0015, 0, 2 * Math.PI, 0)
-  writeArc(af32, au32, 1, A.x, A.y, 0.002, 0, Math.PI / 2, 0)
-  writeArc(af32, au32, 2, B.x, B.y, 0.002, Math.PI, -Math.PI / 2, 0)
-  const arcs = backend.createBatch('arc', 3)
-  backend.writeBatch(arcs, 0, af32)
-
-  const styles = new Uint32Array(2)
-  writeStyle(styles, 0, packRgba(readCssColor(canvas, '--draw')), 1.5, true)
-  backend.setStyleTable(styles)
-
-  const bbox = { minX: A.x, minY: A.y, maxX: B.x, maxY: C.y }
   let view: ViewState | null = null
   const loop = createFrameLoop(
     (cb) => requestAnimationFrame(cb),
     () => {
-      if (view) {
-        const subdiv = arcSubdiv(0.002 * view.scale * view.dpr) // largest radius in the batch, device px
-        backend.frame(view, [{ batch, first: 0, count: 3 }, { batch: arcs, first: 0, count: 3, subdiv }])
-      }
+      if (view) backend.frame(view, scene.draws(view))
     },
   )
+  const offDoc = doc.onChange(() => loop.invalidate())
+  const offLayers = doc.layers.onChange(() => loop.invalidate())
 
   const measure = (entries?: ResizeObserverEntry[]): void => {
     const dpr = window.devicePixelRatio
@@ -79,7 +70,9 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
     const width = box ? box.inlineSize / dpr : canvas.clientWidth
     const height = box ? box.blockSize / dpr : canvas.clientHeight
     backend.resize(width, height, dpr)
-    view = view ? { ...view, width, height, dpr } : fit({ cx: 0, cy: 0, scale: 1, width, height, dpr }, bbox, FIT_MARGIN_PX)
+    view = view
+      ? { ...view, width, height, dpr }
+      : fit({ cx: 0, cy: 0, scale: 1, width, height, dpr }, docExtents(doc) ?? DEFAULT_EXTENTS, FIT_MARGIN_PX)
     // Resizing the buffer clears the canvas, so draw in the same task or it flashes.
     loop.invalidate()
     loop.flush()
@@ -94,13 +87,16 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
       view = v
       loop.invalidate()
     },
-    extents: () => bbox,
+    extents: () => docExtents(doc),
   })
 
   return () => {
     view = null // a frame still pending must not draw on a disposed backend
     detachInput()
     observer.disconnect()
+    offDoc()
+    offLayers()
+    scene.dispose()
     backend.dispose()
   }
 }

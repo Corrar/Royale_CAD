@@ -19,6 +19,13 @@ export type Rgba = readonly [number, number, number, number]
 /** Colors the backend paints itself; the caller resolves them (e.g. from CSS tokens). */
 export interface BackendTheme { bg: Rgba; gridMinor: Rgba; gridMajor: Rgba }
 
+/**
+ * frame() drops a segment longer than MAX_SEGMENT_PX and an arc with a radius above MAX_ARC_RADIUS_PX (device px):
+ * past them the shader's f32 shifts and thickens the stroke. The caller re-emits such primitives clipped in f64.
+ */
+export const MAX_SEGMENT_PX = 4e6
+export const MAX_ARC_RADIUS_PX = 1e6
+
 export const SEGMENT_STRIDE = 36 // bytes per instance
 export const ARC_STRIDE = 32
 export const STYLE_WORDS = 2 // u32 words per style

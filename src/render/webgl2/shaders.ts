@@ -1,3 +1,5 @@
+import { MAX_ARC_RADIUS_PX, MAX_SEGMENT_PX } from '../backend'
+
 // Shared by the instanced programs: uniforms, style lookup and the hi/lo relative-to-eye subtraction.
 const INSTANCED_HEAD = `#version 300 es
 precision highp float;
@@ -34,10 +36,10 @@ void drop() {
 `
 
 // Segment: one instanced quad (TRIANGLE_STRIP, corner from gl_VertexID) per segment.
-// shortcut: after the eye subtraction everything is f32 in device px, so the error grows with the distance of the
-// endpoints from the view centre: past ~5e6 px the visible stretch shifts >= 0.25 px when the eye moves, near
-// 1.7e7 px the thickness doubles and at 1e8 px the line vanishes; the Scene (T13) re-emits, clipped in f64,
-// any primitive whose extent exceeds ~4e6 device px.
+// After the eye subtraction everything is f32 in device px, so the error grows with the distance of the endpoints
+// from the view centre: past ~5e6 px the visible stretch shifts >= 0.25 px when the eye moves, near 1.7e7 px the
+// thickness doubles and at 1e8 px the line vanishes. Segments longer than MAX_SEGMENT_PX are dropped here and
+// re-emitted by the caller, clipped in f64.
 export const SEGMENT_VERT = INSTANCED_HEAD + `
 layout(location = 0) in vec4 p0; // x0hi, x0lo, y0hi, y0lo
 layout(location = 1) in vec4 p1;
@@ -49,6 +51,7 @@ void main() {
 
   vec2 a = toEyePx(p0);
   vec2 b = toEyePx(p1);
+  if (length(b - a) > ${MAX_SEGMENT_PX.toFixed(1)}) { drop(); return; }
 
   vec2 d = b - a;
   float len = length(d);
@@ -62,8 +65,9 @@ void main() {
 `
 
 // Arc: one instanced TRIANGLE_STRIP of 2 * (subdiv + 1) vertices per arc, evaluated here.
-// shortcut: r, a0 and sweep are f32 and subdiv is capped at 4096, so past r * scale of about 1e6 px an
-// arc can land a few px off and lose thickness (same f32 limit as the segment); clipping the visible span on the CPU belongs to Scene (T13).
+// r, a0 and sweep are f32 and subdiv is capped at 4096, so past a radius of about 1e6 px an arc lands a few px off
+// and loses thickness (the segment's f32 limit). Arcs with a radius above MAX_ARC_RADIUS_PX are dropped here and
+// re-emitted by the caller, clipped and flattened in f64.
 export const ARC_VERT = INSTANCED_HEAD + `
 layout(location = 0) in vec4 c; // cxhi, cxlo, cyhi, cylo
 layout(location = 1) in vec3 shape; // r, a0, sweep
@@ -74,6 +78,7 @@ uniform int subdiv;
 void main() {
   float half_w;
   if (!loadStyle(styleId, half_w)) { drop(); return; }
+  if (shape.x * pxPerUnit > ${MAX_ARC_RADIUS_PX.toFixed(1)}) { drop(); return; }
 
   float angle = shape.y + shape.z * float(gl_VertexID >> 1) / float(subdiv);
   float side = float(gl_VertexID & 1) * 2.0 - 1.0;
