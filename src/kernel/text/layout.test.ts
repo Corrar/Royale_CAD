@@ -78,6 +78,16 @@ describe('layoutMText', () => {
     expect([...new Set(two.glyphs.map((g) => g.y))]).toEqual([-1, -1 - 10 / 3])
   })
 
+  it('a tab (^I) goes to the next stop, every 4 heights from where the line starts; control characters draw nothing', () => {
+    const list = layoutMText(mtext({ value: '\\pxi-3,l3,t3;1.^IALL\\P10.^IALL' }))
+    expect(list.glyphs.map((g) => String.fromCodePoint(g.cp)).join('')).toBe('1.ALL10.ALL')
+    // The text after the numbers starts at one stop on both lines.
+    expect(list.glyphs.filter((g) => g.cp === 65).map((g) => g.x)).toEqual([4, 4])
+    expect(widthOf('AAAAA\tB')).toBeCloseTo(8 + advanceOf(66), 12)
+    const t = layoutText(text({ value: 'A^IB^JC' }))
+    expect(t.glyphs.map((g) => [g.cp, g.x])).toEqual([[65, 0], [66, 4], [67, 4 + advanceOf(66)]])
+  })
+
   it('middle center: the box is centred on the point; each line centred in the box', () => {
     const l = layoutMText(mtext({ value: 'HHHH\\PHH', attachment: 5, x: 50, y: 60 }))
     const c = atFrame(l.frame, (l.box.x0 + l.box.x1) / 2, (l.box.y1 + (-1 - 5 / 3)) / 2)

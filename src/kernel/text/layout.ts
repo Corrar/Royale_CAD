@@ -19,19 +19,26 @@ export type MTextProps = Omit<MText, 'type' | 'id' | 'layer' | 'color'>
 
 export const atFrame = (f: TextFrame, x: number, y: number): Vec2 => ({ x: f.ox + x * f.ux + y * f.vx, y: f.oy + x * f.uy + y * f.vy })
 
+/** Tab stops, in heights: MTEXT's default, every 4 from where the line starts (\p tab stops are not read). */
+const TAB = 4
+
+/** The advance of cp at x from where its line starts: a tab goes on to the next stop, other controls take none. */
+const advanceAt = (cp: number, x: number): number => (cp === 9 ? (Math.floor(x / TAB) + 1) * TAB - x : cp < 32 ? 0 : advanceOf(cp))
+
 /** The width of s in capital heights. */
 export function widthOf(s: string): number {
   let w = 0
-  for (const ch of s) w += advanceOf(ch.codePointAt(0)!)
+  for (const ch of s) w += advanceAt(ch.codePointAt(0)!, w)
   return w
 }
 
-/** The characters of s from (x, y) on: a space only advances. */
+/** The characters of s from (x, y) on: a space or a control character only advances. */
 function place(s: string, x: number, y: number, out: Laid['glyphs']): void {
+  let at = 0
   for (const ch of s) {
     const cp = ch.codePointAt(0)!
-    if (cp !== 32 && cp !== 0xa0) out.push({ cp, x, y })
-    x += advanceOf(cp)
+    if (cp > 32 && cp !== 0xa0) out.push({ cp, x: x + at, y })
+    at += advanceAt(cp, at)
   }
 }
 
