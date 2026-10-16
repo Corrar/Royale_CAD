@@ -86,7 +86,7 @@ function circlePath(e: Circle, tol: number): Path {
 }
 
 function polylinePath(e: Polyline, tol: number): Path {
-  const { pts, bulges } = e
+  const { pts, bulges, widths } = e
   const n = pts.length >> 1
   const m = e.closed ? n : n - 1
   const vertex = (k: number): Vec2 => ({ x: pts[2 * (k % n)]!, y: pts[2 * (k % n) + 1]! })
@@ -164,6 +164,7 @@ function polylinePath(e: Polyline, tol: number): Path {
       const start = pointOn(pieceAt(u), u - pieceAt(u))
       const xy = [start.x, start.y]
       const bs: number[] = []
+      const ws: number[] = []
       while (u < stop) {
         const k = Math.floor(u)
         const v = Math.min(k + 1, stop)
@@ -171,11 +172,19 @@ function polylinePath(e: Polyline, tol: number): Path {
         const b = bulges?.[k % m] ?? 0
         // A part of an arc piece turns by the same fraction of its angle: bulge = tan(angle / 4).
         bs.push(b === 0 || v - u === 1 ? b : Math.tan(Math.atan(b) * (v - u)))
+        if (widths) {
+          // A part of a tapered piece runs between the widths at its ends.
+          const i = 2 * (k % m)
+          ws.push(lerp(widths[i]!, widths[i + 1]!, u - k), lerp(widths[i]!, widths[i + 1]!, v - k))
+        }
         xy.push(p.x, p.y)
         u = v
       }
       bs.push(0)
-      return { ...e, pts: new Float64Array(xy), bulges: bs.some((b) => b !== 0) ? new Float64Array(bs) : null, closed: false }
+      // The last vertex starts no piece: the polyline's defaults, none of its own.
+      if (widths) ws.push(e.startWidth ?? 0, e.endWidth ?? 0)
+      const cut = { ...e, pts: new Float64Array(xy), bulges: bs.some((b) => b !== 0) ? new Float64Array(bs) : null, closed: false }
+      return widths ? { ...cut, widths: new Float64Array(ws) } : cut
     },
   }
 }

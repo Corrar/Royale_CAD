@@ -287,63 +287,89 @@ function parser(pairs: PairList) {
     return { type: 'arc', cx: s * cx, cy, r, a0: normAngle(b0), a1: normAngle(b1) }
   }
 
-  const polylineOf = (xy: number[], bulges: number[], closed: boolean): Parsed => {
+  /**
+   * widths: each vertex's start and end width, null for none; w0 and w1: those of a piece without its own. The
+   * polyline keeps widths only when one of them differs from w0 or w1.
+   */
+  const polylineOf = (xy: number[], bulges: number[], widths: number[] | null, w0: number, w1: number, closed: boolean): Parsed => {
     if (xy.length < 2) throw new Unsupported('it has no vertices')
     if (ocsSign(head) === -1) {
       for (let k = 0; k < xy.length; k += 2) xy[k] = -xy[k]!
       for (let k = 0; k < bulges.length; k++) bulges[k] = -bulges[k]!
     }
-    return { type: 'polyline', pts: new Float64Array(xy), bulges: bulges.some((v) => v !== 0) ? new Float64Array(bulges) : null, closed }
+    const own = widths?.some((w, k) => w !== (k % 2 === 0 ? w0 : w1)) ? new Float64Array(widths) : null
+    return {
+      type: 'polyline', pts: new Float64Array(xy), bulges: bulges.some((v) => v !== 0) ? new Float64Array(bulges) : null, closed,
+      ...(own && { widths: own }), ...(w0 !== 0 && { startWidth: w0 }), ...(w1 !== 0 && { endWidth: w1 }),
+    }
   }
 
   const lwpolyline = (a: number, b: number): Parsed => {
     const xy: number[] = []
     const bulges: number[] = []
+    const widths: number[] = []
     let flags = 0
+    let constant = 0
     for (let i = a + 1; i < b; i++) {
       const c = codes[i]!
       if (c === 70) flags = num(i)
       else if (c === 10) {
         xy.push(num(i), 0)
         bulges.push(0)
+        widths.push(0, 0)
       } else if (c === 20 && xy.length > 0) xy[xy.length - 1] = num(i)
       else if (c === 42 && bulges.length > 0) bulges[bulges.length - 1] = num(i)
+      else if (c === 40 && widths.length > 0) widths[widths.length - 2] = num(i)
+      else if (c === 41 && widths.length > 0) widths[widths.length - 1] = num(i)
+      else if (c === 43) constant = num(i)
       else common(c, i)
     }
-    return polylineOf(xy, bulges, (flags & 1) !== 0)
+    // A constant width other than 0 shows over the vertices' own, as in AutoCAD.
+    return polylineOf(xy, bulges, constant === 0 ? widths : null, constant, constant, (flags & 1) !== 0)
   }
 
   /** POLYLINE: the 2D kind, with its vertices (spline frame points left out); 3D polylines and meshes stay as is. */
   const polyline = (a: number, own: number, end: number): Parsed => {
     let flags = 0
+    let w0 = 0
+    let w1 = 0
     for (let i = a + 1; i < own; i++) {
       const c = codes[i]!
       if (c === 70) flags = num(i)
+      else if (c === 40) w0 = num(i)
+      else if (c === 41) w1 = num(i)
       else common(c, i)
     }
     if (flags & 8) throw new Unsupported('3D polylines are not supported')
     if (flags & (16 | 64)) throw new Unsupported('meshes are not supported')
     const xy: number[] = []
     const bulges: number[] = []
+    const widths: number[] = []
     let i = own
     while (i < end && pairs.is(i, 0, 'VERTEX')) {
       let x = 0
       let y = 0
       let bulge = 0
       let vflags = 0
+      // A vertex without widths of its own takes the polyline's defaults.
+      let s = w0
+      let t = w1
       for (i++; i < end && codes[i] !== 0; i++) {
         const c = codes[i]!
         if (c === 10) x = num(i)
         else if (c === 20) y = num(i)
         else if (c === 42) bulge = num(i)
+        else if (c === 40) s = num(i)
+        else if (c === 41) t = num(i)
         else if (c === 70) vflags = num(i)
       }
       if (!(vflags & 16)) {
         xy.push(x, y)
         bulges.push(bulge)
+        widths.push(s, t)
       }
     }
-    return polylineOf(xy, bulges, (flags & 1) !== 0)
+    return polylineOf(xy, bulges, widths, w0, w1, (flags & 1) !== 0)
   }
 
   /** ELLIPSE: centre and major axis in WCS; the extrusion (±Z only) says which way the parameter turns. */
@@ -774,6 +800,9 @@ function blockDefs(pairs: PairList, start: number, end: number): Map<string, Blo
   return defs
 }
 
+/** Whether d is a polyline with a width (every width field is absent when 0). */
+const isWide = (d: Draft): boolean => d.type === 'polyline' && (d.widths !== undefined || d.startWidth !== undefined || d.endWidth !== undefined)
+
 /** How often, in entities, parseDxf reports progress. */
 const PROGRESS_EVERY = 16384
 
@@ -805,6 +834,8 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
   const defs = bs ? blockDefs(pairs, bs.start, bs.end) : new Map<string, BlockDef>()
   const made = new Map<string, Block | null>() // null: being read
   let blockKept = 0
+  // Polylines with a width, drawn thin for now.
+  let wide = 0
   const blockOf = (name: string): Block => {
     const key = name.toUpperCase()
     const done = made.get(key)
@@ -825,6 +856,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
         const d = resolve(read(name, a, rs.owns[k]!, rs.ends[k]!), true)
         if (d) entities.push(d as BlockEntity)
         else blockKept++
+        if (d && isWide(d)) wide++
       } catch (error) {
         if (!(error instanceof Unsupported) || error instanceof Cycle) throw error
         blockKept++
@@ -878,6 +910,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
       else if (head.paper) keep('paper space')
       else if (head.invisible) keep('invisible')
       else draft = resolve(parsed, false)
+      if (draft && isWide(draft)) wide++
     } catch (error) {
       if (!(error instanceof Unsupported)) throw error
       warnings.push(`line ${error.line ?? 2 * a + 1}: ${name} kept as is: ${error.message}.`)
@@ -905,6 +938,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
     else warnings.push(`${n} ${key} kept as is (not drawn).`)
   }
   if (blockKept > 0) warnings.push(`${blockKept} ${blockKept === 1 ? 'entity' : 'entities'} in blocks not drawn.`)
+  if (wide > 0) warnings.push(`${wide} ${wide === 1 ? 'polyline' : 'polylines'} with width drawn thin (their widths are kept).`)
 
   let handseed = parseInt(header.get('$HANDSEED') ?? '0', 16) || 0
   const codes = pairs.codes

@@ -40,12 +40,19 @@ export interface Arc extends Base {
 /**
  * pts holds x0, y0, x1, y1, …. bulges[i] shapes the piece from vertex i to the next (tan of a quarter of its
  * included angle, positive counter-clockwise); null when every piece is straight.
+ *
+ * Widths are kept and scaled with the polyline, though it is drawn thin for now. widths[2i] and widths[2i + 1] are
+ * the start and end width of the piece from vertex i; without them every piece starts at startWidth and ends at
+ * endWidth (POLYLINE's defaults; LWPOLYLINE's constant width is both). Each is absent when there is none, or 0.
  */
 export interface Polyline extends Base {
   readonly type: 'polyline'
   readonly pts: Float64Array
   readonly bulges: Float64Array | null
   readonly closed: boolean
+  readonly widths?: Float64Array
+  readonly startWidth?: number
+  readonly endWidth?: number
 }
 
 /** A point object (DXF POINT): drawn as a dot, found by NOD. */

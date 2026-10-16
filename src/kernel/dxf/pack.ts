@@ -16,7 +16,8 @@ export interface DraftPack {
   readonly colors: Uint32Array
   /**
    * The numbers, draft after draft: line x0 y0 x1 y1 · circle cx cy r · arc cx cy r a0 a1 · point x y · polyline
-   * closed, vertex count, the coordinates, then 1 and a bulge per vertex, or 0 · opaque its index in names/raws ·
+   * closed, vertex count, the coordinates, then 1 and a bulge per vertex, or 0, then 1 and a start and end width per
+   * vertex, or 0, then startWidth endWidth (0 when absent) · opaque its index in names/raws ·
    * ellipse cx cy mx my ratio t0 t1 · spline degree, closed, knot count, the knots, control point count, the
    * coordinates, then 1 and a weight per point, or 0 · insert its block's index in blocks, x y sx sy rotation cols
    * rows dx dy, its attribute count, then for each its tag's index in texts, layer, color + 1 and the numbers of a
@@ -110,7 +111,7 @@ export function packDrafts(drafts: readonly Draft[]): DraftPack {
         break
       case 'polyline': {
         const m = d.pts.length >> 1
-        need(3 + 3 * m)
+        need(6 + 5 * m)
         nums[len++] = d.closed ? 1 : 0
         nums[len++] = m
         nums.set(d.pts, len)
@@ -120,6 +121,13 @@ export function packDrafts(drafts: readonly Draft[]): DraftPack {
           nums.set(d.bulges, len)
           len += m
         }
+        nums[len++] = d.widths ? 1 : 0
+        if (d.widths) {
+          nums.set(d.widths, len)
+          len += 2 * m
+        }
+        nums[len++] = d.startWidth ?? 0
+        nums[len++] = d.endWidth ?? 0
         break
       }
       case 'opaque':
@@ -236,7 +244,14 @@ export function unpackDrafts(p: DraftPack, from: number, to: number): Draft[] {
         const m = v[o + 1]!
         const pts = v.slice(o + 2, o + 2 + 2 * m)
         const b = o + 2 + 2 * m
-        d = { type: 'polyline', layer, pts, bulges: v[b] === 1 ? v.slice(b + 1, b + 1 + m) : null, closed: v[o] === 1 }
+        const w = v[b] === 1 ? b + 1 + m : b + 1
+        const s = v[w] === 1 ? w + 1 + 2 * m : w + 1
+        d = {
+          type: 'polyline', layer, pts, bulges: v[b] === 1 ? v.slice(b + 1, b + 1 + m) : null, closed: v[o] === 1,
+          ...(v[w] === 1 && { widths: v.slice(w + 1, w + 1 + 2 * m) }),
+          ...(v[s] !== 0 && { startWidth: v[s]! }),
+          ...(v[s + 1] !== 0 && { endWidth: v[s + 1]! }),
+        }
         break
       }
       case KIND.ellipse:

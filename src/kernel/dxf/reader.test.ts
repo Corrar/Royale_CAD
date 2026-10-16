@@ -69,6 +69,28 @@ describe('readDxf', () => {
     expect(text.endsWith('SEQEND\r\n  5\r\n35\r\n  8\r\n0\r\n')).toBe(true)
   })
 
+  it('polyline widths: LWPOLYLINE 40/41 per vertex or 43 constant, POLYLINE defaults and VERTEX widths; said to show thin', () => {
+    const d = readDxf(file([
+      0, 'LWPOLYLINE', 8, '0', 90, 3, 70, 0, 10, 0, 20, 0, 40, 0.5, 41, 0.5, 10, 10, 20, 0, 40, 2, 41, 0, 10, 12, 20, 0,
+      0, 'LWPOLYLINE', 8, '0', 90, 2, 70, 0, 43, 0.3, 10, 0, 20, 5, 10, 10, 20, 5,
+      // As ezdxf writes it: a VERTEX without 40 or 41 takes the POLYLINE's default.
+      0, 'POLYLINE', 8, '0', 66, 1, 10, 0, 20, 0, 30, 0, 70, 0, 40, 0.2, 41, 0.4,
+      0, 'VERTEX', 8, '0', 10, 0, 20, 0, 30, 0, 70, 0,
+      0, 'VERTEX', 8, '0', 10, 10, 20, 0, 30, 0, 40, 2, 70, 0,
+      0, 'VERTEX', 8, '0', 10, 12, 20, 0, 30, 0, 70, 0,
+      0, 'SEQEND', 8, '0',
+      0, 'LWPOLYLINE', 8, '0', 90, 2, 70, 0, 43, 0, 10, 0, 20, 0, 40, 0, 41, 0, 10, 4, 20, 0, 40, 0, 41, 0,
+    ]))
+    const [varying, constant, old, thin] = all(d) as [Polyline, Polyline, Polyline, Polyline]
+    expect(Array.from(varying.widths!)).toEqual([0.5, 0.5, 2, 0, 0, 0])
+    expect([varying.startWidth, varying.endWidth]).toEqual([undefined, undefined])
+    expect([constant.widths, constant.startWidth, constant.endWidth]).toEqual([undefined, 0.3, 0.3])
+    expect([old.startWidth, old.endWidth]).toEqual([0.2, 0.4])
+    expect(Array.from(old.widths!)).toEqual([0.2, 0.4, 2, 0.4, 0.2, 0.4])
+    expect(thin).toEqual({ type: 'polyline', id: 4, layer: 0, pts: new Float64Array([0, 0, 4, 0]), bulges: null, closed: false })
+    expect(d.warnings).toEqual(['3 polylines with width drawn thin (their widths are kept).'])
+  })
+
   it('extrusion (0,0,-1) mirrors across the Y axis; any other direction is kept as is', () => {
     const d = readDxf(file([
       0, 'CIRCLE', 8, '0', 10, 5, 20, 1, 40, 1, 210, 0, 220, 0, 230, -1,

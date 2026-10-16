@@ -46,7 +46,14 @@ export const polylineType: EntityType<Polyline> = {
     }
     // A mirroring turns every arc piece the other way.
     const bulges = e.bulges && affineDet(m) < 0 ? e.bulges.map((b) => -b) : e.bulges && e.bulges.slice()
-    return { ...e, pts, bulges }
+    // Widths grow with a scale, as in AutoCAD; a move, a turn or a mirror keeps them.
+    const k = Math.sqrt(Math.abs(affineDet(m)))
+    return {
+      ...e, pts, bulges,
+      ...(e.widths && { widths: e.widths.map((w) => w * k) }),
+      ...(e.startWidth !== undefined && { startWidth: e.startWidth * k }),
+      ...(e.endWidth !== undefined && { endWidth: e.endWidth * k }),
+    }
   },
   snapPoints(e, modes, out) {
     if (modes & SNAP.END) for (let i = 0; i + 1 < e.pts.length; i += 2) out(e.pts[i]!, e.pts[i + 1]!, SNAP.END)
@@ -74,6 +81,7 @@ export const polylineType: EntityType<Polyline> = {
   validate(e) {
     if (e.pts.length < 2 || e.pts.length % 2 !== 0) return `polyline vertices must be x, y pairs, at least one; got ${e.pts.length} numbers`
     if (e.bulges && e.bulges.length !== e.pts.length / 2) return `polyline bulges must have one entry per vertex`
+    if (e.widths && e.widths.length !== e.pts.length) return `polyline widths must have a start and an end width per vertex`
     return undefined
   },
 }

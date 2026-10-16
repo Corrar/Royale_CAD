@@ -360,51 +360,99 @@ function asPolyline(e: Ellipse | Spline): Polyline {
   return { type: 'polyline', id: e.id, layer: e.layer, color: e.color, pts: new Float64Array(pts), bulges: null, closed } as Polyline
 }
 
+/**
+ * e's widths as an LWPOLYLINE holds them: one constant width (43), or each vertex's own (40, 41; null when all are
+ * 0). Default start and end widths that differ go to every vertex.
+ */
+function lwWidths(e: Polyline): { constant: number; widths: Float64Array | null } {
+  const s = e.startWidth ?? 0
+  const t = e.endWidth ?? 0
+  if (!e.widths && s === t) return { constant: s, widths: null }
+  return { constant: 0, widths: e.widths ?? Float64Array.from({ length: e.pts.length }, (_, i) => (i % 2 === 0 ? s : t)) }
+}
+
+/** An LWPOLYLINE's vertex groups, x by s (±1, its OCS): 10 and 20, then widths and bulge unless 0. */
+function lwVertices(e: Polyline, widths: Float64Array | null, s: number): [number, string][] {
+  const gs: [number, string][] = []
+  for (let k = 0; k < e.pts.length >> 1; k++) {
+    gs.push([10, real(s * e.pts[2 * k]!)], [20, real(e.pts[2 * k + 1]!)])
+    if (widths && (widths[2 * k] !== 0 || widths[2 * k + 1] !== 0)) gs.push([40, real(widths[2 * k]!)], [41, real(widths[2 * k + 1]!)])
+    const b = e.bulges?.[k] ?? 0
+    if (b !== 0) gs.push([42, real(s * b)])
+  }
+  return gs
+}
+
 function lwpolyline(c: Ctx, e: Polyline, handle: string | null): void {
   const { o } = c
+  const w = lwWidths(e)
   head(c, 'LWPOLYLINE', e, handle, 'AcDbPolyline')
   o.int(90, e.pts.length >> 1)
   o.int(70, e.closed ? 1 : 0)
-  for (let k = 0; k < e.pts.length >> 1; k++) {
-    o.real(10, e.pts[2 * k]!)
-    o.real(20, e.pts[2 * k + 1]!)
-    const b = e.bulges?.[k] ?? 0
-    if (b !== 0) o.real(42, b)
-  }
+  if (w.constant !== 0) o.real(43, w.constant)
+  for (const [code, v] of lwVertices(e, w.widths, 1)) o.str(code, v)
+}
+
+/** Vertex k's widths of its own (40, 41): those that differ from the polyline's defaults. */
+function vertexWidths(e: Polyline, k: number): [number, string][] {
+  const gs: [number, string][] = []
+  if (!e.widths) return gs
+  if (e.widths[2 * k] !== (e.startWidth ?? 0)) gs.push([40, real(e.widths[2 * k]!)])
+  if (e.widths[2 * k + 1] !== (e.endWidth ?? 0)) gs.push([41, real(e.widths[2 * k + 1]!)])
+  return gs
 }
 
 /** POLYLINE, its VERTEX records and the SEQEND, for files older than R14. */
 function oldPolyline(c: Ctx, e: Polyline, handle: string | null): void {
-  const { o, f } = c
+  const { o } = c
   head(c, 'POLYLINE', e, handle, 'AcDb2dPolyline')
   o.int(66, 1)
   o.real(10, 0)
   o.real(20, 0)
   o.real(30, 0)
   o.int(70, e.closed ? 1 : 0)
-  const child = (type: string): void => {
+  if (e.startWidth) o.real(40, e.startWidth)
+  if (e.endWidth) o.real(41, e.endWidth)
+  vertexRecords(c, o, e, handle, 1)
+}
+
+type Groups = [number, string][]
+
+/**
+ * A POLYLINE's VERTEX records and SEQEND, owned by the POLYLINE `owner`, x by s (±1, its OCS). Patched, the old
+ * records are passed: vertex k keeps the handle and height of old vertex k while they last; the SEQEND stays.
+ */
+function vertexRecords(c: Ctx, o: Emitter, e: Polyline, owner: string | null, s: number, old: Groups[] = [], seqend: Groups | null = null): void {
+  const { f } = c
+  const layer = layerName(c, e)
+  const value = (k: number, code: number): string | undefined => old[k]?.find((g) => g[0] === code)?.[1]
+  const child = (type: string, handle: string | undefined): void => {
     o.str(0, type)
-    if (f.handles) o.str(5, c.ids.take())
+    const h = handle ?? (f.handles ? c.ids.take() : undefined)
+    if (h) o.str(5, h)
     if (f.modern) {
-      if (handle) o.str(330, handle)
+      if (owner) o.str(330, owner)
       o.str(100, 'AcDbEntity')
     }
-    o.str(8, layerName(c, e))
+    o.str(8, layer)
   }
   for (let k = 0; k < e.pts.length >> 1; k++) {
-    child('VERTEX')
+    child('VERTEX', value(k, 5)?.trim())
     if (f.modern) {
       o.str(100, 'AcDbVertex')
       o.str(100, 'AcDb2dVertex')
     }
-    o.real(10, e.pts[2 * k]!)
+    o.real(10, s * e.pts[2 * k]!)
     o.real(20, e.pts[2 * k + 1]!)
-    o.real(30, 0)
+    o.str(30, value(k, 30) ?? real(0))
+    for (const [code, v] of vertexWidths(e, k)) o.str(code, v)
     const b = e.bulges?.[k] ?? 0
-    if (b !== 0) o.real(42, b)
+    if (b !== 0) o.real(42, s * b)
     o.int(70, 0)
   }
-  child('SEQEND')
+  if (!seqend) return child('SEQEND', undefined)
+  o.str(0, 'SEQEND')
+  for (const [code, v] of seqend) o.str(code, code === 8 ? layer : v)
 }
 
 const DXF_NAME: Readonly<Record<Entity['type'], string>> = {
@@ -415,12 +463,14 @@ const DXF_NAME: Readonly<Record<Entity['type'], string>> = {
 /**
  * The record the file gave an edited entity, with its geometry, layer and color replaced: linetype, lineweight,
  * thickness, reactors and extended data survive the edit. Planar entities stay in the record's OCS. Null when the
- * record cannot take the new entity as is (another type, a POLYLINE, a missing group): it is then written fresh.
+ * record cannot take the new entity as is (another type, a missing group): it is then written fresh.
  */
 function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): string | null {
   const p = tokenize(text)
-  if (!p.is(0, 0, DXF_NAME[e.type]) || e.type === 'opaque') return null
-  const gs: [number, string][] = []
+  // A polyline read from a POLYLINE stays one, whatever the version.
+  const name = e.type === 'polyline' && p.is(0, 0, 'POLYLINE') ? 'POLYLINE' : DXF_NAME[e.type]
+  if (!p.is(0, 0, name) || e.type === 'opaque') return null
+  const gs: Groups = []
   for (let i = 1; i < p.length && p.code(i) !== 0; i++) gs.push([p.code(i), p.value(i)])
   const at = (code: number): number => gs.findIndex((g) => g[0] === code)
   const set = (code: number, v: string): boolean => {
@@ -541,16 +591,29 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
       if (e.value !== (was as MText).value) ok = false
       break
     case 'polyline': {
+      if (name === 'POLYLINE') {
+        // The head here, the vertices after it. A curve or spline fit no longer matches them: plain, as shown.
+        const setNumber = (code: number, v: number, text: string): void => {
+          const k = at(code)
+          if (k >= 0 && Number(gs[k]![1]) !== v) gs[k]![1] = text
+          if (k >= 0 || v === 0) return
+          // Missing, it goes after the groups AutoCAD puts before it: 66, 10, 20, 30, 39, 70, 40, 41.
+          const after = Math.max(...[66, 10, 20, 30, 39, 70, 40, 41].map(at))
+          if (after >= 0) gs.splice(after + 1, 0, [code, text])
+          else ok = false
+        }
+        const flags = (Number(gs[at(70)]?.[1] ?? 0) & ~(1 | 2 | 4)) | (e.closed ? 1 : 0)
+        setNumber(70, flags, String(flags))
+        setNumber(40, e.startWidth ?? 0, real(e.startWidth ?? 0))
+        setNumber(41, e.endWidth ?? 0, real(e.endWidth ?? 0))
+        break
+      }
       const VERTEX = new Set([10, 20, 40, 41, 42, 91])
       const first = gs.findIndex((g) => VERTEX.has(g[0]))
       if (first < 0) return null
       const rest = gs.filter((g) => !VERTEX.has(g[0]))
-      const vertices: [number, string][] = []
-      for (let k = 0; k < e.pts.length >> 1; k++) {
-        vertices.push([10, real(s * e.pts[2 * k]!)], [20, real(e.pts[2 * k + 1]!)])
-        const b = e.bulges?.[k] ?? 0
-        if (b !== 0) vertices.push([42, real(s * b)])
-      }
+      const w = lwWidths(e)
+      const vertices = lwVertices(e, w.widths, s)
       // The vertices go back where they were: after the groups that came before them.
       const before = gs.slice(0, first).filter((g) => !VERTEX.has(g[0])).length
       gs.splice(0, gs.length, ...rest.slice(0, before), ...vertices, ...rest.slice(before))
@@ -558,6 +621,10 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
       const flags = Number(gs[at(70)]?.[1] ?? 0)
       if (at(70) >= 0) set(70, String((flags & ~1) | (e.closed ? 1 : 0)))
       else if (e.closed) return null
+      // The constant width, as read when it did not change; after the flags (or the count) when the record had none.
+      const constant = at(43)
+      if (constant >= 0 && Number(gs[constant]![1]) !== w.constant) gs[constant]![1] = real(w.constant)
+      else if (constant < 0 && w.constant !== 0) gs.splice((at(70) >= 0 ? at(70) : at(90)) + 1, 0, [43, real(w.constant)])
       break
     }
   }
@@ -568,11 +635,26 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
   const kept = gs.filter((g) => g[0] !== 62 && g[0] !== 420 && g[0] !== 430)
   const layerAt = kept.findIndex((g) => g[0] === 8)
   const out = emitter(nl)
-  out.str(0, DXF_NAME[e.type])
+  out.str(0, name)
   kept.forEach(([code, v], k) => {
     out.str(code, v)
     if (k === layerAt) out.raw(colors.text())
   })
+  if (name === 'POLYLINE') {
+    const old: Groups[] = []
+    let seqend: Groups | null = null
+    let i = 1
+    while (i < p.length && p.code(i) !== 0) i++
+    while (i < p.length) {
+      const vertex = p.is(i, 0, 'VERTEX')
+      const child: Groups = []
+      for (i++; i < p.length && p.code(i) !== 0; i++) child.push([p.code(i), p.value(i)])
+      if (vertex) old.push(child)
+      else seqend = child
+    }
+    vertexRecords(c, out, e as Polyline, gs.find((g) => g[0] === 5)?.[1].trim() ?? null, s, old, seqend)
+    return out.text()
+  }
   if (e.type !== 'insert') return out.text()
   // Its attributes (ATTRIB … SEQEND) follow it: as the document has them, or, when it does not (one was not
   // understood), moved as the edit moved the insert.
@@ -719,20 +801,24 @@ function movedText(gs: [number, string][], m: Affine): [number, string][] {
   return out
 }
 
-function writeEntities(c: Ctx, source: DxfSource | null): void {
+/** Writes the document's entities; returns the spans of the file's records still there, as start, end pairs. */
+function writeEntities(c: Ctx, source: DxfSource | null): number[] {
+  const kept: number[] = []
   for (const e of c.doc.entities()) {
+    const span = source?.loaded(e.id) ?? null
+    if (span) kept.push(span.start, span.end)
     if (e.type === 'opaque') {
       c.o.raw(e.raw)
       continue
     }
-    const span = source?.loaded(e.id) ?? null
     if (span && span.entity === e) {
       // As read: the exact text, so a file written back without edits is the file read.
       c.o.raw(source!.text.slice(span.start, span.end))
       continue
     }
     const handle = span ? source!.handleOf(e.id) : null
-    if (span && handle !== null) {
+    // Patched with or without a handle: an R12 file may have none.
+    if (span) {
       const p = patched(c, e, span.entity, source!.text.slice(span.start, span.end), source!.newline)
       if (p !== null) {
         c.o.raw(p)
@@ -741,6 +827,110 @@ function writeEntities(c: Ctx, source: DxfSource | null): void {
     }
     fresh(c, e, handle ?? (c.f.handles ? c.ids.take() : null))
   }
+  return kept
+}
+
+/**
+ * What the document no longer has of the file's ENTITIES, the records outside the spans still written: the handles
+ * of erased entities and of their VERTEX, ATTRIB and SEQEND records, and of what they own by a hard pointer (360,
+ * an extension dictionary).
+ */
+function erasedHandles(source: DxfSource, kept: number[]): Set<string> {
+  const gone = new Set<string>()
+  const s = source.sections.find((x) => x.name === 'ENTITIES')
+  if (!s) return gone
+  // In file order: undo brings an entity back at the end of the document.
+  let order = Array.from({ length: kept.length >> 1 }, (_, k) => k)
+  if (order.some((k) => k > 0 && kept[2 * k]! < kept[2 * k - 2]!)) order = order.sort((a, b) => kept[2 * a]! - kept[2 * b]!)
+  let from = s.start
+  const scan = (to: number): void => {
+    if (to <= from) return
+    const p = tokenize(source.text.slice(from, to))
+    for (let i = 0; i < p.length; i++) {
+      const v = p.value(i).trim()
+      if ((p.code(i) === 5 || p.code(i) === 360) && v) gone.add(v)
+    }
+  }
+  for (const k of order) {
+    scan(kept[2 * k]!)
+    from = Math.max(from, kept[2 * k + 1]!)
+  }
+  scan(s.end)
+  return gone
+}
+
+/**
+ * The OBJECTS section without what erased entities owned (gone: see erasedHandles), at any depth: an extension
+ * dictionary, what it holds. GROUP (340) and SORTENTSTABLE (331 and its sort handle) lists leave the erased
+ * entities out; a group they leave empty goes, and dictionary entries (3 and 350 or 360) of what went. The rest
+ * as read.
+ */
+function writeObjects(text: string, gone: Set<string>): string {
+  if (gone.size === 0) return text
+  const p = tokenize(text)
+  // Records between 0/SECTION and 0/ENDSEC: record r is [starts[r], starts[r + 1]).
+  const starts: number[] = []
+  for (let i = 0; i < p.length; i++) if (p.code(i) === 0) starts.push(i)
+  const handles: string[] = []
+  const owned = new Map<string, number[]>()
+  const dropped = new Set<number>()
+  for (let r = 1; r + 1 < starts.length; r++) {
+    let handle = ''
+    let owner = ''
+    let reactors = false
+    let members = 0
+    let erased = 0
+    for (let i = starts[r]! + 1; i < starts[r + 1]!; i++) {
+      const code = p.code(i)
+      // The owner is the 330 outside the 102 groups ({ACAD_REACTORS … }).
+      if (code === 102) reactors = p.value(i).trim().startsWith('{')
+      else if (code === 5 && !handle) handle = p.value(i).trim()
+      else if (code === 330 && !reactors && !owner) owner = p.value(i).trim()
+      else if (code === 340) {
+        members++
+        if (gone.has(p.value(i).trim())) erased++
+      }
+    }
+    handles[r] = handle
+    const list = owned.get(owner)
+    if (list) list.push(r)
+    else owned.set(owner, [r])
+    if (gone.has(handle) || (erased > 0 && erased === members && p.is(starts[r]!, 0, 'GROUP'))) dropped.add(r)
+  }
+  // What a dropped object owns goes too, at any depth.
+  const went = new Set(Array.from(dropped, (r) => handles[r]!).filter((h) => h !== ''))
+  const queue = [...gone, ...went]
+  while (queue.length > 0) {
+    for (const r of owned.get(queue.pop()!) ?? []) {
+      if (dropped.has(r)) continue
+      dropped.add(r)
+      if (handles[r] === '') continue
+      went.add(handles[r]!)
+      queue.push(handles[r]!)
+    }
+  }
+  const parts = [text.slice(0, p.offset(starts[1]!))]
+  for (let r = 1; r + 1 < starts.length; r++) {
+    if (dropped.has(r)) continue
+    const a = starts[r]!
+    const b = starts[r + 1]!
+    let from = p.offset(a)
+    const list = p.is(a, 0, 'GROUP') ? 340 : p.is(a, 0, 'SORTENTSTABLE') ? 331 : -1
+    const dictionary = p.is(a, 0, 'DICTIONARY')
+    for (let i = a + 1; i < b; i++) {
+      // The pairs left out: an erased member, with its sort handle; a dictionary entry, its name and handle.
+      let n = 0
+      if (p.code(i) === list && gone.has(p.value(i).trim())) n = list === 331 && p.code(i + 1) === 5 ? 2 : 1
+      else if (dictionary && p.code(i) === 3 && (p.code(i + 1) === 350 || p.code(i + 1) === 360) && went.has(p.value(i + 1).trim())) n = 2
+      if (n === 0) continue
+      parts.push(text.slice(from, p.offset(i)))
+      from = p.offset(i + n)
+      i += n - 1
+    }
+    parts.push(text.slice(from, p.offset(b)))
+  }
+  parts.push(text.slice(p.offset(starts.at(-1)!)))
+  return parts.join('')
 }
 
 /** A LAYER entry for a layer the file's table lacks. */
@@ -923,23 +1113,31 @@ export function writeDxf(doc: Document, source?: DxfSource, opts: WriteOptions =
   const ids = allocator(Math.max(source.handseed, 1))
   const ents = emitter(nl)
   const c: Ctx = { o: ents, f, ids, doc, owner: f.modern ? modelSpace(source) : null, names: source.layerNames }
-  writeEntities(c, source)
-  const sections = source.sections.map((s) => ({ name: s.name, text: source.text.slice(s.start, s.end) }))
+  const kept = writeEntities(c, source)
+  // What lies between sections (999 comments) goes back before the section that followed it.
+  const sections = source.sections.map((s, k) => ({
+    name: s.name, before: source.text.slice(source.sections[k - 1]?.end ?? 0, s.start), text: source.text.slice(s.start, s.end),
+  }))
   const tablesAt = sections.findIndex((s) => s.name === 'TABLES')
   if (tablesAt >= 0) sections[tablesAt]!.text = writeTables(c, sections[tablesAt]!.text, nl)
   else {
     // A file without tables (some R12 writers): a LAYER table only when the layers need one.
     const bare = section(nl, 'TABLES', '')
     const tables = writeTables(c, bare, nl)
-    if (tables !== bare) sections.splice(Math.max(0, sections.findIndex((s) => s.name !== 'HEADER' && s.name !== 'CLASSES')), 0, { name: 'TABLES', text: tables })
+    if (tables !== bare) {
+      // After HEADER and CLASSES, whatever follows them, if anything.
+      const after = sections.findIndex((s) => s.name !== 'HEADER' && s.name !== 'CLASSES')
+      sections.splice(after < 0 ? sections.length : after, 0, { name: 'TABLES', before: '', text: tables })
+    }
   }
   const body = section(nl, 'ENTITIES', ents.text())
   const at = sections.findIndex((s) => s.name === 'ENTITIES')
   if (at >= 0) sections[at]!.text = body
   else {
     const objects = sections.findIndex((s) => s.name === 'OBJECTS' || s.name === 'THUMBNAILIMAGE' || s.name === 'ACDSDATA')
-    sections.splice(objects >= 0 ? objects : sections.length, 0, { name: 'ENTITIES', text: body })
+    sections.splice(objects >= 0 ? objects : sections.length, 0, { name: 'ENTITIES', before: '', text: body })
   }
+  for (const s of sections) if (s.name === 'OBJECTS') s.text = writeObjects(s.text, erasedHandles(source, kept))
   const header = sections.find((s) => s.name === 'HEADER')
   if (header && f.handles) header.text = setHeaderVar(header.text, nl, '$HANDSEED', 5, ids.seed())
   if (header && opts.currentLayer !== undefined) {
@@ -947,7 +1145,14 @@ export function writeDxf(doc: Document, source?: DxfSource, opts: WriteOptions =
     const name = current >= 0 ? fileLayer(c, current) : opts.currentLayer
     if (name !== source.header.get('$CLAYER')) header.text = setHeaderVar(header.text, nl, '$CLAYER', 8, name)
   }
-  return sections.map((s) => s.text).join('') + codeText(0) + nl + 'EOF' + nl
+  return sections.map((s) => s.before + s.text).join('') + eof(source.text.slice(source.sections.at(-1)?.end ?? 0), nl)
+}
+
+/** The text after the last section as read, through its EOF line; an EOF line added when it has none. */
+function eof(tail: string, nl: string): string {
+  const p = tokenize(tail)
+  for (let i = 0; i < p.length; i++) if (p.is(i, 0, 'EOF')) return tail.slice(0, p.offset(i + 1))
+  return tail + codeText(0) + nl + 'EOF' + nl
 }
 
 function writeNew(doc: Document, opts: WriteOptions): string {

@@ -28,12 +28,12 @@ const LAYERS: G = [
 ]
 
 /** An AC1015-like file: HEADER, TABLES (LAYER, BLOCK_RECORD), ENTITIES, OBJECTS. */
-function file(entities: G, version = 'AC1015', seed = '100'): string {
+function file(entities: G, version = 'AC1015', seed = '100', objects: G = [0, 'DICTIONARY', 5, 'C', 330, '0', 100, 'AcDbDictionary']): string {
   return lines([
     0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1, version, 9, '$HANDSEED', 5, seed, 0, 'ENDSEC',
     0, 'SECTION', 2, 'TABLES', ...LAYERS, 0, 'ENDSEC',
     0, 'SECTION', 2, 'ENTITIES', ...entities, 0, 'ENDSEC',
-    0, 'SECTION', 2, 'OBJECTS', 0, 'DICTIONARY', 5, 'C', 330, '0', 100, 'AcDbDictionary', 0, 'ENDSEC',
+    0, 'SECTION', 2, 'OBJECTS', ...objects, 0, 'ENDSEC',
     0, 'EOF',
   ])
 }
@@ -55,6 +55,36 @@ function r12(layers: G[], entities: G, header: G = []): string {
 
 /** The document's layer names, in order. */
 const layerNames = ({ doc }: { doc: Document }): string[] => Array.from({ length: doc.layers.size }, (_, i) => doc.layers.get(i)!.name)
+
+/** An R12 file with only these entities; with $HANDLING 1 unless told otherwise. */
+const r12Only = (entities: G, handling = true): string =>
+  lines([
+    0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1, 'AC1009', ...(handling ? [9, '$HANDLING', 70, 1, 9, '$HANDSEED', 5, '100'] : []), 0, 'ENDSEC',
+    0, 'SECTION', 2, 'ENTITIES', ...entities, 0, 'ENDSEC', 0, 'EOF',
+  ])
+
+/**
+ * A dashed 2D POLYLINE as ezdxf writes it, moved by (dx, dy): default widths 0.2, one vertex with a start width of
+ * its own; R13 or R12.
+ */
+function oldPolyline(modern: boolean, dx = 0, dy = 0): G {
+  const m = (...g: G): G => (modern ? g : [])
+  const vertex = (handle: string, x: number, ...own: G): G => [
+    0, 'VERTEX', 5, handle, ...m(330, '2D', 100, 'AcDbEntity'), 8, '0', ...m(100, 'AcDbVertex', 100, 'AcDb2dVertex'), 10, real(x + dx), 20, real(dy), 30, '0.0', ...own, 70, 0,
+  ]
+  return [
+    0, 'POLYLINE', 5, '2D', ...m(330, '1F', 100, 'AcDbEntity'), 8, '0', 6, 'DASHED', ...m(100, 'AcDb2dPolyline'), 66, 1, 10, '0.0', 20, '0.0', 30, '0.0', 70, 0, 40, 0.2, 41, 0.2,
+    ...vertex('2F', 0), ...vertex('30', 10, 40, '2.0'), ...vertex('31', 12),
+    0, 'SEQEND', 5, '2E', ...m(330, '2D', 100, 'AcDbEntity'), 8, '0',
+  ]
+}
+
+/** g without its handles (group 5). */
+const noHandles = (g: G): G => g.filter((_, i) => !(i % 2 === 0 && g[i] === 5) && !(i % 2 === 1 && g[i - 1] === 5))
+
+/** Each vertex's start and end width, its own or the polyline's default. */
+const widthsOf = (p: Polyline): number[] =>
+  p.widths ? Array.from(p.widths) : Array.from({ length: p.pts.length }, (_, i) => (i % 2 === 0 ? p.startWidth : p.endWidth) ?? 0)
 
 /** Every handle the text defines (groups 5 and 105 outside the HEADER). */
 function handles(text: string): string[] {
@@ -89,6 +119,152 @@ describe('writeDxf', () => {
     expect(writeDxf(d.doc, d.source)).toBe(text)
     // A new current layer goes into the header.
     expect(readDxf(writeDxf(d.doc, d.source, { currentLayer: 'Walls' })).source.header.get('$CLAYER')).toBe('Walls')
+  })
+
+  it('text outside the sections, such as the 999 comment LibreCAD starts with, is written back as read', () => {
+    const ENTITIES = lines([0, 'SECTION', 2, 'ENTITIES'])
+    const text = lines([999, 'dxfrw 0.6.3']) + file(LINE).replace(ENTITIES, lines([999, 'between']) + ENTITIES).replace(lines([0, 'EOF']), lines([999, 'last', 0, 'EOF']))
+    const d = readDxf(text)
+    expect(writeDxf(d.doc, d.source)).toBe(text)
+    d.doc.transact('edit', (tx) => tx.replace({ ...([...d.doc.entities()][0] as Line), x1: 20 }))
+    const out = writeDxf(d.doc, d.source)
+    expect(out.startsWith(lines([999, 'dxfrw 0.6.3', 0, 'SECTION', 2, 'HEADER']))).toBe(true)
+    expect(out).toContain(lines([0, 'ENDSEC', 999, 'between', 0, 'SECTION', 2, 'ENTITIES']))
+    expect(out.endsWith(lines([0, 'ENDSEC', 999, 'last', 0, 'EOF']))).toBe(true)
+  })
+
+  it('a file with only a HEADER gets its new TABLES after the HEADER', () => {
+    const text = lines([0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1, 'AC1009', 0, 'ENDSEC', 0, 'EOF'], '\n')
+    const d = readDxf(text)
+    const b = d.doc.layers.add({ name: 'B', color: 1, visible: true, locked: false })
+    d.doc.transact('draw', (tx) => void tx.add({ type: 'line', layer: b, x0: 0, y0: 0, x1: 1, y1: 1 }))
+    const back = readDxf(writeDxf(d.doc, d.source))
+    expect(back.source.sections.map((s) => s.name)).toEqual(['HEADER', 'TABLES', 'ENTITIES'])
+    expect(back.doc.layers.get(back.doc.layers.indexOf('B'))).toEqual({ name: 'B', color: 1, visible: true, locked: false })
+  })
+
+  it('an R12 file without handles: an edit is patched in place too, its extra groups and OCS kept', () => {
+    const text = lines([
+      0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1, 'AC1009', 0, 'ENDSEC',
+      0, 'SECTION', 2, 'ENTITIES',
+      0, 'LINE', 8, '0', 6, 'DASHED', 39, 2.5, 10, 0, 20, 0, 30, 0, 11, 10, 21, 0, 31, 0, 1001, 'ROYALE', 1000, 'kept',
+      0, 'CIRCLE', 8, '0', 10, 5, 20, 1, 30, 0, 40, 1, 210, 0, 220, 0, 230, -1,
+      0, 'ENDSEC', 0, 'EOF',
+    ], '\n')
+    const t = commandBench()
+    const d = drawingFrom(t.doc, parseDxf(text))
+    t.run('MOVE⏎ALL⏎⏎0,0⏎3,4⏎')
+    const out = writeDxf(t.doc, d.source)
+    expect(out).toContain(lines([0, 'LINE', 8, '0', 6, 'DASHED', 39, 2.5, 10, '3.0', 20, '4.0', 30, 0, 11, '13.0', 21, '4.0', 31, 0, 1001, 'ROYALE', 1000, 'kept'], '\n'))
+    // Still seen from -Z: the centre, from (-5, 1) to (-2, 5), is (2, 5) in its OCS.
+    expect(out).toContain(lines([0, 'CIRCLE', 8, '0', 10, '2.0', 20, '5.0', 30, 0, 40, '1.0', 210, 0, 220, 0, 230, -1], '\n'))
+    expect(handles(out)).toEqual([])
+  })
+
+  it('LWPOLYLINE widths survive MOVE and grow with SCALE: each vertex its 40/41, the constant width 43', () => {
+    const VARYING: G = [0, 'LWPOLYLINE', 5, '23', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbPolyline', 90, 2, 70, 0, 10, 0, 20, 0, 40, 0.5, 41, 1, 10, 10, 20, 0]
+    const CONSTANT: G = [0, 'LWPOLYLINE', 5, '24', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbPolyline', 90, 2, 70, 0, 43, 0.3, 10, 0, 20, 5, 10, 10, 20, 5]
+    const t = commandBench()
+    const d = drawingFrom(t.doc, parseDxf(file([...VARYING, ...CONSTANT])))
+    t.run('MOVE⏎ALL⏎⏎0,0⏎3,4⏎')
+    const moved = writeDxf(t.doc, d.source)
+    expect(moved).toContain(lines([90, 2, 70, 0, 10, '3.0', 20, '4.0', 40, 0.5, 41, '1.0', 10, '13.0', 20, '4.0', 0, 'LWPOLYLINE']))
+    expect(moved).toContain(lines([43, 0.3, 10, '3.0', 20, '9.0', 10, '13.0', 20, '9.0', 0, 'ENDSEC']))
+    t.run('SCALE⏎ALL⏎⏎0,0⏎2⏎')
+    const scaled = writeDxf(t.doc, d.source)
+    expect(scaled).toContain(lines([10, '6.0', 20, '8.0', 40, '1.0', 41, '2.0', 10, '26.0', 20, '8.0', 0, 'LWPOLYLINE']))
+    expect(scaled).toContain(lines([43, 0.6, 10, '6.0', 20, '18.0']))
+    expect(readDxf(scaled).warnings).toEqual(['2 polylines with width drawn thin (their widths are kept).'])
+  })
+
+  it('widths of LWPOLYLINE and 2D POLYLINE (R12, R2000, R2018) are kept through MOVE and scaled by SCALE', () => {
+    const LW: G = [0, 'LWPOLYLINE', 5, '23', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbPolyline', 90, 3, 70, 0, 10, 0, 20, 0, 40, 0.5, 41, 0.5, 10, 10, 20, 0, 40, 2, 41, 0, 10, 12, 20, 0]
+    const cases: [string, number[]][] = [
+      [file(LW), [0.5, 0.5, 2, 0, 0, 0]],
+      [r12Only(oldPolyline(false)), [0.2, 0.2, 2, 0.2, 0.2, 0.2]],
+      [file(oldPolyline(true)), [0.2, 0.2, 2, 0.2, 0.2, 0.2]],
+      [file(oldPolyline(true), 'AC1032'), [0.2, 0.2, 2, 0.2, 0.2, 0.2]],
+    ]
+    for (const [text, widths] of cases) {
+      const t = commandBench()
+      const d = drawingFrom(t.doc, parseDxf(text))
+      const saved = (): Polyline => [...readDxf(writeDxf(t.doc, d.source)).doc.entities()][0] as Polyline
+      t.run('MOVE⏎ALL⏎⏎0,0⏎3,4⏎')
+      expect(widthsOf(saved())).toEqual(widths)
+      t.run('SCALE⏎ALL⏎⏎0,0⏎2⏎')
+      expect(widthsOf(saved())).toEqual(widths.map((w) => 2 * w))
+    }
+  })
+
+  it('an edited 2D POLYLINE is patched (R12 and R2000): its head as read, its VERTEX handles and SEQEND kept', () => {
+    for (const [text, modern] of [[r12Only(oldPolyline(false)), false], [file(oldPolyline(true)), true]] as const) {
+      const t = commandBench()
+      const d = drawingFrom(t.doc, parseDxf(text))
+      t.run('MOVE⏎ALL⏎⏎0,0⏎3,4⏎')
+      const out = writeDxf(t.doc, d.source)
+      // Linetype, widths, owner and handles as they were; only the vertices moved.
+      expect(out).toContain(lines(oldPolyline(modern, 3, 4)))
+      expect(readDxf(out).source.header.get('$HANDSEED')).toBe('100')
+    }
+    // Fewer or more vertices: the old handles while they last, new ones past them; the closed flag follows.
+    const d = readDxf(file(oldPolyline(true)))
+    const { widths: _w, ...poly } = [...d.doc.entities()][0] as Polyline
+    d.doc.transact('edit', (tx) => tx.replace({ ...poly, pts: Float64Array.of(0, 0, 10, 0, 10, 10, 0, 10), bulges: null, closed: true }))
+    const more = writeDxf(d.doc, d.source)
+    expect(handles(more).filter((h) => !['2', '10', '11', '1', '1F', 'C'].includes(h))).toEqual(['2D', '2F', '30', '31', '100', '2E'])
+    expect(more).toContain(lines([66, 1, 10, '0.0', 20, '0.0', 30, '0.0', 70, 1, 40, 0.2, 41, 0.2, 0, 'VERTEX']))
+    d.doc.transact('edit', (tx) => tx.replace({ ...poly, pts: Float64Array.of(0, 0, 10, 0), bulges: null }))
+    const fewer = writeDxf(d.doc, d.source)
+    expect(handles(fewer).filter((h) => !['2', '10', '11', '1', '1F', 'C'].includes(h))).toEqual(['2D', '2F', '30', '2E'])
+    same([...d.doc.entities()], [...readDxf(fewer).doc.entities()])
+    // An R12 file without handles gets none.
+    const t = commandBench()
+    const bare = drawingFrom(t.doc, parseDxf(r12Only(noHandles(oldPolyline(false)), false)))
+    t.run('MOVE⏎ALL⏎⏎0,0⏎3,4⏎')
+    expect(writeDxf(t.doc, bare.source)).toContain(lines(noHandles(oldPolyline(false, 3, 4))))
+    // Seen from -Z, its vertices and bulges stay in its OCS.
+    const m = commandBench()
+    const flipped = drawingFrom(m.doc, parseDxf(file(oldPolyline(true)).replace(lines([41, 0.2]), lines([41, 0.2, 210, 0, 220, 0, 230, -1]))))
+    m.doc.transact('bulge', (tx) => tx.replace({ ...([...m.doc.entities()][0] as Polyline), bulges: Float64Array.of(0.5, 0, 0) }))
+    m.run('MOVE⏎ALL⏎⏎0,0⏎3,4⏎')
+    const back = readDxf(writeDxf(m.doc, flipped.source))
+    const [want, got] = [[...m.doc.entities()][0], [...back.doc.entities()][0]] as [Polyline, Polyline]
+    expect([Array.from(got.pts), Array.from(got.bulges!, (b) => b + 0), widthsOf(got)]).toEqual([Array.from(want.pts), [0.5, 0, 0], widthsOf(want)])
+    expect(back.source.text).toContain(lines([10, '-3.0', 20, '4.0', 30, '0.0', 42, -0.5, 70, 0]))
+  })
+
+  it('erased entities take with them the objects they own, and leave the GROUP and SORTENTSTABLE lists', () => {
+    // As ezdxf writes them: a circle with an extension dictionary holding an XRECORD, two lines in a group.
+    const CIRCLE: G = [0, 'CIRCLE', 5, '2F', 102, '{ACAD_XDICTIONARY', 360, '30', 102, '}', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbCircle', 10, 5, 20, 5, 30, 0, 40, 2]
+    const line = (h: string, y: number): G => [0, 'LINE', 5, h, 102, '{ACAD_REACTORS', 330, '34', 102, '}', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbLine', 10, 0, 20, y, 30, 0, 11, 10, 21, y, 31, 0]
+    const GROUP: G = [0, 'GROUP', 5, '34', 102, '{ACAD_REACTORS', 330, 'D', 102, '}', 330, 'D', 100, 'AcDbGroup', 300, '', 70, 0, 71, 1, 340, '32', 340, '33']
+    const SORTENTS: G = [0, 'SORTENTSTABLE', 5, '36', 330, '35', 100, 'AcDbSortentsTable', 330, '1F', 331, '32', 5, 'FF', 331, '33', 5, 'FE', 331, '2F', 5, 'FD']
+    const OBJECTS: G = [
+      0, 'DICTIONARY', 5, 'C', 330, '0', 100, 'AcDbDictionary', 3, 'ACAD_GROUP', 350, 'D',
+      0, 'DICTIONARY', 5, 'D', 330, 'C', 100, 'AcDbDictionary', 3, 'PAIR', 350, '34',
+      0, 'DICTIONARY', 5, '30', 330, '2F', 100, 'AcDbDictionary', 280, 1, 281, 1, 3, 'ROYALE', 350, '31',
+      0, 'XRECORD', 5, '31', 330, '30', 100, 'AcDbXrecord', 280, 1, 1, 'kept',
+      ...GROUP, ...SORTENTS,
+    ]
+    const d = readDxf(file([...CIRCLE, ...line('32', 0), ...line('33', 1)], 'AC1015', '100', OBJECTS))
+    const objects = (text: string): string => text.slice(text.indexOf(lines([2, 'OBJECTS'])))
+    expect(objects(writeDxf(d.doc, d.source))).toBe(objects(d.source.text))
+    const [circle, first] = [...d.doc.entities()] as [Circle, Line]
+    d.doc.transact('ERASE', (tx) => {
+      tx.remove(circle.id)
+      tx.remove(first.id)
+    })
+    const out = objects(writeDxf(d.doc, d.source))
+    expect(out).not.toContain(lines([5, '30']))
+    expect(out).not.toContain('XRECORD')
+    expect(out).toContain(lines([...GROUP.slice(0, -4), 340, '33', 0, 'SORTENTSTABLE']))
+    expect(out).toContain(lines([...SORTENTS.slice(0, 8), 330, '1F', 331, '33', 5, 'FE', 0, 'ENDSEC']))
+    expect(out).toContain(lines([3, 'ACAD_GROUP', 350, 'D', 0, 'DICTIONARY', 5, 'D', 330, 'C', 100, 'AcDbDictionary', 3, 'PAIR', 350, '34']))
+    // A group left empty goes, and its entry with it.
+    d.doc.transact('ERASE', (tx) => tx.remove([...d.doc.entities()][0]!.id))
+    const none = objects(writeDxf(d.doc, d.source))
+    expect(none).not.toContain(lines([0, 'GROUP']))
+    expect(none).toContain(lines([0, 'DICTIONARY', 5, 'D', 330, 'C', 100, 'AcDbDictionary', 0, 'SORTENTSTABLE']))
   })
 
   it('read, edit, write, read: the same document; opaque text identical; extra groups and OCS survive the edit', () => {
