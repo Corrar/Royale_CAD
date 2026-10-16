@@ -123,6 +123,9 @@ describe('readDxf', () => {
     expect(d.source.newline).toBe('\r\n')
     expect(d.source.header.get('$ACADVER')).toBe('AC1015')
     expect(d.source.header.get('$HANDSEED')).toBe('FF')
+    expect(d.source.handseed).toBe(0xff)
+    // A $HANDSEED left behind by its writer: the next handle is past the largest in the file.
+    expect(readDxf(file([0, 'LINE', 5, '1A0', 8, '0', 10, 0, 20, 0, 11, 1, 21, 1])).source.handseed).toBe(0x1a1)
     expect(d.source.sections.map((s) => s.name)).toEqual(['HEADER', 'TABLES', 'ENTITIES'])
     const tables = d.source.sections[1]!
     expect(d.source.text.slice(tables.start, tables.end)).toBe(lines([0, 'SECTION', 2, 'TABLES', 0, 'ENDSEC']))

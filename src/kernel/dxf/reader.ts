@@ -2,6 +2,7 @@ import { TRUE_COLOR, type Color } from '../color'
 import { createDocument, type Document, type Draft } from '../document'
 import type { Entity } from '../entity/types'
 import { normAngle } from '../geom/tol'
+import { entryEnd, findTable, layerEntry } from './tables'
 import { sections, tokenize, type PairList } from './tokenizer'
 
 /** An entity as the file gave it, and the span [start, end) of the text it was read from. */
@@ -15,6 +16,11 @@ export interface DxfSource {
   readonly newline: '\r\n' | '\n'
   /** Header variables by name ($ACADVER, $HANDSEED…), each as the value of its first group, trimmed. */
   readonly header: ReadonlyMap<string, string>
+  /**
+   * The first handle free for new objects: past $HANDSEED and past every handle (groups 5 and 105) in the file,
+   * since some writers leave $HANDSEED behind.
+   */
+  readonly handseed: number
   /** Each section, spanning its text from the 0/SECTION line to past the 0/ENDSEC line. */
   readonly sections: readonly { readonly name: string; readonly start: number; readonly end: number }[]
   /** The entity as read and the span of its text; null for an id the file did not give. */
@@ -338,37 +344,13 @@ function layerTable(doc: Document, pairs: PairList, start: number, end: number, 
     byName.set(key, index)
     return index
   }
-  // TABLE 2/LAYER … ENDTAB, each entry a 0/LAYER record.
-  let inLayers = false
-  for (let i = start; i < end; i++) {
-    if (pairs.is(i, 0, 'TABLE')) inLayers = i + 1 < end && pairs.is(i + 1, 2, 'LAYER')
-    else if (pairs.is(i, 0, 'ENDTAB')) inLayers = false
-    else if (inLayers && pairs.is(i, 0, 'LAYER')) {
-      let j = i + 1
-      while (j < end && pairs.code(j) !== 0) j++
-      let name = ''
-      let aci = 7
-      let trueColor: number | undefined
-      let flags = 0
-      try {
-        for (let k = i + 1; k < j; k++) {
-          const code = pairs.code(k)
-          if (code === 2) name = pairs.value(k).trim()
-          else if (code === 62) aci = numberAt(pairs, k)
-          else if (code === 420) trueColor = numberAt(pairs, k)
-          else if (code === 70) flags = numberAt(pairs, k)
-        }
-      } catch (error) {
-        warnings.push(`line ${error instanceof Unsupported ? error.line : 2 * i + 1}: layer "${name}" read with defaults: ${(error as Error).message}.`)
-      }
-      if (name !== '') {
-        const a = Math.abs(aci)
-        const color = trueColor !== undefined ? TRUE_COLOR | (trueColor & 0xffffff) : Number.isInteger(a) && a >= 1 && a <= 255 ? a : 7
-        // Off (negative color) and frozen (flag 1) both hide the layer.
-        add(name, color, aci >= 0 && !(flags & 1), (flags & 4) !== 0)
-      }
-      i = j - 1
-    }
+  const t = findTable(pairs, start, end, 'LAYER')
+  if (t) {
+    t.entries.forEach((a, k) => {
+      if (!pairs.is(a, 0, 'LAYER')) return
+      const l = layerEntry(pairs, a, entryEnd(t, k))
+      if (l.name !== '') add(l.name, l.color, l.visible, l.locked)
+    })
   }
   return { of: (name) => add(name, 7, true, false) }
 }
@@ -460,6 +442,16 @@ export function readDxf(text: string): DxfDrawing {
     return { entity: originals[k]!, start: pairs.offset(recs.starts[k]!), end: pairs.offset(recs.ends[k]!) }
   }
 
+  let handseed = parseInt(header.get('$HANDSEED') ?? '0', 16) || 0
+  const codes = pairs.codes
+  for (let i = 0; i < codes.length; i++) {
+    if (codes[i] !== 5 && codes[i] !== 105) continue
+    // In the HEADER, group 5 is the value of $HANDSEED itself.
+    if (hs && i >= hs.start && i < hs.end) continue
+    const h = parseInt(pairs.value(i).trim(), 16)
+    if (h >= handseed) handseed = h + 1
+  }
+
   const lf = text.indexOf('\n')
   return {
     doc,
@@ -468,6 +460,7 @@ export function readDxf(text: string): DxfDrawing {
       text,
       newline: lf > 0 && text.charCodeAt(lf - 1) === 13 ? '\r\n' : '\n',
       header,
+      handseed,
       sections: ranges.map((s) => ({ name: s.name, start: pairs.offset(s.start - 2), end: pairs.offset(s.end + 1) })),
       loaded,
       handleOf(id) {

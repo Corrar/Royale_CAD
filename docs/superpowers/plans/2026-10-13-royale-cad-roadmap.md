@@ -269,10 +269,12 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
   - ACI: duas tabelas circulam. A nossa (fórmula) bate com a do `dxf-parser` em 215 de 255 entradas (as outras diferem em 1 num canal: 152 × 153) e difere da do ezdxf em 197 (níveis 165/127/76/38 contra 204/153/127/76; a do ezdxf tem entradas estranhas, como 129, 139 e 149 iguais). Fica a nossa até conferir com AutoCAD ou ODA (pergunta aberta 3).
   - Medido (1M linhas, ~110 MB, Node): leitura 4,8 s, dos quais tokenizer ~0,45 s, parse ~1,2 s, carga no documento ~1,3 s e o resto GC. Fica para o G3 (T34).
 
-- [ ] **T32 · Writer**
+- [x] **T32 · Writer**
   - Arquivos: `src/kernel/dxf/{writer,template}.ts` + teste
   - Produz: `writeDxf(doc): string`.
   - Testa: ler → gravar → ler dá documento igual; pares de `Opaque` idênticos; handles novos > `$HANDSEED` e sem duplicata.
+  - Feito: `writeDxf(doc, source?)`. Com a fonte: as seções voltam como lidas (HEADER com `$HANDSEED` novo; TABLES com a tabela LAYER acertada: entrada alterada é corrigida, layer novo ganha entrada); ENTITIES é refeita na ordem do documento: entidade não editada volta com o texto exato, editada tem o próprio registro corrigido (geometria, layer e cor; linetype, lineweight, espessura, reatores e XDATA ficam; OCS espelhado mantido), e a de tipo trocado (círculo aparado vira arco) ou nova sai em grupos novos na versão do arquivo (R12 sem marcadores de subclasse e com POLYLINE/VERTEX/SEQEND; R14+ com LWPOLYLINE; true color só de AC1018 em diante, antes a cor ACI mais próxima). Handles novos a partir do maior entre `$HANDSEED` e os handles do arquivo. Sem fonte: arquivo AC1015 novo a partir de `template.ts` (as nove tabelas, blocos e layouts de model e paper space, dicionário raiz). Números com o menor texto que relê o mesmo double.
+  - Verificado com o ezdxf: arquivos R12, R2000 e R2018 gravados sem edição voltam byte a byte; editados e o arquivo novo passam pela leitura e pela auditoria do ezdxf sem erro nem correção. LibreCAD e ODA continuam pendentes (pergunta aberta 3).
 
 - [ ] **T33 · Arquivos**
   - Arquivos: `electron/main.ts`, `electron/preload.ts`, `src/app/files.ts`, `src/app/dxf.worker.ts`, `commands/file.ts`
