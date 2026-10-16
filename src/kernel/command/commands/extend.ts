@@ -58,7 +58,8 @@ function extended(ctx: CommandContext, e: Entity, at: Vec2, edges: Set<number> |
   const path = pathOf(e)
   if (!path) return 'Cannot extend this object.'
   if (path.closed) return 'Cannot extend a closed object.'
-  const atEnd = path.param(at) >= path.end / 2
+  // Nearer by length along the object: a polyline's parameter counts vertices, whatever their pieces' lengths.
+  const atEnd = path.along(path.param(at)) >= path.along(path.end) / 2
   switch (e.type) {
     case 'line': {
       const len = Math.hypot(e.x1 - e.x0, e.y1 - e.y0)
@@ -87,10 +88,13 @@ function extended(ctx: CommandContext, e: Entity, at: Vec2, edges: Set<number> |
     case 'mtext':
       return 'Cannot extend this object.'
     case 'polyline': {
-      // The end piece, straight along its direction or round its circle; the inner vertices stay.
+      // The end piece, straight along its direction or round its circle; the inner vertices stay. It is the last
+      // (or first) piece with a length, slack 1 meaning the whole piece is within the tolerance; repeats of its end
+      // vertex past it move with that vertex.
       const n = e.pts.length >> 1
-      if (n < 2) return 'Cannot extend this object.'
-      const i = atEnd ? n - 2 : 0
+      let i = atEnd ? n - 2 : 0
+      while (i >= 0 && i < n - 1 && path.slack(i) >= 1) i += atEnd ? -1 : 1
+      if (i < 0 || i >= n - 1) return 'Cannot extend this object.'
       const fixed = atEnd ? i : i + 1
       const moving = atEnd ? i + 1 : i
       const v = (k: number): Vec2 => ({ x: e.pts[2 * k]!, y: e.pts[2 * k + 1]! })
@@ -98,6 +102,12 @@ function extended(ctx: CommandContext, e: Entity, at: Vec2, edges: Set<number> |
       const a = bulge !== 0 ? bulgeToArc(v(i), v(i + 1), bulge) : null
       const pts = e.pts.slice()
       const bulges = e.bulges?.slice() ?? null
+      const moveEnd = (x: number, y: number): void => {
+        for (let k = moving; k >= 0 && k < n; k += atEnd ? 1 : -1) {
+          pts[2 * k] = x
+          pts[2 * k + 1] = y
+        }
+      }
       if (a) {
         const sign = a.sweep >= 0 ? 1 : -1
         const turn = atEnd ? sign : (-sign as 1 | -1)
@@ -105,19 +115,16 @@ function extended(ctx: CommandContext, e: Entity, at: Vec2, edges: Set<number> |
         const d = circleHit(ctx, { x: a.cx, y: a.cy }, a.r, from, turn, TAU - Math.abs(a.sweep), edges, e.id, path.slack(i))
         if (d === null) return MISSED
         const end = from + turn * d
-        pts[2 * moving] = a.cx + a.r * Math.cos(end)
-        pts[2 * moving + 1] = a.cy + a.r * Math.sin(end)
+        moveEnd(a.cx + a.r * Math.cos(end), a.cy + a.r * Math.sin(end))
         bulges![i] = Math.tan((a.sweep + sign * d) / 4)
       } else {
         const p = v(moving)
         const o = v(fixed)
         const len = Math.hypot(p.x - o.x, p.y - o.y)
-        if (len === 0) return 'Cannot extend this object.'
         const dir = { x: (p.x - o.x) / len, y: (p.y - o.y) / len }
         const d = rayHit(ctx, p, dir, edges, e.id, path.slack(i) * len)
         if (d === null) return MISSED
-        pts[2 * moving] = p.x + dir.x * d
-        pts[2 * moving + 1] = p.y + dir.y * d
+        moveEnd(p.x + dir.x * d, p.y + dir.y * d)
       }
       return { ...e, pts, bulges }
     }

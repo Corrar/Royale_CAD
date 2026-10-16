@@ -10,9 +10,15 @@ export const arcType: EntityType<Arc> = {
   distance: (e, p) => arcDistance(p.x, p.y, e.cx, e.cy, e.r, e.a0, arcSweep(e.a0, e.a1)),
   transform(e, m) {
     const c = applyAffine(m, e.cx, e.cy)
+    // A direction goes through the linear part alone, as points far from the origin would round it. The angle gains
+    // the turn from (u, v) to its image: the cross and dot products are expanded so that a move or a uniform scale
+    // turns by exactly nothing and keeps the angle bit for bit.
     const angle = (a: number): number => {
-      const p = applyAffine(m, e.cx + Math.cos(a), e.cy + Math.sin(a))
-      return normAngle(Math.atan2(p.y - c.y, p.x - c.x))
+      const u = Math.cos(a)
+      const v = Math.sin(a)
+      const cross = m.b * u * u + (m.d - m.a) * u * v - m.c * v * v
+      const dot = m.a * u * u + (m.b + m.c) * u * v + m.d * v * v
+      return normAngle(a + Math.atan2(cross, dot))
     }
     const r = e.r * Math.sqrt(Math.abs(affineDet(m)))
     // A mirroring turns the run clockwise: the arc now runs counter-clockwise from the old end to the old start.

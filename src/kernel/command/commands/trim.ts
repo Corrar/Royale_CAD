@@ -61,14 +61,20 @@ function trimmed(e: Entity, at: Vec2, edges: Entity[]): Entity[] | null {
   }
   let lo = 0
   let hi = path.end
+  // A cut at the click bounds the piece after it (before it, at the very end): one piece goes, not both.
+  const s = path.slack(uc)
+  const ahead = uc < path.end - s
   for (const u of cuts) {
-    if (u < uc && u > lo) lo = u
-    if (u > uc && u < hi) hi = u
+    if (Math.abs(u - uc) <= s ? ahead : u < uc) lo = Math.max(lo, u)
+    else hi = Math.min(hi, u)
   }
+  // Each kept part is measured on its own piece: the one ending at lo, the one starting at hi.
+  const head = lo > path.slack(lo, true)
+  const tail = path.end - hi > path.slack(hi)
   const out: Entity[] = []
-  if (lo > path.slack(lo)) out.push(path.slice(0, lo))
-  if (path.end - hi > path.slack(hi)) out.push(path.slice(hi, path.end))
-  return lo > path.slack(lo) || path.end - hi > path.slack(hi) ? out : null
+  if (head) out.push(path.slice(0, lo))
+  if (tail) out.push(path.slice(hi, path.end))
+  return head || tail ? out : null
 }
 
 /** TRIM: each pick removes the piece of an object between the cutting edges on either side, until Enter. */

@@ -63,4 +63,16 @@ describe('pathOf', () => {
     expect(r9(s.bulges![0]!)).toBe(r9(Math.tan(Math.PI / 8))) // a quarter turn
     expect(on(s, 5 + 5 * Math.SQRT1_2, -5 * Math.SQRT1_2)).toBe(true)
   })
+
+  it('along: the length walked, an arc piece by its arc; slack at a vertex on either piece', () => {
+    expect(r9(pathOf(line).along(0.5))).toBe(r9(Math.hypot(0.2, 0.5) / 2))
+    expect(r9(pathOf(arc).along(Math.PI / 4))).toBe(r9((5 * Math.PI) / 4))
+    // A half circle of radius 5, a repeated vertex, then 5 straight up.
+    const bump: Polyline = { type: 'polyline', id: 5, layer: 0, pts: new Float64Array([0, 0, 10, 0, 10, 0, 10, 5]), bulges: new Float64Array([1, 0, 0, 0]), closed: false }
+    const p = pathOf(bump)
+    expect([0.5, 1, 2, 2.4, 3].map((u) => r9(p.along(u)))).toEqual([r9(2.5 * Math.PI), r9(5 * Math.PI), r9(5 * Math.PI), r9(5 * Math.PI + 2), r9(5 * Math.PI + 5)])
+    expect(p.slack(2)).toBe(p.slack(2.5))
+    expect(p.slack(2, true)).toBe(1) // the repeated vertex: no length at all
+    expect(p.slack(1, true)).toBe(p.slack(0.5))
+  })
 })
