@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { typeOf } from '../../entity/registry'
 import type { Arc, Entity, Polyline } from '../../entity/types'
-import { arcThrough } from '../../geom/curve'
+import { arcSweep, arcThrough } from '../../geom/curve'
 import { commandBench } from '../testing'
 
 const only = <T extends Entity['type']>(t: ReturnType<typeof commandBench>, type: T): Extract<Entity, { type: T }>[] =>
@@ -41,6 +41,17 @@ describe('ARC', () => {
     expect([a.cx, a.cy, a.r]).toEqual([0, 0, 5])
     expect(a.a0).toBe(0)
     expect(a.a1).toBeCloseTo(Math.PI / 2, 12)
+  })
+
+  it('by centre, with the end on the start ray, is the full circle the preview shows, whatever the start angle', () => {
+    const t = commandBench()
+    t.run('A⏎C⏎0,0⏎-4,9⏎-8,18⏎')
+    t.run('A⏎C⏎0,0⏎3,4⏎6,8⏎')
+    t.run('A⏎C⏎0,0⏎10,10⏎20,20⏎')
+    const arcs = only(t, 'arc')
+    expect(arcs).toHaveLength(3)
+    // Equal angles: start + 2π normalized can land a hair past the start, which is a sliver, not a circle.
+    for (const a of arcs) expect(arcSweep(a.a0, a.a1)).toBe(2 * Math.PI)
   })
 
   it('refuses collinear points and asks again', () => {
