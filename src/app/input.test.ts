@@ -12,14 +12,20 @@ function setup(rect = { left: 0, top: 0 }, extents: typeof EXTENTS | null = EXTE
     releasePointerCapture: () => {},
   })
   let view = V0
-  const host: InputHost = { getView: () => view, setView: (v) => (view = v), extents: () => extents }
+  const picks: [number, number, boolean][] = []
+  const host: InputHost = {
+    getView: () => view,
+    setView: (v) => (view = v),
+    extents: () => extents,
+    pick: (sx, sy, shift) => picks.push([sx, sy, shift]),
+  }
   const dispose = attachInput(target as never, host)
   const fire = (type: string, fields: object, cancelable = false): Event => {
     const e = Object.assign(new Event(type, { cancelable }), fields)
     target.dispatchEvent(e)
     return e
   }
-  return { fire, dispose, view: () => view }
+  return { fire, dispose, view: () => view, picks }
 }
 
 describe('wheelFactor', () => {
@@ -71,6 +77,15 @@ describe('attachInput', () => {
     expect(t.view()).toEqual(V0)
   })
 
+  it('left button picks at the cursor, relative to the target, passing shift', () => {
+    const t = setup({ left: 10, top: 40 })
+    t.fire('pointerdown', { button: 0, pointerId: 1, clientX: 110, clientY: 140, shiftKey: false })
+    t.fire('pointerdown', { button: 0, pointerId: 1, clientX: 15, clientY: 45, shiftKey: true })
+    t.fire('pointerdown', { button: 2, pointerId: 1, clientX: 15, clientY: 45, shiftKey: false })
+    expect(t.picks).toEqual([[100, 100, false], [5, 5, true]])
+    expect(t.view()).toEqual(V0)
+  })
+
   it('other buttons do not drag', () => {
     const t = setup()
     t.fire('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100 })
@@ -96,6 +111,8 @@ describe('attachInput', () => {
     t.fire('pointerdown', { button: 1, pointerId: 1, clientX: 100, clientY: 100 })
     t.fire('pointermove', { clientX: 130, clientY: 80 })
     t.fire('auxclick', { button: 1, detail: 2 })
+    t.fire('pointerdown', { button: 0, pointerId: 1, clientX: 1, clientY: 1 })
     expect(t.view()).toEqual(V0)
+    expect(t.picks).toEqual([])
   })
 })

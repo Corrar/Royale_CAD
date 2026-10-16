@@ -24,11 +24,12 @@ export interface SpatialIndexOptions {
 const NODE = 16
 
 /**
- * Packed R-tree. Level 0 holds the items sorted by the Hilbert key of their bbox centre (`keys`, ascending, in
- * `frame`); each node of level L + 1 bounds NODE consecutive nodes of level L. Level L has size[L] nodes starting
- * at node start[L] of `boxes`.
+ * Packed R-tree of n items. Level 0 holds the items sorted by the Hilbert key of their bbox centre (`keys`,
+ * ascending, in `frame`); each node of level L + 1 bounds NODE consecutive nodes of level L. Level L has size[L]
+ * nodes starting at node start[L] of `boxes`. The arrays may be longer than needed: they are recycled.
  */
 interface Tree {
+  n: number
   boxes: Float64Array
   ids: Float64Array
   keys: Uint32Array
@@ -37,7 +38,11 @@ interface Tree {
   size: number[]
 }
 
-function allocTree(n: number, frame: HilbertFrame): Tree {
+/**
+ * A tree for n items, reusing the arrays of `spare` when they are long enough. Fresh memory costs page faults
+ * and, in a big heap, can trigger a full collection: a rebuild should allocate nothing large.
+ */
+function allocTree(n: number, frame: HilbertFrame, spare: Tree | null): Tree {
   const start: number[] = []
   const size: number[] = []
   let total = 0
@@ -47,7 +52,12 @@ function allocTree(n: number, frame: HilbertFrame): Tree {
     total += s
     if (s === 1) break
   }
-  return { boxes: new Float64Array(4 * total), ids: new Float64Array(n), keys: new Uint32Array(n), frame, start, size }
+  if (spare && spare.boxes.length >= 4 * total && spare.ids.length >= n) {
+    return { n, boxes: spare.boxes, ids: spare.ids, keys: spare.keys, frame, start, size }
+  }
+  // Headroom so that a drawing that grows a little keeps its arrays.
+  const cap = Math.ceil(n * 1.25) + 16
+  return { n, boxes: new Float64Array(4 * Math.ceil(total * 1.25 + 16)), ids: new Float64Array(cap), keys: new Uint32Array(cap), frame, start, size }
 }
 
 /** Fills the levels above the leaves. */
@@ -90,7 +100,7 @@ let cy = new Float64Array(0)
 let keys = new Uint32Array(0)
 
 /** Full build: sorts every item. `cache` holds 4 bbox values per id. */
-function coldBuild(ids: Float64Array, cache: Float64Array): Tree {
+function coldBuild(ids: Float64Array, cache: Float64Array, spare: Tree | null): Tree {
   const n = ids.length
   if (cx.length < n) {
     cx = new Float64Array(n)
@@ -106,7 +116,7 @@ function coldBuild(ids: Float64Array, cache: Float64Array): Tree {
   const frame = hilbertFrame(cx, cy, n, 0.25)
   for (let i = 0; i < n; i++) keys[i] = hilbertKey(frame, cx[i]!, cy[i]!)
   const order = radixOrder(keys, n)
-  const t = allocTree(n, frame)
+  const t = allocTree(n, frame, spare)
   for (let i = 0; i < n; i++) {
     const j = order[i]!
     const id = ids[j]!
@@ -122,7 +132,9 @@ function coldBuild(ids: Float64Array, cache: Float64Array): Tree {
  * Merges the sorted survivors of `old` with the sorted extras, reading the old leaves in order. Null when an
  * extra falls outside the old frame: its key would not be comparable.
  */
-function mergeBuild(old: Tree, extra: readonly number[], isStale: (id: number) => boolean, cache: Float64Array, n: number): Tree | null {
+function mergeBuild(
+  old: Tree, spare: Tree | null, extra: readonly number[], isStale: (id: number) => boolean, cache: Float64Array, n: number,
+): Tree | null {
   const m = extra.length
   const ek = new Uint32Array(m)
   for (let i = 0; i < m; i++) {
@@ -132,8 +144,8 @@ function mergeBuild(old: Tree, extra: readonly number[], isStale: (id: number) =
     ek[i] = k
   }
   const eo = radixOrder(ek, m)
-  const t = allocTree(n, old.frame)
-  const oldN = old.ids.length
+  const t = allocTree(n, old.frame, spare)
+  const oldN = old.n
   let i = 0
   let j = 0
   let w = 0
@@ -198,6 +210,7 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
   const STALE = 2
   let liveCount = 0
   let tree: Tree | null = null
+  let spare: Tree | null = null // the previous tree, whose arrays the next rebuild writes into
   const staleIds: number[] = []
   const extra = new Set<number>()
   let rebuilds = 0
@@ -235,13 +248,13 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
   for (const e of doc.entities()) put(e)
   let built = liveCount === 0
 
-  const limit = (): number => opts.maxDirty ?? Math.max(4096, (tree?.ids.length ?? 0) / 64)
+  const limit = (): number => opts.maxDirty ?? Math.max(4096, (tree?.n ?? 0) / 64)
 
   const off = doc.onChange((c) => {
     // A change that rivals the tree (a load, a mass erase) goes straight to a cold build: tracking it entity by
     // entity would cost more than the build, and a merge would gain nothing over a full sort.
     const dirty = staleIds.length + extra.size + c.added.length + c.changed.length + c.removed.length
-    const bulk = !built || dirty > Math.max(limit(), (tree?.ids.length ?? 0) / 4)
+    const bulk = !built || dirty > Math.max(limit(), (tree?.n ?? 0) / 4)
     if (bulk) {
       built = false
       for (const id of staleIds) flags[id]! &= ~STALE
@@ -268,18 +281,21 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
   })
 
   function rebuild(): void {
-    if (liveCount === 0) tree = null
-    else {
-      const merged = tree && built ? mergeBuild(tree, [...extra], isStale, cache, liveCount) : null
-      if (merged) tree = merged
-      else {
+    let next: Tree | null = null
+    if (liveCount > 0) {
+      next = tree && built ? mergeBuild(tree, spare, [...extra], isStale, cache, liveCount) : null
+      if (!next) {
         const ids = new Float64Array(liveCount)
         let k = 0
         for (let id = 1; id < flags.length; id++) if (flags[id]! & LIVE) ids[k++] = id
-        tree = coldBuild(ids, cache)
+        // The old tree is about to go: its arrays can take the new one, but not while a merge reads them.
+        next = coldBuild(ids, cache, spare ?? tree)
         coldBuilds++
       }
     }
+    if (next && tree && next.boxes !== tree.boxes) spare = tree
+    else if (!next) spare = tree ?? spare
+    tree = next
     for (const id of staleIds) flags[id]! &= ~STALE
     staleIds.length = 0
     extra.clear()

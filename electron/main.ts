@@ -12,8 +12,24 @@ const SYMBOL = '#E6E8EA'
 const BAR_H = 32
 const dev = !app.isPackaged && !!process.env.ELECTRON_RENDERER_URL
 const bench = app.commandLine.hasSwitch('bench')
+const hasGate = app.commandLine.hasSwitch('gate')
+const gate = hasGate ? app.commandLine.getSwitchValue('gate') : 'g1'
 const G1_LIMIT_MS = 16.7
+// G2: heap after a full GC, index rebuild after edits, pick p95 (src/app/bench.ts).
+const G2_LIMITS = { heapMB: 400, rebuildMs: 200, pickMs: 1 }
 const BENCH_TIMEOUT_MS = 120_000
+
+/** Renderer JS heap after a full collection, in MB, through the DevTools protocol. */
+async function measureHeapMB(wc: Electron.WebContents): Promise<number> {
+  wc.debugger.attach('1.3')
+  try {
+    await wc.debugger.sendCommand('HeapProfiler.collectGarbage')
+    const usage = (await wc.debugger.sendCommand('Runtime.getHeapUsage')) as { usedSize: number }
+    return usage.usedSize / 1e6
+  } finally {
+    wc.debugger.detach()
+  }
+}
 
 let smokeTimer: NodeJS.Timeout | undefined
 let exiting = false
@@ -35,11 +51,13 @@ const conflict = bench && (smoke || hasPlay || loseContext)
   ? '--bench cannot be combined with --smoke, --play or --lose-context'
   : (hasPlay || loseContext) && !smoke
     ? '--play and --lose-context need --smoke'
-    : hasN && !bench
-      ? '--n needs --bench'
+    : (hasN || hasGate) && !bench
+      ? '--n and --gate need --bench'
       : (hasPlay && play === '') || (hasN && rawN === '')
         ? '--play and --n need a value'
-        : undefined
+        : gate !== 'g1' && gate !== 'g2'
+          ? `--gate must be g1 or g2, got "${gate}"`
+          : undefined
 if (conflict) finish(1, conflict)
 else if (bench && rawN !== '') {
   benchN = /^\d+$/.test(rawN) ? Number(rawN) : NaN
@@ -135,17 +153,26 @@ function createWindow(): void {
       if (received || !event.message.startsWith('BENCH_RESULT ')) return
       received = true
       void (async () => {
-        const line = event.message.slice('BENCH_RESULT '.length)
-        console.log(line)
-        const result: unknown = JSON.parse(line)
-        const r = result as { p95?: unknown; error?: unknown; frames?: unknown; n?: unknown; width?: unknown; height?: unknown }
+        const r = JSON.parse(event.message.slice('BENCH_RESULT '.length)) as Record<string, unknown>
+        if (gate === 'g2' && typeof r.error !== 'string') r.heapMB = Math.round(await measureHeapMB(wc))
+        console.log(JSON.stringify(r))
+        const num = (k: string): number => (typeof r[k] === 'number' && Number.isFinite(r[k]) ? r[k] : NaN)
         if (typeof r.error === 'string') return fail(r.error)
-        if (typeof r.p95 !== 'number' || !Number.isFinite(r.p95) || r.frames !== 300) return fail('invalid result')
-        // G1 is defined for the requested scene at 1080p.
+        if (r.gate !== gate) return fail(`result is for gate ${String(r.gate)}, not ${gate}`)
         if (r.n !== benchN) return fail(`result n ${String(r.n)} is not the requested ${benchN}`)
-        if (r.width !== 1920 || r.height !== 1080) return fail(`drawing buffer ${String(r.width)}x${String(r.height)} is not 1920x1080`)
+        let pass: boolean
+        if (gate === 'g1') {
+          if (Number.isNaN(num('p95')) || r.frames !== 300) return fail('invalid result')
+          // G1 is defined for the requested scene at 1080p.
+          if (r.width !== 1920 || r.height !== 1080) return fail(`drawing buffer ${String(r.width)}x${String(r.height)} is not 1920x1080`)
+          pass = num('p95') <= G1_LIMIT_MS
+        } else {
+          const [heap, rebuild, pickMs] = [num('heapMB'), num('rebuildMaxMs'), num('pickP95Ms')]
+          if ([heap, rebuild, pickMs].some(Number.isNaN)) return fail('invalid result')
+          pass = heap <= G2_LIMITS.heapMB && rebuild <= G2_LIMITS.rebuildMs && pickMs <= G2_LIMITS.pickMs
+        }
         if (shot) await writeFile(shot, (await wc.capturePage()).toPNG())
-        finish(r.p95 <= G1_LIMIT_MS ? 0 : 2)
+        finish(pass ? 0 : 2)
       })().catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)))
     })
   }
@@ -210,8 +237,8 @@ function createWindow(): void {
     })
   }
 
-  const query = bench ? { bench: String(benchN) } : undefined
-  if (dev) void win.loadURL(process.env.ELECTRON_RENDERER_URL! + (query ? `?bench=${query.bench}` : ''))
+  const query = bench ? { bench: String(benchN), gate } : undefined
+  if (dev) void win.loadURL(process.env.ELECTRON_RENDERER_URL! + (query ? `?${new URLSearchParams(query)}` : ''))
   else void win.loadFile(join(import.meta.dirname, '../renderer/index.html'), { query })
 }
 

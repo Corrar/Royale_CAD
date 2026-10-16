@@ -8,7 +8,8 @@ import { ARC_STRIDE, SEGMENT_STRIDE, STYLE_WORDS, arcSubdiv, type Draw, type Ren
 import { createScene } from './scene'
 
 const DRAW = 0xf2f4f5ff
-const OPTS = { drawColor: DRAW }
+const HIGHLIGHT = 0x67e8f9ff
+const OPTS = { drawColor: DRAW, highlightColor: HIGHLIGHT }
 
 type Kind = 'segment' | 'arc'
 interface FakeBatch { kind: Kind; capacity: number; bytes: Uint8Array }
@@ -314,13 +315,63 @@ describe('createScene', () => {
     expect(drawn(f, plain).filter((i) => i.kind === 'segment')).toHaveLength(1)
   })
 
+  it('draws the highlighted entities last, in the highlight style, and follows their edits', () => {
+    const { doc, f, scene } = setup()
+    const ids: number[] = []
+    doc.transact('a', (tx) => {
+      ids.push(tx.add(line(0, 0, 1, 0)).id)
+      ids.push(tx.add({ type: 'circle', layer: 0, cx: 0, cy: 0, r: 1 }).id)
+      ids.push(tx.add(line(0, 1, 1, 1)).id)
+    })
+    const v = view(0, 0, 100)
+    expect(drawn(f, scene.draws(v)).some((i) => i.style === 1)).toBe(false)
+    scene.setHighlight([ids[1]!, ids[2]!, 999])
+    const draws = scene.draws(v)
+    const all = drawn(f, draws)
+    const top = all.slice(-2)
+    expect(top.map((i) => i.style)).toEqual([1, 1])
+    expect(top.map((i) => i.kind).sort()).toEqual(['arc', 'segment'])
+    expect(all.filter((i) => i.style === 1)).toHaveLength(2)
+    expect([f.styles()[STYLE_WORDS], f.styles()[STYLE_WORDS + 1]! >> 16]).toEqual([HIGHLIGHT, 1])
+
+    const moved = { ...doc.get(ids[2]!)!, y0: 3, y1: 3 } as Entity
+    doc.transact('move', (tx) => tx.replace(moved))
+    const after = drawn(f, scene.draws(v)).filter((i) => i.style === 1 && i.kind === 'segment')
+    expect(after.map((i) => i.v)).toEqual([[0, 3, 1, 3]])
+    doc.transact('erase', (tx) => tx.remove(ids[1]!))
+    expect(drawn(f, scene.draws(v)).filter((i) => i.style === 1).map((i) => i.kind)).toEqual(['segment'])
+    doc.layers.update(0, { visible: false })
+    expect(drawn(f, scene.draws(v)).filter((i) => i.style === 1)).toEqual([])
+  })
+
+  it('a highlighted primitive too big for f32 is re-emitted on top, in the highlight style', () => {
+    const { doc, f, scene } = setup()
+    let id = 0
+    doc.transact('a', (tx) => {
+      id = tx.add(line(-1e4, 0.1, 1e4, 0.1)).id
+    })
+    scene.setHighlight([id])
+    const v = view(0, 0, 1000, 1000, 800)
+    const draws = scene.draws(v)
+    const lastDraw = drawn(f, draws.slice(-1))
+    expect(lastDraw).toHaveLength(1)
+    expect(lastDraw[0]!.style).toBe(1)
+    expect(Math.abs(lastDraw[0]!.v[0]!)).toBeLessThan(1)
+    // The plain copy comes before the highlight.
+    const plain = drawn(f, draws).filter((i) => i.style !== 1 && Math.abs(i.v[0]!) < 1)
+    expect(plain).toHaveLength(1)
+  })
+
   it('dispose destroys every batch and stops listening', () => {
     const { doc, f, scene } = setup()
     doc.transact('a', (tx) => {
       tx.add(line(0, 0, 1, 1))
       tx.add({ type: 'circle', layer: 0, cx: 0, cy: 0, r: 1 })
     })
-    scene.draws(FAR)
+    scene.setHighlight([1, 2])
+    const draws = scene.draws(view(1, 0, 1e6)) // on the circle's edge, with a radius of 1e6 px: it gets clipped
+    expect(new Set(draws.map((d) => d.batch)).size).toBeGreaterThan(1)
+    expect(f.batches.size).toBeGreaterThanOrEqual(5) // segments, arcs, highlight segments and arcs, clip
     scene.dispose()
     expect(f.batches.size).toBe(0)
     doc.transact('b', (tx) => void tx.add(line(0, 0, 1, 1)))

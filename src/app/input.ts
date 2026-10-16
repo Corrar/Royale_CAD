@@ -5,6 +5,8 @@ export interface InputHost {
   getView(): ViewState
   setView(v: ViewState): void
   extents(): BBox | null
+  /** Left button press at (sx, sy), CSS px relative to the target. */
+  pick(sx: number, sy: number, shift: boolean): void
 }
 
 export const FIT_MARGIN_PX = 64
@@ -20,6 +22,10 @@ export function attachInput(target: HTMLElement, host: InputHost): () => void {
     host.setView(zoomAt(host.getView(), e.clientX - r.left, e.clientY - r.top, wheelFactor(e.deltaY)))
   }
   const onDown = (e: PointerEvent): void => {
+    if (e.button === 0) {
+      const r = target.getBoundingClientRect()
+      return host.pick(e.clientX - r.left, e.clientY - r.top, e.shiftKey)
+    }
     if (e.button !== 1) return
     target.setPointerCapture(e.pointerId)
     drag = { id: e.pointerId, x: e.clientX, y: e.clientY }

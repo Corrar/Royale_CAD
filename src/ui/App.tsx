@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { runBench } from '../app/bench'
+import { runBench, runBenchG2 } from '../app/bench'
 import { startApp } from '../app/controller'
 import './App.css'
 
@@ -7,10 +7,12 @@ export function App() {
   useEffect(() => {
     const canvas = document.getElementById('viewport')
     if (!(canvas instanceof HTMLCanvasElement)) throw new Error('#viewport not found')
-    const raw = new URLSearchParams(location.search).get('bench')
+    const params = new URLSearchParams(location.search)
+    const raw = params.get('bench')
     const n = raw !== null && /^\d+$/.test(raw) ? Number(raw) : NaN
     if (n >= 1 && n <= 5_000_000) {
-      runBench(canvas, n)
+      if (params.get('gate') === 'g2') runBenchG2(canvas, n)
+      else runBench(canvas, n)
       return
     }
     return startApp(canvas)

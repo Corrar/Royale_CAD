@@ -1,9 +1,15 @@
 import { createDocument, docExtents, type Document } from '../kernel/document'
-import { fit, type ViewState } from '../kernel/view'
+import { pick } from '../kernel/pick'
+import { createSelection } from '../kernel/selection'
+import { createSpatialIndex } from '../kernel/spatial'
+import { fit, screenToWorld, type ViewState } from '../kernel/view'
 import { createScene } from '../render/scene'
 import { createWebGL2Backend } from '../render/webgl2/backend'
 import { attachInput, FIT_MARGIN_PX } from './input'
 import { packRgba, readBackendTheme, readCssColor } from './theme'
+
+/** Half side of the pick box, CSS px. */
+export const PICKBOX_PX = 5
 
 /** What an empty drawing frames: an A3 sheet in millimetres, like AutoCAD's metric limits. */
 const DEFAULT_EXTENTS = { minX: 0, minY: 0, maxX: 420, maxY: 297 }
@@ -51,7 +57,12 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
   const backend = createWebGL2Backend(canvas, readBackendTheme(canvas))
   const doc = createDocument()
   seedDemo(doc)
-  const scene = createScene(doc, backend, { drawColor: packRgba(readCssColor(canvas, '--draw')) })
+  const scene = createScene(doc, backend, {
+    drawColor: packRgba(readCssColor(canvas, '--draw')),
+    highlightColor: packRgba(readCssColor(canvas, '--accent')),
+  })
+  const index = createSpatialIndex(doc)
+  const selection = createSelection()
 
   let view: ViewState | null = null
   const loop = createFrameLoop(
@@ -60,8 +71,20 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
       if (view) backend.frame(view, scene.draws(view))
     },
   )
-  const offDoc = doc.onChange(() => loop.invalidate())
+  const offDoc = doc.onChange((c) => {
+    if (c.removed.length > 0) selection.remove(c.removed.map((e) => e.id))
+    loop.invalidate()
+  })
   const offLayers = doc.layers.onChange(() => loop.invalidate())
+  const offSelection = selection.onChange(() => {
+    scene.setHighlight(selection.ids)
+    loop.invalidate()
+  })
+  // Temporary until the input router (T19) owns the keyboard.
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') selection.clear()
+  }
+  window.addEventListener('keydown', onKey)
 
   const measure = (entries?: ResizeObserverEntry[]): void => {
     const dpr = window.devicePixelRatio
@@ -88,14 +111,24 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
       loop.invalidate()
     },
     extents: () => docExtents(doc),
+    pick: (sx, sy, shift) => {
+      const v = view!
+      const id = pick(doc, index, screenToWorld(v, sx, sy), PICKBOX_PX / v.scale)
+      if (id === null) return
+      if (shift) selection.remove([id])
+      else selection.add([id])
+    },
   })
 
   return () => {
     view = null // a frame still pending must not draw on a disposed backend
     detachInput()
     observer.disconnect()
+    window.removeEventListener('keydown', onKey)
     offDoc()
     offLayers()
+    offSelection()
+    index.dispose()
     scene.dispose()
     backend.dispose()
   }

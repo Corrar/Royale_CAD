@@ -11,6 +11,7 @@
     "start": "electron-vite build && electron .",
     "check": "tsc -b && vitest run",
     "bench": "electron-vite build && electron . --bench",
+    "bench:g2": "electron-vite build && electron . --bench --gate=g2",
     "smoke": "electron-vite build && electron . --smoke"
   },
   "dependencies": {

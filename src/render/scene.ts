@@ -15,18 +15,24 @@ import {
 export interface SceneOptions {
   /** 0xRRGGBBAA for ACI 7, the color that follows the background. */
   drawColor: number
+  /** 0xRRGGBBAA of highlighted (selected) entities. */
+  highlightColor: number
 }
 
 export interface Scene {
   /** Brings the GPU up to date with the document and returns the draws that can reach the view. */
   draws(view: ViewState): Draw[]
+  /** Entities drawn again on top, in the highlight style. Ids not in the document are ignored. */
+  setHighlight(ids: Iterable<number>): void
   dispose(): void
 }
 
 export const LINE_WIDTH_PX = 1
+export const HIGHLIGHT_WIDTH_PX = 2
 /** A zeroed slot reads as this style, so a freed slot is invisible instead of a point at (0, 0). */
 export const HIDDEN_STYLE = 0
-const FIRST_STYLE = 1
+export const HIGHLIGHT_STYLE = 1
+const FIRST_STYLE = 2
 
 type Kind = 'segment' | 'arc'
 const WORDS: Record<Kind, number> = { segment: SEGMENT_STRIDE / 4, arc: ARC_STRIDE / 4 }
@@ -105,7 +111,10 @@ class Columns {
 }
 
 export function createScene(doc: Document, backend: RenderBackend, opts: SceneOptions): Scene {
-  let pools: Pool[] = []
+  let pools: Pool[] = [] // index = the pool part of a handle
+  let hlPools: Pool[] = []
+  let highlight = new Set<number>()
+  let hlDirty = false
   let open = new Map<string, Pool>()
   let openLive = 0
   let packedLive = 0
@@ -146,8 +155,9 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   let styleCount = FIRST_STYLE
   let stylesDirty = true
   const styleByKey = new Map<number, number>()
-  const styleLayer: number[] = [-1]
-  const styleColor: (Color | undefined)[] = [undefined]
+  const styleLayer: number[] = [-1, -1]
+  const styleColor: (Color | undefined)[] = [undefined, undefined]
+  writeStyle(table, HIGHLIGHT_STYLE, opts.highlightColor, HIGHLIGHT_WIDTH_PX, true)
 
   const rgbaOf = (c: Color): number => (c === ACI_DEFAULT ? opts.drawColor : ((colorRgb(c) << 8) | 0xff) >>> 0)
 
@@ -178,17 +188,18 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
 
   const offLayers = doc.layers.onChange((index) => {
     for (let id = FIRST_STYLE; id < styleCount; id++) if (styleLayer[id] === index) writeRow(id)
+    if (highlight.size > 0) hlDirty = true // hidden layers drop out of the highlight
   })
 
   // --- pools --------------------------------------------------------------------------------------------------
-  function createPool(kind: Kind, band: number, packed: boolean, capacity: number): Pool {
+  function createPool(kind: Kind, band: number, packed: boolean, capacity: number, into = pools): Pool {
     const buf = new ArrayBuffer(capacity * WORDS[kind] * 4)
     const p: Pool = {
-      index: pools.length, kind, band, packed, batch: backend.createBatch(kind, capacity), capacity, count: 0, live: 0,
+      index: into.length, kind, band, packed, batch: backend.createBatch(kind, capacity), capacity, count: 0, live: 0,
       f32: new Float32Array(buf), u32: new Uint32Array(buf), owner: new Uint32Array(capacity), free: [],
       dirty: [], ranged: false, dirtyLo: Infinity, dirtyHi: 0, buckets: [],
     }
-    pools.push(p)
+    into.push(p)
     return p
   }
 
@@ -304,6 +315,10 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   }
 
   function onChange(c: Change): void {
+    if (highlight.size > 0 && !hlDirty) {
+      const touches = (e: Entity): boolean => highlight.has(e.id)
+      hlDirty = c.added.some(touches) || c.removed.some(touches) || c.changed.some(([, e]) => touches(e))
+    }
     if (needsRebuild) return
     if (c.added.length + c.changed.length > Math.max(BULK_MIN, doc.size / 4)) {
       needsRebuild = true
@@ -319,8 +334,11 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   }
   const offDoc = doc.onChange(onChange)
 
-  /** Packs rows of `cols` (all when rows is null) into a new pool, in Hilbert order of their bbox centres. */
-  function pack(kind: Kind, band: number, cols: Columns, rows: Uint32Array | null): void {
+  /**
+   * Packs rows of `cols` (all when rows is null) into a new pool of `into`, in Hilbert order of their bbox centres.
+   * Only the main pools record handles.
+   */
+  function pack(kind: Kind, band: number, cols: Columns, rows: Uint32Array | null, into: Pool[]): void {
     const n = rows ? rows.length : cols.n
     if (n === 0) return
     const row = (k: number): number => (rows ? rows[k]! : k)
@@ -334,7 +352,8 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       cy[k] = kind === 'segment' ? v[o + 1]! + v[o + 3]! : v[o + 1]!
     }
     const order = hilbertOrder(cx, cy, n)
-    const p = createPool(kind, band, true, n)
+    const p = createPool(kind, band, true, n, into)
+    const handles = into === pools
     const size = bucketSize(n)
     let bucket = emptyBucket()
     for (let slot = 0; slot < n; slot++) {
@@ -363,7 +382,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         extent = r
       }
       p.owner[slot] = cols.owner[i]!
-      addHandle(cols.owner[i]!, p.index * SLOTS + slot)
+      if (handles) addHandle(cols.owner[i]!, p.index * SLOTS + slot)
       if (bucket.count === size) {
         p.buckets.push(bucket)
         bucket = emptyBucket()
@@ -379,20 +398,13 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     p.buckets.push(bucket)
     p.count = n
     p.live = n
-    packedLive += n
+    if (handles) packedLive += n
     markDirty(p, 0, n)
   }
 
-  function rebuild(): void {
-    for (const p of pools) backend.destroyBatch(p.batch)
-    pools = []
-    open = new Map()
-    one = new Float64Array(one.length)
-    multi = new Map()
-    openLive = 0
-    packedLive = 0
-    holes = 0
-    const segs = new Columns(4, Math.max(16, doc.size))
+  /** Collects the primitives of `entities` and packs them into `into`: segments, then arcs by radius band. */
+  function packAll(entities: Iterable<Entity>, styleFor: (e: Entity) => number, into: Pool[], sizeHint: number): void {
+    const segs = new Columns(4, Math.max(16, sizeHint))
     const arcs = new Columns(5, 16)
     let style = 0
     let owner = 0
@@ -413,12 +425,12 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         arcs.v[o + 4] = sweep
       },
     }
-    for (const e of doc.entities()) {
-      style = styleOf(e)
+    for (const e of entities) {
+      style = styleFor(e)
       owner = e.id
       typeOf(e).primitives(e, 0, sink)
     }
-    pack('segment', 0, segs, null)
+    pack('segment', 0, segs, null, into)
     const byBand = new Map<number, number[]>()
     for (let i = 0; i < arcs.n; i++) {
       const band = bandOf(arcs.v[5 * i + 2]!)
@@ -426,35 +438,64 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       if (!rows) byBand.set(band, (rows = []))
       rows.push(i)
     }
-    for (const band of [...byBand.keys()].sort((a, b) => a - b)) pack('arc', band, arcs, Uint32Array.from(byBand.get(band)!))
+    for (const band of [...byBand.keys()].sort((a, b) => a - b)) pack('arc', band, arcs, Uint32Array.from(byBand.get(band)!), into)
+  }
+
+  function rebuild(): void {
+    for (const p of pools) backend.destroyBatch(p.batch)
+    pools = []
+    open = new Map()
+    one = new Float64Array(one.length)
+    multi = new Map()
+    openLive = 0
+    packedLive = 0
+    holes = 0
+    packAll(doc.entities(), styleOf, pools, doc.size)
     needsRebuild = false
+  }
+
+  function rebuildHighlight(): void {
+    for (const p of hlPools) backend.destroyBatch(p.batch)
+    hlPools = []
+    const shown: Entity[] = []
+    for (const id of highlight) {
+      const e = doc.get(id)
+      if (e && doc.layers.get(e.layer)!.visible) shown.push(e)
+    }
+    packAll(shown, () => HIGHLIGHT_STYLE, hlPools, shown.length)
+    hlDirty = false
   }
 
   // --- f64 re-emission of primitives too big for the shader ---------------------------------------------------
   let clip: { batch: BatchId; capacity: number; f32: Float32Array; u32: Uint32Array } | null = null
+  // Collected per frame before the batch is sized, so no draw can point at a batch replaced by a growth.
+  let clipped = new Float64Array(5 * 64) // x0, y0, x1, y1, style
   let clipCount = 0
 
   function pushClip(x0: number, y0: number, x1: number, y1: number, style: number): void {
-    if (!clip || clipCount === clip.capacity) {
-      const capacity = clip ? 2 * clip.capacity : OPEN_CAPACITY
-      const buf = new ArrayBuffer(capacity * SEGMENT_STRIDE)
-      if (clip) new Uint8Array(buf).set(new Uint8Array(clip.f32.buffer))
-      if (clip) backend.destroyBatch(clip.batch)
-      clip = { batch: backend.createBatch('segment', capacity), capacity, f32: new Float32Array(buf), u32: new Uint32Array(buf) }
+    if (5 * clipCount === clipped.length) {
+      const grown = new Float64Array(2 * clipped.length)
+      grown.set(clipped)
+      clipped = grown
     }
-    writeSegment(clip.f32, clip.u32, clipCount++, x0, y0, x1, y1, style)
+    const o = 5 * clipCount++
+    clipped[o] = x0
+    clipped[o + 1] = y0
+    clipped[o + 2] = x1
+    clipped[o + 3] = y1
+    clipped[o + 4] = style
   }
 
   /**
-   * Appends a draw of the visible primitives whose extent on screen is past half the shader's limit, clipped to
-   * `rect` and flattened in f64. Between half and the full limit both copies draw, over the same pixels.
+   * Collects, clipped to `rect` and flattened in f64, the visible primitives of `list` whose extent on screen is
+   * past half the shader's limit. Between half and the full limit both copies draw, over the same pixels.
    */
-  function clipPass(view: ViewState, rect: BBox, out: Draw[]): void {
+  function collectClipped(list: readonly Pool[], view: ViewState, rect: BBox, styleFor: (e: Entity) => number): void {
     const ppu = view.scale * view.dpr
     const segLimit = MAX_SEGMENT_PX / 2 / ppu
     const arcLimit = MAX_ARC_RADIUS_PX / 2 / ppu
     const ids = new Set<number>()
-    for (const p of pools) {
+    for (const p of list) {
       const limit = p.kind === 'segment' ? segLimit : arcLimit
       const words = WORDS[p.kind]
       const f = p.f32
@@ -483,11 +524,9 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         }
       }
     }
-    if (ids.size === 0) return
-    clipCount = 0
     for (const id of ids) {
       const e = doc.get(id)!
-      const style = styleOf(e)
+      const style = styleFor(e)
       typeOf(e).primitives(e, 0, {
         segment(x0, y0, x1, y1) {
           if (Math.hypot(x1 - x0, y1 - y0) <= segLimit) return
@@ -517,39 +556,74 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         },
       })
     }
-    if (clipCount === 0) return
-    backend.writeBatch(clip!.batch, 0, clip!.u32.subarray(0, clipCount * WORDS.segment))
-    out.push({ batch: clip!.batch, first: 0, count: clipCount })
+  }
+
+  /** Uploads the collected segments; returns the clip batch, or null when there are none. */
+  function uploadClipped(): BatchId | null {
+    if (clipCount === 0) return null
+    if (!clip || clip.capacity < clipCount) {
+      if (clip) backend.destroyBatch(clip.batch)
+      let capacity = clip?.capacity ?? OPEN_CAPACITY
+      while (capacity < clipCount) capacity *= 2
+      const buf = new ArrayBuffer(capacity * SEGMENT_STRIDE)
+      clip = { batch: backend.createBatch('segment', capacity), capacity, f32: new Float32Array(buf), u32: new Uint32Array(buf) }
+    }
+    for (let i = 0; i < clipCount; i++) {
+      const o = 5 * i
+      writeSegment(clip.f32, clip.u32, i, clipped[o]!, clipped[o + 1]!, clipped[o + 2]!, clipped[o + 3]!, clipped[o + 4]!)
+    }
+    backend.writeBatch(clip.batch, 0, clip.u32.subarray(0, clipCount * WORDS.segment))
+    return clip.batch
+  }
+
+  /** Appends the culled draws of `list`, merging buckets adjacent in the same batch. */
+  function emitDraws(list: readonly Pool[], view: ViewState, rect: BBox, out: Draw[]): void {
+    const ppu = view.scale * view.dpr
+    for (const p of list) {
+      if (p.live === 0) continue
+      const subdiv = p.kind === 'arc' ? arcSubdiv(2 ** (p.band + 1) * ppu) : undefined
+      for (const b of p.buckets) {
+        if (b.count === 0 || !intersects(b, rect)) continue
+        const last = out[out.length - 1]
+        if (last && last.batch === p.batch && last.first + last.count === b.first) last.count += b.count
+        else out.push(subdiv === undefined ? { batch: p.batch, first: b.first, count: b.count } : { batch: p.batch, first: b.first, count: b.count, subdiv })
+      }
+    }
   }
 
   return {
     draws(view) {
       if (disposed) throw new Error('the scene is disposed')
       if (needsRebuild) rebuild()
+      if (hlDirty) rebuildHighlight()
       for (const p of pools) flush(p)
+      for (const p of hlPools) flush(p)
       if (stylesDirty) {
         backend.setStyleTable(table.subarray(0, styleCount * STYLE_WORDS))
         stylesDirty = false
       }
-      const ppu = view.scale * view.dpr
       // The stroke reaches half its width past the geometry; one more px covers antialiasing.
-      const margin = (LINE_WIDTH_PX / 2 + 1) / view.scale
+      const margin = (Math.max(LINE_WIDTH_PX, HIGHLIGHT_WIDTH_PX) / 2 + 1) / view.scale
       const halfW = view.width / 2 / view.scale + margin
       const halfH = view.height / 2 / view.scale + margin
       const rect = { minX: view.cx - halfW, minY: view.cy - halfH, maxX: view.cx + halfW, maxY: view.cy + halfH }
+      clipCount = 0
+      collectClipped(pools, view, rect, styleOf)
+      const mainClipped = clipCount
+      collectClipped(hlPools, view, rect, () => HIGHLIGHT_STYLE)
+      const clipBatch = uploadClipped()
+      // Order: the drawing, its clipped primitives, then the highlight on top with its own.
       const out: Draw[] = []
-      for (const p of pools) {
-        if (p.live === 0) continue
-        const subdiv = p.kind === 'arc' ? arcSubdiv(2 ** (p.band + 1) * ppu) : undefined
-        for (const b of p.buckets) {
-          if (b.count === 0 || !intersects(b, rect)) continue
-          const last = out[out.length - 1]
-          if (last && last.batch === p.batch && last.first + last.count === b.first) last.count += b.count
-          else out.push(subdiv === undefined ? { batch: p.batch, first: b.first, count: b.count } : { batch: p.batch, first: b.first, count: b.count, subdiv })
-        }
-      }
-      clipPass(view, rect, out)
+      emitDraws(pools, view, rect, out)
+      if (clipBatch !== null && mainClipped > 0) out.push({ batch: clipBatch, first: 0, count: mainClipped })
+      emitDraws(hlPools, view, rect, out)
+      if (clipBatch !== null && clipCount > mainClipped) out.push({ batch: clipBatch, first: mainClipped, count: clipCount - mainClipped })
       return out
+    },
+
+    setHighlight(ids) {
+      highlight = new Set(ids)
+      hlDirty = true
     },
 
     dispose() {
@@ -557,9 +631,10 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       disposed = true
       offDoc()
       offLayers()
-      for (const p of pools) backend.destroyBatch(p.batch)
+      for (const p of [...pools, ...hlPools]) backend.destroyBatch(p.batch)
       if (clip) backend.destroyBatch(clip.batch)
       pools = []
+      hlPools = []
       clip = null
     },
   }
