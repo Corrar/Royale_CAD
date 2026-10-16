@@ -4,3 +4,4 @@ dist/
 *.tsbuildinfo
 *.log
 .claude/worktrees/
+release/

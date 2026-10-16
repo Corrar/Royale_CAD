@@ -4,22 +4,27 @@ import { app, BrowserWindow, Menu, session, type KeyboardInputEvent, type MouseI
 import { registerFiles } from './files'
 import { registerSettings } from './settings'
 
-const smoke = app.commandLine.hasSwitch('smoke')
-const shot = app.commandLine.getSwitchValue('shot')
-const loseContext = app.commandLine.hasSwitch('lose-context')
-const play = app.commandLine.getSwitchValue('play')
-// A DXF to open at start: for smoke runs now, for file associations later.
-const openPath = app.commandLine.getSwitchValue('open') || null
+// The test switches (--smoke, --shot, --play, --bench…) write files anywhere and run scripts from anywhere: an
+// installed app ignores them, unless ROYALE_TEST_SWITCHES=1 says it is the installer's own test.
+const testing = !app.isPackaged || process.env.ROYALE_TEST_SWITCHES === '1'
+const hasSwitch = (name: string): boolean => testing && app.commandLine.hasSwitch(name)
+const switchValue = (name: string): string => (testing ? app.commandLine.getSwitchValue(name) : '')
+const smoke = hasSwitch('smoke')
+const shot = switchValue('shot')
+const loseContext = hasSwitch('lose-context')
+const play = switchValue('play')
+// A DXF to open at start: --open, or the file Windows passes when one is opened with the app (file association).
+const openPath = app.commandLine.getSwitchValue('open') || process.argv.slice(1).find((a) => !a.startsWith('-') && /\.dxf$/i.test(a)) || null
 // The settings file: --settings for a test run; a smoke or bench run without it leaves the user's alone.
-const settingsSwitch = app.commandLine.getSwitchValue('settings') || null
+const settingsSwitch = switchValue('settings') || null
 // BG, SYMBOL and BAR_H mirror --bg, --text and --titlebar-h in src/ui/tokens.css.
 const BG = '#1B1D20'
 const SYMBOL = '#E6E8EA'
 const BAR_H = 32
 const dev = !app.isPackaged && !!process.env.ELECTRON_RENDERER_URL
-const bench = app.commandLine.hasSwitch('bench')
-const hasGate = app.commandLine.hasSwitch('gate')
-const gate = hasGate ? app.commandLine.getSwitchValue('gate') : 'g1'
+const bench = hasSwitch('bench')
+const hasGate = hasSwitch('gate')
+const gate = hasGate ? switchValue('gate') : 'g1'
 const G1_LIMIT_MS = 16.7
 // G2 (src/app/bench.ts): memory after a full GC (JS heap plus ArrayBuffers), index rebuild after edits, pick p95.
 const G2_LIMITS = { memoryMB: 400, rebuildMs: 200, pickMs: 1 }
@@ -86,9 +91,9 @@ function finish(code: number, reason?: string): void {
 const fail = (reason: string): void => finish(1, reason)
 
 let benchN = 1_000_000
-const hasPlay = app.commandLine.hasSwitch('play')
-const hasN = app.commandLine.hasSwitch('n')
-const rawN = app.commandLine.getSwitchValue('n')
+const hasPlay = hasSwitch('play')
+const hasN = hasSwitch('n')
+const rawN = switchValue('n')
 const conflict = bench && (smoke || hasPlay || loseContext)
   ? '--bench cannot be combined with --smoke, --play or --lose-context'
   : (hasPlay || loseContext) && !smoke

@@ -1,0 +1,40 @@
+# Royale CAD packaging. Windows: an NSIS x64 installer (pnpm dist). Here or on Linux: an unpacked app (pnpm dist:dir).
+appId: com.royale.cad
+productName: Royale CAD
+copyright: Copyright © 2026 Royale
+directories:
+  output: release
+  buildResources: build
+# electron-vite bundles main, preload, worker and renderer (React, Lucide and the fonts included) into out/:
+# nothing from node_modules is needed at run time.
+files:
+  - out/**/*
+  - package.json
+  - '!**/node_modules/**/*'
+asar: true
+fileAssociations:
+  - ext: dxf
+    name: DXF Drawing
+    description: Drawing Exchange Format
+    role: Editor
+    icon: build/icon.ico
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+  artifactName: Royale-CAD-Setup-${version}-x64.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Royale CAD
+  uninstallDisplayName: Royale CAD
+  # settings.json stays: reinstalling keeps the user's aliases and snap modes.
+  deleteAppDataOnUninstall: false
+linux:
+  target: [dir]
+  icon: build/icon.png
+  category: Graphics
