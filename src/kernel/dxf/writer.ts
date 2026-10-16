@@ -224,7 +224,7 @@ function fresh(c: Ctx, e: Entity, handle: string | null): void {
         mtextLines(e).forEach((l, k) => freshText(c, {
           type: 'text', id: e.id, layer: e.layer, ...(e.color !== undefined && { color: e.color }), value: caretCoded(l.text),
           x: l.x, y: l.y, x2: l.x, y2: l.y, height: e.height, rotation: e.rotation, widthFactor: 1, oblique: 0,
-          halign: 0, valign: 0, backward: false, upsideDown: false,
+          halign: 0, valign: 0, backward: false, upsideDown: false, ...(e.style !== undefined && { style: e.style }),
         }, k === 0 ? handle : f.handles ? c.ids.take() : null))
         return
       }
@@ -239,6 +239,7 @@ function fresh(c: Ctx, e: Entity, handle: string | null): void {
       const chunks = chunksOf(e.value)
       for (let k = 0; k < chunks.length - 1; k++) o.str(3, chunks[k]!)
       o.str(1, chunks.at(-1)!)
+      if (e.style !== undefined) o.str(7, e.style)
       // The direction as a vector: 50 is in radians to some readers, in degrees to others.
       o.real(11, Math.cos(e.rotation))
       o.real(21, Math.sin(e.rotation))
@@ -294,7 +295,7 @@ function freshAttrib(c: Ctx, a: Attrib, handle: string | null, owner: string | n
   if (a.valign !== 0) o.int(74, a.valign)
 }
 
-/** The groups TEXT and ATTRIB share: 10 through 11. */
+/** The groups TEXT and ATTRIB share: 10 through 11, in AutoCAD's order (10 40 1 50 41 51 7 71 72 11). */
 function textBody(c: Ctx, e: Omit<Text, 'id'>): void {
   const { o } = c
   const [first, second] = textPoints(e)
@@ -306,6 +307,7 @@ function textBody(c: Ctx, e: Omit<Text, 'id'>): void {
   if (e.rotation !== 0) o.real(50, deg(e.rotation))
   if (e.widthFactor !== 1) o.real(41, e.widthFactor)
   if (e.oblique !== 0) o.real(51, deg(e.oblique))
+  if (e.style !== undefined) o.str(7, e.style)
   const flags = textFlags(e)
   if (flags !== 0) o.int(71, flags)
   if (e.halign !== 0) o.int(72, e.halign)

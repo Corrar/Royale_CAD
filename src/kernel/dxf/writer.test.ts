@@ -508,6 +508,32 @@ describe('writeDxf', () => {
     expect(got[2]!.attribs).toEqual(want[2]!.attribs)
   })
 
+  it('a copy of a TEXT, an MTEXT or an attribute keeps its text style (7), in R2000 and R12', () => {
+    const BLOCKS: G = [0, 'SECTION', 2, 'BLOCKS',
+      0, 'BLOCK', 5, '40', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockBegin', 2, 'TAGGED', 70, 2, 10, 0, 20, 0, 30, 0, 3, 'TAGGED',
+      0, 'ENDBLK', 5, '43', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockEnd',
+      0, 'ENDSEC']
+    const TEXTS: G = [
+      0, 'TEXT', 5, '60', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 1, 20, 2, 30, 0, 40, 2.5, 1, 'Room 101', 7, 'ROMANS', 100, 'AcDbText',
+      0, 'MTEXT', 5, '61', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbMText', 10, 0, 20, 30, 30, 0, 40, 2, 41, 20, 71, 1, 1, 'styled\\Pmtext', 7, 'ROMANS',
+      0, 'INSERT', 5, '62', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbBlockReference', 66, 1, 2, 'TAGGED', 10, 0, 20, 0, 30, 0,
+      0, 'ATTRIB', 5, '63', 330, '62', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 0, 20, 0, 30, 0, 40, 1, 1, 'V', 7, 'ROMANS', 100, 'AcDbAttribute', 2, 'TAG', 70, 0,
+      0, 'SEQEND', 5, '64', 330, '62', 100, 'AcDbEntity', 8, '0',
+    ]
+    for (const version of ['AC1015', 'AC1009']) {
+      const t = commandBench()
+      const text = file(TEXTS, version).replace(lines([0, 'SECTION', 2, 'ENTITIES']), lines(BLOCKS) + lines([0, 'SECTION', 2, 'ENTITIES']))
+      const d = drawingFrom(t.doc, parseDxf(text))
+      t.run('COPY⏎ALL⏎⏎0,0⏎10,0⏎⏎')
+      const out = writeDxf(t.doc, d.source)
+      // The three records, their three copies, and in R12 the second line of the MTEXT's copy.
+      expect(out.split(lines([7, 'ROMANS'])).length - 1).toBe(version === 'AC1015' ? 6 : 7)
+      const back = [...readDxf(out).doc.entities()]
+      const styles = back.map((e) => (e.type === 'insert' ? e.attribs![0]!.style : (e as Text | MText).style))
+      expect(styles.every((s) => s === 'ROMANS')).toBe(true)
+    }
+  })
+
   it('R2018 ATTRIB: a moved insert patches the AcDbText groups of its attributes; 71 stays the attribute type, 11 follows', () => {
     const BLOCKS: G = [0, 'SECTION', 2, 'BLOCKS',
       0, 'BLOCK', 5, '40', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockBegin', 2, 'BUBBLE', 70, 2, 10, 0, 20, 0, 30, 0, 3, 'BUBBLE',

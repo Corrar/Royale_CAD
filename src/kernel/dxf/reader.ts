@@ -149,9 +149,10 @@ interface TextGroups {
   flags: number
   halign: number
   valign: number
+  style: string
 }
 
-const textGroups = (): TextGroups => ({ value: '', x: 0, y: 0, x2: NaN, y2: NaN, height: 0, rotation: 0, widthFactor: 1, oblique: 0, flags: 0, halign: 0, valign: 0 })
+const textGroups = (): TextGroups => ({ value: '', x: 0, y: 0, x2: NaN, y2: NaN, height: 0, rotation: 0, widthFactor: 1, oblique: 0, flags: 0, halign: 0, valign: 0, style: '' })
 
 /**
  * A text placed by the point of its justification, which is 11 (10 being worked out from it) unless it is left on
@@ -169,7 +170,7 @@ function textOf(t: TextGroups): TextFields {
   return {
     type: 'text', value: t.value, x: px, y: py, x2: qx, y2: qy, height: t.height, rotation: normAngle(t.rotation * DEG),
     widthFactor: t.widthFactor > 0 ? t.widthFactor : 1, oblique: Math.max(-85, Math.min(85, slant)) * DEG,
-    halign, valign, backward: (t.flags & 2) !== 0, upsideDown: (t.flags & 4) !== 0,
+    halign, valign, backward: (t.flags & 2) !== 0, upsideDown: (t.flags & 4) !== 0, ...(t.style && { style: t.style }),
   }
 }
 
@@ -537,6 +538,9 @@ function parser(pairs: PairList) {
       case 51:
         t.oblique = num(i)
         return true
+      case 7:
+        t.style = pairs.value(i).trim()
+        return true
       case 71:
         t.flags = num(i)
         return true
@@ -617,6 +621,7 @@ function parser(pairs: PairList) {
     let attachment = 1
     let rotation = 0
     let spacing = 1
+    let style = ''
     for (let i = a + 1; i < b; i++) {
       const c = codes[i]!
       // R2018's columns: an embedded object, its own direction, insert and sizes.
@@ -632,6 +637,7 @@ function parser(pairs: PairList) {
       else if (c === 71) attachment = num(i)
       else if (c === 50) rotation = num(i)
       else if (c === 44) spacing = num(i)
+      else if (c === 7) style = pairs.value(i).trim()
       else common(c, i)
     }
     upright()
@@ -640,7 +646,7 @@ function parser(pairs: PairList) {
       type: 'mtext', value: chunks.join('') + last, x, y, height, width: width > 0 ? width : 0,
       attachment: Number.isInteger(attachment) && attachment >= 1 && attachment <= 9 ? attachment : 1,
       rotation: normAngle(dx !== 0 || dy !== 0 ? Math.atan2(dy, dx) : rotation * DEG),
-      spacing: spacing > 0 ? spacing : 1,
+      spacing: spacing > 0 ? spacing : 1, ...(style && { style }),
     }
   }
 
