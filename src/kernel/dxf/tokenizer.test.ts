@@ -79,8 +79,8 @@ describe('sections', () => {
       dxf('999', 'comment', '0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1015', '0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF'),
     )
     expect(sections(pairs)).toEqual([
-      { name: 'HEADER', start: 3, end: 5 },
-      { name: 'ENTITIES', start: 8, end: 8 },
+      { name: 'HEADER', section: 1, start: 3, end: 5 },
+      { name: 'ENTITIES', section: 6, start: 8, end: 8 },
     ])
     expect(pairs.pair(3)).toEqual({ code: 9, value: '$ACADVER' })
     // Text spans: pair 1 starts on line 3; the end is past the last line break.
@@ -89,6 +89,11 @@ describe('sections', () => {
     expect(pairs.offset(pairs.length)).toBe(text.length)
     expect(pairs.is(2, 2, 'HEADER')).toBe(true)
     expect(pairs.is(2, 0, 'HEADER')).toBe(false)
+  })
+
+  it('steps over 999 comments between 0/SECTION and its name', () => {
+    const pairs = tokenizeList(dxf('0', 'SECTION', '999', 'made by hand', '999', 'twice', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF'))
+    expect(sections(pairs)).toEqual([{ name: 'ENTITIES', section: 0, start: 4, end: 4 }])
   })
 
   it('a section cut short is an error that names the line where the file ends', () => {

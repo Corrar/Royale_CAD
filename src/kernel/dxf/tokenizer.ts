@@ -130,10 +130,10 @@ function trimmedIs(text: string, s: number, e: number, word: string): boolean {
   return e - s === word.length && text.startsWith(word, s)
 }
 
-/** A section: its name, and the range [start, end) of its pairs, between the name pair and 0/ENDSEC. */
-export interface SectionRange { name: string; start: number; end: number }
+/** A section: its name, its 0/SECTION pair, and the range [start, end) of its pairs, between the name pair and 0/ENDSEC. */
+export interface SectionRange { name: string; section: number; start: number; end: number }
 
-/** The sections of a tokenized file, in order, up to its 0/EOF. 999 comments between sections are skipped. */
+/** The sections of a tokenized file, in order, up to its 0/EOF. 999 comments between sections and before a name are skipped. */
 export function sections(pairs: PairList): SectionRange[] {
   const lineOf = (i: number): number => 2 * i + 1
   const out: SectionRange[] = []
@@ -147,9 +147,12 @@ export function sections(pairs: PairList): SectionRange[] {
     }
     if (pairs.is(i, 0, 'EOF')) return out
     if (!pairs.is(i, 0, 'SECTION')) throw new DxfError(lineOf(i), `expected 0/SECTION, found ${pairs.code(i)}/${pairs.value(i).trim()}`)
-    if (i + 1 >= pairs.length || pairs.code(i + 1) !== 2) throw new DxfError(lineOf(i + 1), 'a section starts with its name (code 2)')
-    const name = pairs.value(i + 1).trim()
-    let j = i + 2
+    // 999 comments may come before the name.
+    let n = i + 1
+    while (n < pairs.length && pairs.code(n) === 999) n++
+    if (n >= pairs.length || pairs.code(n) !== 2) throw new DxfError(lineOf(n), 'a section starts with its name (code 2)')
+    const name = pairs.value(n).trim()
+    let j = n + 1
     for (; j < pairs.length; j++) {
       if (pairs.codes[j] !== 0) continue
       if (pairs.is(j, 0, 'ENDSEC')) break
@@ -159,7 +162,7 @@ export function sections(pairs: PairList): SectionRange[] {
       }
     }
     if (j >= pairs.length) throw new DxfError(lineOf(pairs.length), `section ${name} is not closed (file truncated?)`)
-    out.push({ name, start: i + 2, end: j })
+    out.push({ name, section: i, start: n + 1, end: j })
     i = j + 1
   }
 }

@@ -663,7 +663,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
     newline: lf > 0 && text.charCodeAt(lf - 1) === 13 ? '\r\n' : '\n',
     header,
     handseed,
-    sections: ranges.map((s) => ({ name: s.name, start: pairs.offset(s.start - 2), end: pairs.offset(s.end + 1) })),
+    sections: ranges.map((s) => ({ name: s.name, start: pairs.offset(s.section), end: pairs.offset(s.end + 1) })),
     layers: layerList,
     drafts,
     spans,

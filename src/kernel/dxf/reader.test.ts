@@ -207,6 +207,15 @@ describe('readDxf', () => {
     expect(all(d)[0]!.layer).toBe(d.doc.layers.indexOf('Nowhere'))
   })
 
+  it('999 comments after 0/SECTION and 0/TABLE: the LAYER table is read, the section spans its 0/SECTION', () => {
+    const tables: G = [0, 'SECTION', 999, 'tables', 2, 'TABLES', 0, 'TABLE', 999, 'layer table', 2, 'LAYER', 70, 1, 0, 'LAYER', 2, 'Off', 70, 0, 62, -2, 0, 'ENDTAB', 0, 'ENDSEC']
+    const d = readDxf(lines([...tables, 0, 'SECTION', 2, 'ENTITIES', 0, 'LINE', 8, 'Off', 10, 0, 20, 0, 11, 1, 21, 1, 0, 'ENDSEC', 0, 'EOF']))
+    expect(d.doc.layers.get(d.doc.layers.indexOf('Off'))).toEqual({ name: 'Off', color: 2, visible: false, locked: false })
+    const s = d.source.sections[0]!
+    expect(s.name).toBe('TABLES')
+    expect(d.source.text.slice(s.start, s.end)).toBe(lines(tables))
+  })
+
   it('colors: 256 is ByLayer, ByBlock (0) shows white, 420 true color wins over 62', () => {
     const line = (...extra: G): G => [0, 'LINE', 8, '0', ...extra, 10, 0, 20, 0, 11, 1, 21, 1]
     const d = readDxf(file([...line(62, 256), ...line(62, 0), ...line(62, 1, 420, 0x00ff80), ...line()]))
