@@ -8,9 +8,11 @@ import { APERTURE_PX, SNAP, snap } from '../kernel/snap'
 import { createSpatialIndex } from '../kernel/spatial'
 import { FIT_MARGIN_PX, fit, screenToWorld, type ViewState } from '../kernel/view'
 import { drawOverlay, type OverlayTheme } from '../render/overlay'
+import { createGlyphAtlas } from '../render/glyphs'
 import { createScene } from '../render/scene'
 import { createWebGL2Backend } from '../render/webgl2/backend'
 import { createFiles, type FileState } from './files'
+import { canvasRaster, GLYPH_CAP_PX, GLYPH_SPREAD_PX } from './glyph-raster'
 import { attachInput, attachKeyboard } from './input'
 import { parseInWorker } from './parse-worker'
 import { createStore, derivedStore, type Store } from './stores'
@@ -120,9 +122,12 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     snap: token('--snap'),
   }
   const doc = createDocument()
+  // Glyphs are drawn the first time a text needs them: the text font should have loaded by then (App waits for it).
+  const glyphs = createGlyphAtlas({ raster: canvasRaster(GLYPH_CAP_PX), capPx: GLYPH_CAP_PX, spread: GLYPH_SPREAD_PX })
   const scene = createScene(doc, backend, {
     drawColor: packRgba(readCssColor(canvas, '--draw')),
     highlightColor: packRgba(readCssColor(canvas, '--accent')),
+    glyphs,
   })
   const index = createSpatialIndex(doc)
   const selection = createSelection()

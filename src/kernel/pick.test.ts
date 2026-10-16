@@ -74,6 +74,20 @@ describe('pickBox', () => {
     expect(pickBox(doc, index, box, true)).toEqual([ids[0], ids[1], ids[2]])
   })
 
+  it('crossing takes text whose letters reach into the box, and text inside a block', () => {
+    const text = (x: number, y: number, value: string): Draft => ({
+      type: 'text', layer: 0, value, x, y, x2: x, y2: y, height: 1, rotation: 0, widthFactor: 1, oblique: 0,
+      halign: 0, valign: 0, backward: false, upsideDown: false,
+    })
+    const { doc, index, ids } = setup([
+      text(-2, 4, 'HH'), // its second H crosses the left edge
+      text(-5, 4, 'H'), // ends before the box
+      text(9.8, 9.9, 'H'), // the box's corner (10, 10) falls inside the letter
+      { type: 'insert', layer: 0, block: { name: 'T', x: 0, y: 0, entities: [text(0, 0, 'H')] }, x: 9.5, y: -0.5, sx: 1, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 } as Draft,
+    ])
+    expect(pickBox(doc, index, box, true)).toEqual([ids[0], ids[2], ids[3]])
+  })
+
   it('ignores entities on hidden layers', () => {
     const { doc, index, ids } = setup([line(1, 1, 2, 2), line(3, 3, 4, 4, 1)])
     expect(pickBox(doc, index, box, true)).toEqual([ids[0]])

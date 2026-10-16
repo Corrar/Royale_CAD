@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { runBench, runBenchG2 } from '../app/bench'
 import { startApp, type AppSession } from '../app/controller'
+import { GLYPH_CAP_PX, textFont } from '../app/glyph-raster'
 import { CommandLine } from './CommandLine'
 import { LayerPanel } from './LayerPanel'
 import { StatusBar } from './StatusBar'
@@ -22,10 +23,17 @@ export function App() {
       else runBench(canvas, n)
       return
     }
-    const s = startApp(canvas, overlay)
-    setSession(s)
+    // Text is drawn in the bundled Inter: start once it has loaded (or failed to), so no glyph is drawn in a fallback.
+    let s: AppSession | null = null
+    let gone = false
+    void document.fonts.load(textFont(GLYPH_CAP_PX)).catch(() => []).then(() => {
+      if (gone) return
+      s = startApp(canvas, overlay)
+      setSession(s)
+    })
     return () => {
-      s.dispose()
+      gone = true
+      s?.dispose()
       setSession(null)
     }
   }, [])

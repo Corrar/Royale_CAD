@@ -4,6 +4,7 @@ import type { Entity } from './entity/types'
 import { arcTouchesBox, clipSegment } from './geom/clip'
 import { bboxContains, type BBox, type Vec2 } from './geom/vec'
 import type { SpatialIndex } from './spatial'
+import { advanceOf, DESCENT } from './text/font'
 
 /** Entities on hidden layers cannot be selected. Locked ones can; commands filter them. */
 const selectable = (doc: Document, e: Entity): boolean => doc.layers.get(e.layer)?.visible === true
@@ -25,7 +26,22 @@ export function pick(doc: Document, index: SpatialIndex, p: Vec2, tol: number): 
   return best
 }
 
-/** Whether any primitive of e reaches into the closed box b. */
+/** Whether the parallelogram o + s·u + t·v (s, t in 0..1) reaches into the closed box b. */
+function quadTouches(b: BBox, ox: number, oy: number, ux: number, uy: number, vx: number, vy: number): boolean {
+  const xs = [ox, ox + ux, ox + ux + vx, ox + vx]
+  const ys = [oy, oy + uy, oy + uy + vy, oy + vy]
+  for (let i = 0; i < 4; i++) if (clipSegment(b, xs[i]!, ys[i]!, xs[(i + 1) % 4]!, ys[(i + 1) % 4]!)) return true
+  // No edge reaches in: the box is wholly inside the quad, or apart. Its centre tells which.
+  const det = ux * vy - uy * vx
+  if (det === 0) return false
+  const px = (b.minX + b.maxX) / 2 - ox
+  const py = (b.minY + b.maxY) / 2 - oy
+  const s = (px * vy - py * vx) / det
+  const t = (ux * py - uy * px) / det
+  return s >= 0 && s <= 1 && t >= 0 && t <= 1
+}
+
+/** Whether any primitive of e reaches into the closed box b. A letter counts by its cell: advance by descent to cap. */
 function touches(e: Entity, b: BBox): boolean {
   let hit = false
   typeOf(e).primitives(e, 0, {
@@ -34,6 +50,10 @@ function touches(e: Entity, b: BBox): boolean {
     },
     arc(cx, cy, r, a0, sweep) {
       hit ||= arcTouchesBox(b, cx, cy, r, a0, sweep)
+    },
+    glyph(cp, x, y, ux, uy, vx, vy) {
+      const w = advanceOf(cp)
+      hit ||= quadTouches(b, x - DESCENT * vx, y - DESCENT * vy, w * ux, w * uy, (1 + DESCENT) * vx, (1 + DESCENT) * vy)
     },
   })
   return hit
