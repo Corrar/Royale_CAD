@@ -24,6 +24,8 @@ export interface DxfSource {
   readonly handseed: number
   /** Each section, spanning its text from the 0/SECTION line to past the 0/ENDSEC line. */
   readonly sections: readonly { readonly name: string; readonly start: number; readonly end: number }[]
+  /** The name each layer read has in the file, by index: its own, unless the file's could not be a layer name. */
+  readonly layerNames: readonly string[]
   /** The entity as read and the span of its text; null for an id the file did not give. */
   loaded(id: number): LoadedSpan | null
   /** The handle (group 5) the file gave the entity; null for later entities, or a file without handles. */
@@ -440,26 +442,24 @@ const INVALID_NAME = /[<>/\\":;?*|,=`]/g
 interface Layers {
   /** The layer index for a name the file uses, created with defaults when the table lacks it. */
   of(name: string): number
+  /**
+   * Once every name the file uses is known: the layers, layer 0 first, and the name each has in the file. A name
+   * a layer cannot have (an xref layer's |, a /) gives way to one no other layer has; a valid name never changes.
+   */
+  done(): { list: Layer[]; names: string[] }
 }
 
-function layerTable(list: Layer[], pairs: PairList, start: number, end: number, warnings: string[]): Layers {
+function layerTable(pairs: PairList, start: number, end: number, warnings: string[]): Layers {
+  const list: Layer[] = [{ name: '0', color: 7, visible: true, locked: false }]
+  const names = ['0']
   const byName = new Map<string, number>()
-  const taken = new Set(list.map((l) => l.name.toLowerCase()))
-  const add = (name: string, color: Color, visible: boolean, locked: boolean): number => {
+  const add = (name: string, l: Omit<Layer, 'name'>): number => {
     const key = name.toLowerCase()
     const known = byName.get(key)
     if (known !== undefined) return known
-    let clean = name.replace(INVALID_NAME, '_').trim() || '_'
-    if (clean !== name) warnings.push(`Layer "${name}" renamed "${clean}": its name has characters layers cannot have.`)
-    while (taken.has(clean.toLowerCase()) && clean !== '0') clean += '_'
-    let index: number
-    if (clean === '0') {
-      index = 0
-      list[0] = { name: '0', color, visible, locked }
-    } else {
-      index = list.push({ name: clean, color, visible, locked }) - 1
-      taken.add(clean.toLowerCase())
-    }
+    const index = key === '0' ? 0 : list.length
+    list[index] = { name, ...l }
+    names[index] = name
     byName.set(key, index)
     return index
   }
@@ -468,10 +468,29 @@ function layerTable(list: Layer[], pairs: PairList, start: number, end: number, 
     t.entries.forEach((a, k) => {
       if (!pairs.is(a, 0, 'LAYER')) return
       const l = layerEntry(pairs, a, entryEnd(t, k))
-      if (l.name !== '') add(l.name, l.color, l.visible, l.locked)
+      if (l.name !== '') add(l.name, { color: l.color, visible: l.visible, locked: l.locked, ...(l.frozen && { frozen: true }) })
     })
   }
-  return { of: (name) => add(name, 7, true, false) }
+  return {
+    of: (name) => add(name, { color: 7, visible: true, locked: false }),
+    done() {
+      const clean = (name: string): string => name.replace(INVALID_NAME, '_').trim() || '_'
+      // Every valid name is spoken for before any other is changed, even one only an entity met later uses.
+      const taken = new Set(names.filter((n) => clean(n) === n).map((n) => n.toLowerCase()))
+      const renamed: string[] = []
+      names.forEach((name, i) => {
+        let to = clean(name)
+        if (to === name) return
+        while (taken.has(to.toLowerCase())) to += '_'
+        taken.add(to.toLowerCase())
+        list[i] = { ...list[i]!, name: to }
+        renamed.push(`Layer "${name}" renamed "${to}": its name has characters layers cannot have.`)
+      })
+      // Ahead of the entities' warnings, as the table comes before them.
+      warnings.unshift(...renamed)
+      return { list, names }
+    },
+  }
 }
 
 function readHeader(pairs: PairList, start: number, end: number): Map<string, string> {
@@ -496,6 +515,8 @@ export interface ParsedDxf {
   readonly sections: readonly { readonly name: string; readonly start: number; readonly end: number }[]
   /** Layer 0 first. */
   readonly layers: readonly Layer[]
+  /** The name layer k has in the file: layers[k].name, unless the file's could not be a layer name. */
+  readonly layerNames: readonly string[]
   readonly drafts: readonly Draft[]
   /** Draft k came from the text [spans[2k], spans[2k + 1]). */
   readonly spans: Uint32Array
@@ -549,8 +570,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
   const hs = find('HEADER')
   const header = hs ? readHeader(pairs, hs.start, hs.end) : new Map<string, string>()
   const tables = find('TABLES')
-  const layerList: Layer[] = [{ name: '0', color: 7, visible: true, locked: false }]
-  const layers = layerTable(layerList, pairs, tables?.start ?? 0, tables?.end ?? 0, warnings)
+  const layers = layerTable(pairs, tables?.start ?? 0, tables?.end ?? 0, warnings)
 
   const ents = find('ENTITIES')
   const recs = ents ? records(pairs, ents.start, ents.end) : { n: 0, starts: new Int32Array(0), owns: new Int32Array(0), ends: new Int32Array(0) }
@@ -641,6 +661,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
     }
     drafts[k] = draft
   }
+  const { list: layerList, names: layerNames } = layers.done()
   for (const [key, n] of kept) {
     warnings.push(key === 'paper space' ? `${n} ${n === 1 ? 'entity' : 'entities'} in paper space kept as is (not drawn).` : `${n} ${key} kept as is (not drawn).`)
   }
@@ -665,6 +686,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
     handseed,
     sections: ranges.map((s) => ({ name: s.name, start: pairs.offset(s.start - 2), end: pairs.offset(s.end + 1) })),
     layers: layerList,
+    layerNames,
     drafts,
     spans,
     warnings,
@@ -709,6 +731,7 @@ function drawingOf(doc: Document, meta: ParsedMeta, originals: readonly Entity[]
       header: meta.header,
       handseed: meta.handseed,
       sections: meta.sections,
+      layerNames: meta.layerNames,
       loaded,
       handleOf(id) {
         const span = loaded(id)

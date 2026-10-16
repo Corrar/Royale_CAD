@@ -110,7 +110,8 @@ export const layerLine: Command = Object.assign(
           break
         case 'OFF':
         case 'Freeze':
-          yield* change(ctx, `Enter name list of layer(s) to ${r.word === 'OFF' ? 'turn off' : 'freeze'}`, { visible: false })
+          // Both hide it; a file keeps them apart (frozen: flag 1, off: negative color).
+          yield* change(ctx, `Enter name list of layer(s) to ${r.word === 'OFF' ? 'turn off' : 'freeze'}`, r.word === 'OFF' ? { visible: false } : { visible: false, frozen: true })
           break
         case 'LOck':
         case 'Unlock':

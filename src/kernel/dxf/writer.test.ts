@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
-import { createDocument } from '../document'
+import { createDocument, type Document } from '../document'
 import type { Arc, Circle, Ellipse, Entity, Insert, Line, Polyline, Spline } from '../entity/types'
 import { typeOf } from '../entity/registry'
 import { rotation } from '../geom/vec'
-import { readDxf } from './reader'
+import { commandBench } from '../command/testing'
+import { drawingFrom, parseDxf, readDxf } from './reader'
 import { tokenize } from './tokenizer'
 import { nearestAci, real, writeDxf } from './writer'
 
@@ -41,6 +42,19 @@ const LINE: G = [0, 'LINE', 5, '20', 330, '1F', 100, 'AcDbEntity', 8, 'Walls', 6
 const CIRCLE: G = [0, 'CIRCLE', 5, '21', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbCircle', 10, 5, 20, 1, 30, 0, 40, 1, 210, 0, 220, 0, 230, -1]
 const HATCH: G = [0, 'HATCH', 5, '22', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbHatch', 10, 0, 20, 0, 30, 0, 2, 'SOLID']
 const LWPOLY: G = [0, 'LWPOLYLINE', 5, '23', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbPolyline', 90, 2, 70, 0, 43, 0, 10, 0, 20, 0, 10, 4, 20, 0, 210, 0, 220, 0, 230, 1]
+
+/** An R12 file with handles: HEADER, a LAYER table of the entries given, ENTITIES. */
+function r12(layers: G[], entities: G, header: G = []): string {
+  return lines([
+    0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1, 'AC1009', 9, '$HANDLING', 70, 1, 9, '$HANDSEED', 5, '100', ...header, 0, 'ENDSEC',
+    0, 'SECTION', 2, 'TABLES', 0, 'TABLE', 2, 'LAYER', 70, layers.length, ...layers.flatMap((e) => [0, 'LAYER', ...e]), 0, 'ENDTAB', 0, 'ENDSEC',
+    0, 'SECTION', 2, 'ENTITIES', ...entities, 0, 'ENDSEC',
+    0, 'EOF',
+  ])
+}
+
+/** The document's layer names, in order. */
+const layerNames = ({ doc }: { doc: Document }): string[] => Array.from({ length: doc.layers.size }, (_, i) => doc.layers.get(i)!.name)
 
 /** Every handle the text defines (groups 5 and 105 outside the HEADER). */
 function handles(text: string): string[] {
@@ -133,6 +147,71 @@ describe('writeDxf', () => {
     const out = writeDxf(d.doc, d.source)
     expect(out).toContain(lines([2, 'Walls', 70, 0, 62, -1]))
     expect(handles(out).filter((h) => h === '100')).toHaveLength(1)
+  })
+
+  it('open and save without edits keeps the LAYER table, however the reader named the layers', () => {
+    const line = (handle: string, layer: string): G => [0, 'LINE', 5, handle, 8, layer, 10, 0, 20, 0, 30, 0, 11, 1, 21, 1, 31, 0]
+    // An xref-dependent layer (70 bit 16) whose name, its | replaced, is a layer of the drawing.
+    const text = r12(
+      [[2, '0', 70, 0, 62, 7, 6, 'CONTINUOUS'], [2, 'PLAN|WALLS', 70, 48, 62, 1, 6, 'CONTINUOUS'], [2, 'PLAN_WALLS', 70, 0, 62, 2, 6, 'CONTINUOUS']],
+      [...line('20', 'PLAN|WALLS'), ...line('21', 'PLAN_WALLS')],
+    )
+    const d = readDxf(text)
+    expect(writeDxf(d.doc, d.source)).toBe(text)
+    // Only an xref layer: no layer comes with each save.
+    const only = r12([[2, 'X|Y', 70, 48, 62, 3, 6, 'CONTINUOUS']], line('20', 'X|Y'))
+    let again = readDxf(only)
+    for (let k = 0; k < 2; k++) {
+      expect(writeDxf(again.doc, again.source)).toBe(only)
+      again = readDxf(writeDxf(again.doc, again.source))
+    }
+    expect(layerNames(again)).toEqual(['0', 'X_Y'])
+    // Two entries for one name, case aside: the reader took the first, so an edit patches that one.
+    const twice = readDxf(r12([[2, 'Walls', 70, 0, 62, 3, 6, 'CONTINUOUS'], [2, 'WALLS', 70, 0, 62, 5, 6, 'CONTINUOUS']], []))
+    twice.doc.layers.update(twice.doc.layers.indexOf('Walls'), { color: 1 })
+    expect(readDxf(writeDxf(twice.doc, twice.source)).doc.layers.get(1)).toMatchObject({ name: 'Walls', color: 1 })
+  })
+
+  it('a layer renamed on reading keeps its entry: edited, new and untouched entities stay on it, and no layer is added', () => {
+    const LAYERS: G[] = [[2, '0', 70, 0, 62, 7, 6, 'CONTINUOUS'], [2, 'ROADS/MAIN', 70, 0, 62, 3, 6, 'CONTINUOUS']]
+    const text = r12(LAYERS, [
+      0, 'LINE', 5, '20', 8, 'ROADS/MAIN', 10, 0, 20, 0, 30, 0, 11, 10, 21, 0, 31, 0,
+      0, 'LINE', 5, '21', 8, 'ROADS/MAIN', 10, 0, 20, 5, 30, 0, 11, 10, 21, 5, 31, 0,
+    ], [9, '$CLAYER', 8, 'ROADS/MAIN'])
+    const d = readDxf(text)
+    expect(d.warnings).toEqual(['Layer "ROADS/MAIN" renamed "ROADS_MAIN": its name has characters layers cannot have.'])
+    const roads = d.doc.layers.indexOf('ROADS_MAIN')
+    // Unedited, with the renamed layer current: the file as read.
+    expect(writeDxf(d.doc, d.source, { currentLayer: 'ROADS_MAIN' })).toBe(text)
+    const [moved] = [...d.doc.entities()] as [Line]
+    d.doc.transact('edit', (tx) => {
+      tx.replace({ ...moved, x0: 1, x1: 11 })
+      tx.add({ type: 'line', layer: roads, x0: 0, y0: 9, x1: 10, y1: 9 })
+    })
+    const out = writeDxf(d.doc, d.source, { currentLayer: 'ROADS_MAIN' })
+    expect(out).toContain(lines([2, 'ROADS/MAIN', 70, 0, 62, 3]))
+    expect(out.split(lines([0, 'LAYER']))).toHaveLength(3) // two entries
+    expect(out).toContain(lines([9, '$CLAYER', 8, 'ROADS/MAIN']))
+    const back = readDxf(out)
+    expect(layerNames(back)).toEqual(['0', 'ROADS_MAIN'])
+    expect([...back.doc.entities()].map((e) => e.layer)).toEqual([1, 1, 1])
+    // Saved again: nothing more.
+    expect(writeDxf(back.doc, back.source, { currentLayer: 'ROADS_MAIN' })).toBe(out)
+  })
+
+  it('layer state: off and frozen stays off when its color changes; -LAYER Freeze is saved frozen, not off', () => {
+    const text = r12([[2, '0', 70, 0, 62, 7, 6, 'CONTINUOUS'], [2, 'OFFFROZEN', 70, 1, 62, -6, 6, 'CONTINUOUS'], [2, 'WALLS', 70, 0, 62, 3, 6, 'CONTINUOUS']], [])
+    const t = commandBench()
+    const d = drawingFrom(t.doc, parseDxf(text))
+    t.run('-LAYER⏎C⏎1⏎OFFFROZEN⏎F⏎WALLS⏎⏎')
+    const out = writeDxf(t.doc, d.source)
+    expect(out).toContain(lines([2, 'OFFFROZEN', 70, 1, 62, -1]))
+    expect(out).toContain(lines([2, 'WALLS', 70, 1, 62, 3]))
+    const back = readDxf(out)
+    expect(back.doc.layers.get(back.doc.layers.indexOf('WALLS'))).toMatchObject({ visible: false, frozen: true })
+    // Thawed, it shows again and is saved thawed.
+    t.run('-LAYER⏎T⏎WALLS⏎⏎')
+    expect(writeDxf(t.doc, d.source)).toContain(lines([2, 'WALLS', 70, 0, 62, 3]))
   })
 
   it('ELLIPSE and SPLINE: edits are patched in place (handle, linetype, a mirrored frame kept), new ones written fresh', () => {

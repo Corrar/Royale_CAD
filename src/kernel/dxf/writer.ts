@@ -92,9 +92,14 @@ interface Ctx {
   doc: Document
   /** The model space BLOCK_RECORD, owner of every entity; null when the file has none (R12). */
   owner: string | null
+  /** The name each layer read has in the file, by index; later layers go by their own. */
+  names: readonly string[]
 }
 
-const layerName = (c: Ctx, e: Entity): string => c.doc.layers.get(e.layer)!.name
+/** Layer i as the file names it: a layer the reader renamed keeps its entry, and its entities stay on it. */
+const fileLayer = (c: Ctx, i: number): string => c.names[i] ?? c.doc.layers.get(i)!.name
+
+const layerName = (c: Ctx, e: Entity): string => fileLayer(c, e.layer)
 
 function colorGroups(o: Emitter, f: Flavor, color: Color | undefined): void {
   if (color === undefined) return
@@ -511,9 +516,10 @@ function freshLayer(o: Emitter, f: Flavor, l: Layer, handle: string | null, owne
     o.str(100, 'AcDbLayerTableRecord')
   }
   o.str(2, l.name)
-  o.int(70, l.locked ? 4 : 0)
+  o.int(70, (l.frozen ? 1 : 0) | (l.locked ? 4 : 0))
   const aci = l.color < TRUE_COLOR ? l.color : nearestAci(l.color & 0xffffff)
-  o.int(62, l.visible ? aci : -aci)
+  // Frozen is not off: the color stays positive.
+  o.int(62, l.visible || l.frozen ? aci : -aci)
   if (f.trueColor && l.color >= TRUE_COLOR) o.int(420, l.color & 0xffffff)
   o.str(6, f.modern ? 'Continuous' : 'CONTINUOUS')
   if (f.modern) {
@@ -526,15 +532,16 @@ function freshLayer(o: Emitter, f: Flavor, l: Layer, handle: string | null, owne
 function patchedLayer(o: Emitter, f: Flavor, p: PairList, a: number, b: number, l: Layer): void {
   const was = layerEntry(p, a, b)
   const aci = l.color < TRUE_COLOR ? l.color : nearestAci(l.color & 0xffffff)
-  // Hidden: kept frozen if it was, otherwise off (negative color). Shown: neither.
-  const frozen = !l.visible && (was.flags & 1) !== 0
+  // Hidden: frozen (flag 1) or off (negative color); frozen, it stays off too if it was. Shown: neither.
+  const frozen = !l.visible && l.frozen === true
+  const off = !l.visible && (!frozen || was.aci < 0)
   const flags = (was.flags & ~(1 | 4)) | (frozen ? 1 : 0) | (l.locked ? 4 : 0)
   o.str(0, p.value(a).trim())
   let colorDone = false
   const color = (): void => {
     if (colorDone) return
     colorDone = true
-    o.int(62, l.visible || frozen ? aci : -aci)
+    o.int(62, off ? -aci : aci)
     if (f.trueColor && l.color >= TRUE_COLOR) o.int(420, l.color & 0xffffff)
   }
   for (let i = a + 1; i < b; i++) {
@@ -553,25 +560,29 @@ function patchedLayer(o: Emitter, f: Flavor, p: PairList, a: number, b: number, 
 
 const layerHasGroup = (p: PairList, a: number, b: number, code: number): boolean => groupValue(p, a, b, code) !== null
 
-const sameLayer = (l: Layer, e: { color: Color; visible: boolean; locked: boolean }): boolean =>
-  l.color === e.color && l.visible === e.visible && l.locked === e.locked
+const sameLayer = (l: Layer, e: { color: Color; visible: boolean; locked: boolean; frozen: boolean }): boolean =>
+  l.color === e.color && l.visible === e.visible && l.locked === e.locked && (l.frozen === true) === e.frozen
 
 /**
  * The TABLES section with the LAYER table matching the document: entries of unchanged layers as read, changed
- * ones patched, missing ones added. The section's text as read when nothing changed.
+ * ones patched, missing ones added. Layers go by their names in the file (fileLayer). The section's text as read
+ * when nothing changed.
  */
 function writeTables(c: Ctx, text: string, nl: string): string {
   const p = tokenize(text)
   const t = findTable(p, 0, p.length, 'LAYER')
-  const layers = Array.from({ length: c.doc.layers.size }, (_, i) => c.doc.layers.get(i)!)
+  const layers = Array.from({ length: c.doc.layers.size }, (_, i) => ({ ...c.doc.layers.get(i)!, name: fileLayer(c, i) }))
   const byName = new Map<string, number>()
   t?.entries.forEach((a, k) => {
-    if (p.is(a, 0, 'LAYER')) byName.set(layerEntry(p, a, entryEnd(t, k)).name.toLowerCase(), k)
+    if (!p.is(a, 0, 'LAYER')) return
+    // The first entry of a name, as the reader took it.
+    const key = layerEntry(p, a, entryEnd(t, k)).name.toLowerCase()
+    if (!byName.has(key)) byName.set(key, k)
   })
   const entryOf = (l: Layer): number | undefined => byName.get(l.name.toLowerCase())
   const changed = layers.some((l) => {
     const k = entryOf(l)
-    return k === undefined ? l.name !== '0' || !sameLayer(l, { color: 7, visible: true, locked: false }) : !sameLayer(l, layerEntry(p, t!.entries[k]!, entryEnd(t!, k)))
+    return k === undefined ? l.name !== '0' || !sameLayer(l, { color: 7, visible: true, locked: false, frozen: false }) : !sameLayer(l, layerEntry(p, t!.entries[k]!, entryEnd(t!, k)))
   })
   if (!changed) return text
 
@@ -674,7 +685,7 @@ export function writeDxf(doc: Document, source?: DxfSource, opts: WriteOptions =
   const f = flavorOf(version, source.header.get('$HANDLING'))
   const ids = allocator(Math.max(source.handseed, 1))
   const ents = emitter(nl)
-  const c: Ctx = { o: ents, f, ids, doc, owner: f.modern ? modelSpace(source) : null }
+  const c: Ctx = { o: ents, f, ids, doc, owner: f.modern ? modelSpace(source) : null, names: source.layerNames }
   writeEntities(c, source)
   const sections = source.sections.map((s) => ({ name: s.name, text: source.text.slice(s.start, s.end) }))
   const tablesAt = sections.findIndex((s) => s.name === 'TABLES')
@@ -694,8 +705,10 @@ export function writeDxf(doc: Document, source?: DxfSource, opts: WriteOptions =
   }
   const header = sections.find((s) => s.name === 'HEADER')
   if (header && f.handles) header.text = setHeaderVar(header.text, nl, '$HANDSEED', 5, ids.seed())
-  if (header && opts.currentLayer !== undefined && opts.currentLayer !== source.header.get('$CLAYER')) {
-    header.text = setHeaderVar(header.text, nl, '$CLAYER', 8, opts.currentLayer)
+  if (header && opts.currentLayer !== undefined) {
+    const current = doc.layers.indexOf(opts.currentLayer)
+    const name = current >= 0 ? fileLayer(c, current) : opts.currentLayer
+    if (name !== source.header.get('$CLAYER')) header.text = setHeaderVar(header.text, nl, '$CLAYER', 8, name)
   }
   return sections.map((s) => s.text).join('') + codeText(0) + nl + 'EOF' + nl
 }
@@ -715,7 +728,7 @@ function writeNew(doc: Document, opts: WriteOptions): string {
         return doc.layers.size
       },
       entities(out) {
-        writeEntities({ o: out, f, ids, doc, owner: H.modelRecord }, null)
+        writeEntities({ o: out, f, ids, doc, owner: H.modelRecord, names: [] }, null)
       },
       handseed: () => ids.seed(),
     },
