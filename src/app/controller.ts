@@ -12,7 +12,7 @@ import { createGlyphAtlas } from '../render/glyphs'
 import { createScene } from '../render/scene'
 import { createWebGL2Backend } from '../render/webgl2/backend'
 import { createFiles, type FileState } from './files'
-import { canvasRaster, GLYPH_CAP_PX, GLYPH_SPREAD_PX, GLYPH_SUPERSAMPLE } from './glyph-raster'
+import { canvasRaster, GLYPH_CAP_PX, GLYPH_SPREAD_PX, GLYPH_SUPERSAMPLE, TEXT_FAMILY } from './glyph-raster'
 import { attachInput, attachKeyboard } from './input'
 import { parseInWorker } from './parse-worker'
 import { DEFAULT_SETTINGS, parseSettings, settingsText, type Settings } from './settings'
@@ -144,6 +144,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     windowFill: token('--window-fill'),
     crossingFill: token('--crossing-fill'),
     snap: token('--snap'),
+    textFamily: TEXT_FAMILY,
   }
   const doc = createDocument()
   // Glyphs are drawn between frames (glyphsBetweenFrames), in the text font: App waits for it to load. Printable ASCII
@@ -187,17 +188,20 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
         doc,
         parse: parseInWorker,
         print: (line) => interp.print(line),
-        replaced: (currentLayer, extents) => {
+        replaced: (currentLayer, textSize, extents) => {
           selection.clear()
           interp.newDrawing()
           const i = currentLayer === null ? -1 : doc.layers.indexOf(currentLayer)
           interp.layer = i >= 0 ? i : 0
+          // TEXTSIZE is the drawing's, not the session's: TEXT offers this one's.
+          interp.vars.set('TEXTSIZE', textSize)
           frame(extents)
           performance.mark('royale:framed')
           // A small drawing is whole already; a big one is when buildBetweenFrames ends.
           if (!scene.building && !index.building) performance.mark('royale:built')
         },
         currentLayer: () => doc.layers.get(interp.layer)!.name,
+        textSize: () => interp.vars.get('TEXTSIZE') as number | undefined,
       })
     : null
   if (files) host.files = files
@@ -253,6 +257,8 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
       }
       const r = interp.request
       const tracked = interp.tracked
+      // TEXT's words are typed into the command line: its preview shows them in place.
+      const typing = r?.kind === 'text' ? r.preview : undefined
       drawOverlay(
         overlayCtx,
         {
@@ -260,7 +266,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
           cursor,
           crosshair: inside,
           pickbox: !r || r.kind === 'selection' || (r.kind === 'point' && r.pick === true),
-          preview: r && (r.kind === 'point' || r.kind === 'number') ? (r.preview ?? null) : null,
+          preview: r && (r.kind === 'point' || r.kind === 'number') ? (r.preview ?? null) : typing ? (_cursor, out) => typing(buffer.get(), out) : null,
           corner: interp.corner,
           snap: tracked?.snap ?? null,
           aim: tracked?.p ?? null,
@@ -335,6 +341,9 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
   const offInterp = interp.onChange(() => loop.invalidate())
 
   const buffer = createStore('')
+  const offBuffer = buffer.subscribe(() => {
+    if (interp.request?.kind === 'text' && interp.request.preview) loop.invalidate()
+  })
   const expanded = createStore(false)
   const grid = createStore(true)
   const tracking = createStore(0) // ticks when the cursor or the view moves: the status shows where a click lands
@@ -442,7 +451,12 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     getView: () => view!,
     setView,
     extents: () => docExtents(doc),
-    click: (sx, sy, shift) => interp.feedPoint(screenToWorld(view!, sx, sy), shift),
+    click: (sx, sy, shift) => {
+      // DTEXT: a click ends the line being typed where it is, then the next one starts at the click.
+      const r = interp.request
+      if (r?.kind === 'text' && r.acceptPoint === true && buffer.get() !== '') submit()
+      interp.feedPoint(screenToWorld(view!, sx, sy), shift)
+    },
     enter: submit,
     hover: (p) => {
       // Off the viewport (over the command line, the status bar) the crosshair goes, but the last point stays for
@@ -484,6 +498,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
       status.dispose()
       layers.dispose()
       offGrid()
+      offBuffer()
       offInterp()
       offDoc()
       offLayers()

@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { ViewState } from '../kernel/view'
-import { CROSSHAIR_PX, drawOverlay, type OverlayState, type OverlayTheme } from './overlay'
+import { CAP_PER_EM } from '../kernel/text/font'
+import { CROSSHAIR_PX, drawOverlay, TEXT_CAP_PX, type OverlayState, type OverlayTheme } from './overlay'
 
-const THEME: OverlayTheme = { crosshair: '#fff', preview: '#0ff', window: '#0ff', windowFill: 'rgba(0,255,255,0.1)', crossingFill: 'rgba(0,255,255,0.05)', snap: '#fb0' }
+const THEME: OverlayTheme = {
+  crosshair: '#fff', preview: '#0ff', window: '#0ff', windowFill: 'rgba(0,255,255,0.1)', crossingFill: 'rgba(0,255,255,0.05)', snap: '#fb0', textFamily: 'Inter',
+}
 const VIEW: ViewState = { cx: 0, cy: 0, scale: 10, width: 200, height: 100, dpr: 2 }
 
 type Call = [string, ...unknown[]]
@@ -60,6 +63,21 @@ describe('drawOverlay', () => {
     expect(f.named('moveTo')[0]).toEqual(['moveTo', 100, 50])
     expect(f.named('lineTo')[0]).toEqual(['lineTo', 150, 50])
     expect(f.named('arc')).toEqual([['arc', 100, 50, 20, -0, -Math.PI / 2, true]])
+  })
+
+  it('draws the glyphs of a preview in the text font, turned and scaled into place', () => {
+    const f = fakeContext()
+    // An H whose baseline starts at world (1, 2), one capital height (3) up the screen's x, turned 90°.
+    drawOverlay(f.ctx, state({ cursor: { x: 0, y: 0 }, preview: (_c, out) => out.glyph?.(72, 1, 2, 0, 3, -3, 0) }), THEME, 5)
+    expect(f.calls).toContainEqual(['=font', `${TEXT_CAP_PX / CAP_PER_EM}px ${THEME.textFamily}`])
+    expect(f.calls).toContainEqual(['=fillStyle', THEME.preview])
+    // (1, 2) is (110, 30) on screen, (220, 60) in device px; one capital height is 30 px, 60 device px.
+    const k = 60 / TEXT_CAP_PX
+    const at = f.calls.findIndex((c) => c[0] === 'fillText')
+    expect(f.calls[at]).toEqual(['fillText', 'H', 0, 0])
+    expect(f.calls.slice(0, at).filter((c) => c[0] === 'setTransform').at(-1)).toEqual(['setTransform', 0, -k, k, 0, 220, 60])
+    // The view's own transform comes back after it.
+    expect(f.calls.slice(at).map((c) => c[0])).toContain('restore')
   })
 
   it('with the cursor off the viewport: the rubber band stays, the crosshair goes', () => {

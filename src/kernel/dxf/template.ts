@@ -44,11 +44,22 @@ export const H = {
 /** Handles from here on are free for layers and entities. */
 export const FIRST_FREE_HANDLE = 0x100
 
+/** TEXT's default height in a new drawing ($TEXTSIZE): AutoCAD's metric template's, as the units here are mm. */
+export const TEXTSIZE = 2.5
+
+/** A drawing's TEXT default height: its $TEXTSIZE, or a new drawing's when it has none that will do. */
+export function textSizeOf(header: ReadonlyMap<string, string> | undefined): number {
+  const v = Number(header?.get('$TEXTSIZE'))
+  return Number.isFinite(v) && v > 0 ? v : TEXTSIZE
+}
+
 export interface TemplateParts {
   /** The drawing's extents, for the header and the initial view; null when empty. */
   extents: BBox | null
   /** $CLAYER. */
   currentLayer: string
+  /** $TEXTSIZE. */
+  textSize: number
   /** Writes the LAYER entries; returns how many it wrote. */
   layers(o: Emitter): number
   /** Writes the entities, owned by the model space record. */
@@ -176,6 +187,8 @@ export function writeTemplate(o: Emitter, parts: TemplateParts, scratch: () => E
   point(o, 10, SHEET.minX, SHEET.minY)
   o.str(9, '$LIMMAX')
   point(o, 10, SHEET.maxX, SHEET.maxY)
+  o.str(9, '$TEXTSIZE')
+  o.real(40, parts.textSize)
   o.str(9, '$CLAYER')
   o.str(8, parts.currentLayer)
   o.str(9, '$MEASUREMENT')

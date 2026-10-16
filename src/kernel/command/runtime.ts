@@ -12,6 +12,8 @@ interface Ask {
   prompt: string
   /** Matched case-insensitively, by unique prefix. */
   keywords?: readonly string[]
+  /** Taken like keywords but left out of the prompt: options AutoCAD takes there unlisted (TEXT's justifications). */
+  hidden?: readonly string[]
 }
 
 export interface PointRequest extends Ask {
@@ -62,6 +64,10 @@ export interface TextRequest extends Ask {
   default?: string
   /** Space types a space and only Enter ends it (the words of a TEXT); the text is kept untrimmed. */
   spaces?: boolean
+  /** A click answers { kind: 'point' } instead of being refused: DTEXT starts its next line there. */
+  acceptPoint?: boolean
+  /** Drawn while the words are typed, given those typed so far: TEXT shows its line in place. */
+  preview?: (typed: string, out: PrimSink) => void
 }
 
 export type Request = PointRequest | NumberRequest | KeywordRequest | SelectionRequest | TextRequest
@@ -158,6 +164,8 @@ export interface Interpreter {
   cursor: Vec2 | null
   /** The current layer (CLAYER), where new entities go; listeners hear when it changes. */
   layer: number
+  /** Values kept between commands (CIRCLERAD, TEXTSIZE…): those a drawing keeps, the app sets as it puts one in place. */
+  readonly vars: Map<string, unknown>
   /** Object snap on clicks while a point is asked for (F3). On by default, as in AutoCAD. */
   osnap: boolean
   /** Squares points to the base point's axes (F8). Typed coordinates are exempt; a snap wins over it. */
@@ -375,7 +383,8 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     t.mode === 'abs' ? { x: t.x, y: t.y } : { x: lastPoint.x + t.x, y: lastPoint.y + t.y }
 
   function keyword(word: string, text: string): boolean {
-    const k = matchKeyword(word, request!.keywords)
+    const r = request!
+    const k = matchKeyword(word, r.hidden ? [...(r.keywords ?? []), ...r.hidden] : r.keywords)
     if (k === undefined) return false
     answer({ kind: 'keyword', word: k }, text)
     return true
@@ -549,6 +558,7 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     const p = resolve(raw).p
     if (r.kind === 'point') return answer({ kind: 'point', p, shift }, '')
     if (r.kind === 'number' && r.base) return answerNumber(r, measure(r, p), '')
+    if (r.kind === 'text' && r.acceptPoint) return answer({ kind: 'point', p }, '')
     refuse('', r.kind === 'number' ? 'Requires a number.' : r.kind === 'text' ? 'Requires a name.' : 'Invalid option keyword.')
   }
 
@@ -586,6 +596,7 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
       ctx.setLayer(index)
       emit()
     },
+    vars,
     get osnap() {
       return osnap
     },

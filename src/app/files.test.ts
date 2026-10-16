@@ -245,6 +245,37 @@ describe('createFiles', () => {
     expect(t.fake.calls).toEqual(['dirty true', 'dirty false', 'forget'])
   })
 
+  it("TEXT's height is the drawing's: $TEXTSIZE when opened, 2.5 when new, kept in the file when saved", async () => {
+    const fake = fakeApi()
+    const doc = createDocument()
+    const given: number[] = []
+    let size = 0.2
+    const files = createFiles({
+      api: fake.api, doc, parse: parseHere, print: () => {}, replaced: (_layer, textSize) => given.push(textSize), currentLayer: () => '0', textSize: () => size,
+    })
+    const settle = () => new Promise((r) => setTimeout(r, 0))
+    const imperial = PLANT.replace('ANSI_1252\r\n', 'ANSI_1252\r\n9\r\n$TEXTSIZE\r\n40\r\n0.2\r\n')
+    fake.answers.opened = { token: 1, name: 'Imperial.dxf', size: 0, bytes: latin1(imperial) }
+    files.open(false)
+    await settle()
+    expect(given).toEqual([0.2])
+    // Unchanged, the header stays as read; changed, it says the new height.
+    files.save()
+    await settle()
+    expect(decodeDxf(fake.saved[0]!).text).toContain('$TEXTSIZE\r\n40\r\n0.2\r\n')
+    size = 5
+    files.save()
+    await settle()
+    expect(decodeDxf(fake.saved[1]!).text).toContain('$TEXTSIZE\r\n40\r\n5.0\r\n')
+    files.create(false)
+    await settle()
+    expect(given).toEqual([0.2, 2.5])
+    size = 2.5
+    files.save()
+    await settle()
+    expect(decodeDxf(fake.saved[2]!).text).toContain('$TEXTSIZE\r\n 40\r\n2.5\r\n')
+  })
+
   it('one operation at a time; a close request saves, then lets the window close', async () => {
     const t = setup()
     t.fake.answers.opened = { token: 3, name: 'Plant.dxf', size: 0, bytes: latin1(PLANT) }

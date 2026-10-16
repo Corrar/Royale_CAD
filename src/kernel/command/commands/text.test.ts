@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { textType } from '../../entity/text'
 import type { Text } from '../../entity/types'
+import { widthOf } from '../../text/layout'
+import type { TextRequest } from '../runtime'
 import { commandBench } from '../testing'
 
 const texts = (t: ReturnType<typeof commandBench>): Text[] => [...t.doc.entities()].filter((e): e is Text => e.type === 'text')
@@ -40,6 +43,15 @@ describe('TEXT', () => {
     expect([z!.height, round(z!.rotation)]).toEqual([7, round(Math.PI / 4)])
   })
 
+  it("TEXTSIZE is the app's to set and read: the drawing keeps it", () => {
+    const t = commandBench()
+    t.interp.vars.set('TEXTSIZE', 0.2)
+    t.run('TEXT⏎0,0⏎')
+    expect(t.interp.prompt).toBe('Specify height <0.2000>:')
+    t.run('5⏎0⏎Hi⏎⏎')
+    expect(t.interp.vars.get('TEXTSIZE')).toBe(5)
+  })
+
   it('takes the text as typed, spaces and codes included', () => {
     const t = commandBench()
     t.run('TEXT⏎0,0⏎⏎⏎')
@@ -64,6 +76,102 @@ describe('TEXT', () => {
     const [a, f] = texts(t)
     expect(a).toMatchObject({ halign: 3, x: 0, y: 0, x2: 10, y2: 0 })
     expect(f).toMatchObject({ halign: 5, x: 0, y: 10, x2: 10, y2: 10, height: 3 })
+  })
+
+  it('takes a justification at the first prompt, without Justify, as AutoCAD does', () => {
+    const t = commandBench()
+    t.run('TEXT⏎')
+    // Only Justify shows; the options it lists are taken all the same.
+    expect(t.interp.prompt).toBe('Specify start point of text or [Justify]:')
+    t.run('MC⏎')
+    expect(t.interp.prompt).toBe('Specify middle-center point of text:')
+    t.run('5,5⏎2⏎0⏎Hi⏎⏎DT⏎c⏎5,5⏎2⏎0⏎Hi⏎⏎DT⏎A⏎0,0⏎10,0⏎Hi⏎⏎')
+    expect(texts(t).map((e) => [e.halign, e.valign])).toEqual([[1, 2], [1, 0], [3, 0]])
+  })
+
+  it('a click while the words are asked starts the next line there, as DTEXT does', () => {
+    const t = commandBench()
+    t.run('TEXT⏎0,0⏎2⏎0⏎A⏎')
+    t.click(50, 40)
+    expect(t.interp.history.at(-1)).toBe('Enter text:')
+    expect(t.interp.prompt).toBe('Enter text:')
+    t.run('B⏎C⏎⏎')
+    const [, b, c] = texts(t)
+    expect([b!.value, b!.x, b!.y]).toEqual(['B', 50, 40])
+    expect([round(c!.x), round(c!.y)]).toEqual([50, round(40 - (2 * 5) / 3)])
+  })
+
+  it('Align: each line is as tall as its span makes it, kept so, and the next goes clear below it', () => {
+    const t = commandBench()
+    t.run('TEXT⏎J⏎A⏎0,0⏎100,0⏎Hi⏎There⏎⏎')
+    t.run('TEXT⏎J⏎A⏎0,0⏎0,60⏎FLOOR PLAN⏎SCALE 1:50⏎⏎')
+    const [hi, there, title, scale] = texts(t)
+    // The height the layout gives an aligned line: its span over its width.
+    expect(hi!.height).toBeCloseTo(100 / widthOf('Hi'), 9)
+    expect(there!.height).toBeCloseTo(100 / widthOf('There'), 9)
+    expect(textType.bbox(there!).maxY).toBeLessThan(textType.bbox(hi!).minY)
+    // Turned 90°, down the page is +x.
+    expect(title!.height).toBeCloseTo(60 / widthOf('FLOOR PLAN'), 9)
+    expect(textType.bbox(scale!).minX).toBeGreaterThan(textType.bbox(title!).maxX)
+  })
+
+  it('Enter at the first prompt goes on below the last line, set as it was, even after another command', () => {
+    const t = commandBench()
+    t.run('TEXT⏎⏎')
+    // With no line before, Enter is refused as ever.
+    expect(t.interp.prompt).toBe('Specify start point of text or [Justify]:')
+    t.interp.cancel()
+    t.run('TEXT⏎J⏎MC⏎10,20⏎2⏎90⏎First⏎⏎LINE⏎0,0⏎1,1⏎⏎TEXT⏎⏎')
+    expect(t.interp.prompt).toBe('Enter text:')
+    t.run('Second⏎Third⏎⏎')
+    const [, second, third] = texts(t)
+    expect(second).toMatchObject({ value: 'Second', height: 2, halign: 1, valign: 2 })
+    expect(round(second!.rotation)).toBe(round(Math.PI / 2))
+    // Turned 90°, down the page is +x, 5/3 of the height a line.
+    expect([round(second!.x), round(second!.y)]).toEqual([round(10 + 10 / 3), 20])
+    expect([round(third!.x), round(third!.y)]).toEqual([round(10 + 20 / 3), 20])
+  })
+
+  it('Enter goes on below an aligned line between points moved down with it', () => {
+    const t = commandBench()
+    t.run('TEXT⏎J⏎A⏎0,0⏎30,0⏎Hi⏎⏎TEXT⏎⏎There⏎⏎')
+    const [hi, there] = texts(t)
+    expect(there).toMatchObject({ halign: 3, x: 0, x2: 30 })
+    expect(there!.y2).toBe(there!.y)
+    expect(textType.bbox(there!).maxY).toBeLessThan(textType.bbox(hi!).minY)
+  })
+
+  it('shows the line as it is typed, as Enter will make it, and a box where the next character or line goes', () => {
+    const t = commandBench()
+    t.run('TEXT⏎J⏎MC⏎10,20⏎2⏎0⏎')
+    const shown = (typed: string) => {
+      const glyphs: number[][] = []
+      const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+      ;(t.interp.request as TextRequest).preview!(typed, {
+        segment(x0, y0, x1, y1) {
+          box.minX = Math.min(box.minX, x0, x1)
+          box.minY = Math.min(box.minY, y0, y1)
+          box.maxX = Math.max(box.maxX, x0, x1)
+          box.maxY = Math.max(box.maxY, y0, y1)
+        },
+        arc() {},
+        glyph: (...g) => glyphs.push(g),
+      })
+      return { glyphs, box }
+    }
+    const typing = shown('Hi')
+    t.run('Hi⏎')
+    const [hi] = texts(t)
+    const made: number[][] = []
+    textType.primitives(hi!, 0, { segment() {}, arc() {}, glyph: (...g) => made.push(g) })
+    expect(typing.glyphs).toEqual(made)
+    // Middle-centred at (10, 20), 2 high: the box stands on the baseline at the text's end.
+    expect(round(typing.box.minX)).toBe(round(textType.bbox(hi!).maxX))
+    expect([round(typing.box.minY), round(typing.box.maxY)]).toEqual([19, 21])
+    // After Enter, nothing typed: the box is where the next line is centred, 5/3 of the height below.
+    const next = shown('')
+    expect(next.glyphs).toEqual([])
+    expect([round(next.box.minX), round(next.box.minY), round(next.box.maxY)]).toEqual([10, round(19 - 10 / 3), round(21 - 10 / 3)])
   })
 
   it('refuses a second endpoint on the first', () => {
