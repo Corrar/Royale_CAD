@@ -41,6 +41,17 @@ describe('createInterpreter', () => {
     expect(t.interp.history).toContain('Command: LINE')
   })
 
+  it('a drawing put in place with fewer layers leaves layer 0 current, not an index past its table', () => {
+    const t = commandBench()
+    t.doc.layers.add({ name: 'X', color: 1, visible: true, locked: false })
+    t.doc.layers.add({ name: 'Y', color: 1, visible: true, locked: false })
+    t.interp.layer = 2
+    t.doc.replace([{ name: '0', color: 7, visible: true, locked: false }, { name: 'A', color: 2, visible: true, locked: false }], [])
+    expect(t.interp.layer).toBe(0)
+    t.run('-LAYER⏎⏎')
+    expect(t.interp.history).not.toContainEqual(expect.stringMatching(/Error/))
+  })
+
   it('aliases can be replaced while it runs (the settings): a new one works, a dropped one no longer does', () => {
     const t = commandBench()
     t.interp.aliases = { LL: 'LINE', Q: 'NOSUCH' }

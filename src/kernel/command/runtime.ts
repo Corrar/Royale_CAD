@@ -266,6 +266,11 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
   }
 
   let layer = 0
+  // A drawing put in place (OPEN, NEW) brings its own table, and a file comes in slices before its current layer is
+  // set: meanwhile 0, not an index past the end that the layer panel and -LAYER would read.
+  doc.layers.onChange(() => {
+    if (layer >= doc.layers.size) layer = 0
+  })
   const ctx: CommandContext = {
     doc,
     selection,

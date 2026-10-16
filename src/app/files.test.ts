@@ -444,6 +444,38 @@ describe('commands while a file operation is under way', () => {
     expect(t.doc.size).toBe(2000)
   })
 
+  it("the current layer is one of the file's as soon as its layers are in, not an index into the table before", async () => {
+    const t = benchSetup(async (bytes, progress) => {
+      const r = await parseHere(bytes, progress)
+      const lines = Array.from({ length: 2000 }, (_, k) => ({ type: 'line' as const, layer: 0, x0: k, y0: 0, x1: k, y1: 1 }))
+      return { ...r, pack: packDrafts(lines) }
+    })
+    t.doc.layers.add({ name: 'X', color: 1, visible: true, locked: false })
+    t.doc.layers.add({ name: 'Y', color: 1, visible: true, locked: false })
+    t.interp.layer = 2
+    // Plant.dxf has two layers, 0 and Ação: the layer panel, which shows the current one, renders while it comes in.
+    t.fake.answers.opened = { token: 4, name: 'Plant.dxf', size: 0, bytes: latin1(PLANT) }
+    const seen: (string | undefined)[] = []
+    const offLayers = t.doc.layers.onChange(() => seen.push(t.doc.layers.get(t.interp.layer)?.name))
+    let clock = 0
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => (clock += 10))
+    try {
+      const off = t.doc.onChange((c) => {
+        if (!c.bulk) return
+        off()
+        seen.push(t.doc.layers.get(t.interp.layer)?.name)
+      })
+      t.run('OPEN⏎N⏎')
+      for (let k = 0; k < 20 && t.files.state.get().busy !== null; k++) await t.settle()
+    } finally {
+      now.mockRestore()
+      offLayers()
+    }
+    expect(t.interp.history.at(-1)).toBe('Opened Plant.dxf: 2000 objects.')
+    expect(seen.length).toBeGreaterThan(1)
+    expect(seen).not.toContain(undefined)
+  })
+
   it('nor while the drawing is saved before NEW: the new drawing begins', async () => {
     const t = benchSetup()
     t.run('L⏎0,0⏎5,5⏎⏎')
