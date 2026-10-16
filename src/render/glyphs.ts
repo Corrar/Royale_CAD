@@ -40,6 +40,8 @@ export interface GlyphAtlas {
 export interface GlyphWorks extends GlyphAtlas {
   /** Glyphs wait to be drawn. */
   readonly pending: boolean
+  /** The code points waiting, oldest first: their fonts must load before work() draws them. */
+  readonly queued: readonly number[]
   /** Draws waiting glyphs, at least one, while more() says so. */
   work(more: () => boolean): void
 }
@@ -229,6 +231,9 @@ export function createGlyphAtlas(o: GlyphAtlasOptions): GlyphWorks {
     },
     get pending() {
       return queue.length > 0
+    },
+    get queued() {
+      return queue.map((i) => cps[i]!)
     },
     work(more) {
       do {

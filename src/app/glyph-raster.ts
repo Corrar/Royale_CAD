@@ -14,6 +14,39 @@ export const GLYPH_SUPERSAMPLE = 4
 export const textFont = (capPx: number): string => `${capPx / CAP_PER_EM}px ${TEXT_FAMILY}`
 
 /**
+ * Loads the font faces characters need before their glyphs are drawn: the bundled Inter comes in subsets by
+ * unicode-range, and one drawn before its subset loaded is drawn in a fallback font, kept in the atlas for the
+ * session. Gives null when every character asked has loaded (or failed to), else what settles once they have.
+ */
+export function fontLoader(load: (text: string) => Promise<unknown>): (cps: Iterable<number>) => Promise<void> | null {
+  const loading = new Map<number, Promise<void>>()
+  const done = new Set<number>()
+  return (cps) => {
+    let text = ''
+    const wait = new Set<Promise<void>>()
+    for (const cp of cps) {
+      if (done.has(cp)) continue
+      const p = loading.get(cp)
+      if (p) wait.add(p)
+      else if (!text.includes(String.fromCodePoint(cp))) text += String.fromCodePoint(cp)
+    }
+    if (text !== '') {
+      const asked = [...text].map((c) => c.codePointAt(0)!)
+      // A failed load settles too: the glyph is drawn in whatever font there is rather than never.
+      const p = load(text).catch(() => undefined).then(() => {
+        for (const cp of asked) {
+          loading.delete(cp)
+          done.add(cp)
+        }
+      })
+      for (const cp of asked) loading.set(cp, p)
+      wait.add(p)
+    }
+    return wait.size === 0 ? null : Promise.all(wait).then(() => undefined)
+  }
+}
+
+/**
  * Draws one character at a time on a 2D canvas, cropped to its ink plus a pixel: what the glyph atlas turns into
  * distance fields. A character with no ink (a space) gives a 1×1 empty cell.
  */

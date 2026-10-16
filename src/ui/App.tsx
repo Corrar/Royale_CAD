@@ -25,7 +25,8 @@ export function App() {
       else runBench(canvas, n)
       return
     }
-    // Text is drawn in the bundled Inter: start once it has loaded (or failed to), so no glyph is drawn in a fallback.
+    // Text is drawn in the bundled Inter: start once its Latin subset has loaded (or failed to); other subsets load
+    // as glyphs need them (controller's fontsFor).
     let s: AppSession | null = null
     let gone = false
     void document.fonts.load(textFont(GLYPH_CAP_PX)).catch(() => []).then(() => {

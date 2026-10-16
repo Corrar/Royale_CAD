@@ -12,7 +12,7 @@ import { createGlyphAtlas } from '../render/glyphs'
 import { createScene } from '../render/scene'
 import { createWebGL2Backend } from '../render/webgl2/backend'
 import { createFiles, type FileState } from './files'
-import { canvasRaster, GLYPH_CAP_PX, GLYPH_SPREAD_PX, GLYPH_SUPERSAMPLE, TEXT_FAMILY } from './glyph-raster'
+import { canvasRaster, fontLoader, GLYPH_CAP_PX, GLYPH_SPREAD_PX, GLYPH_SUPERSAMPLE, textFont, TEXT_FAMILY } from './glyph-raster'
 import { attachInput, attachKeyboard } from './input'
 import { parseInWorker } from './parse-worker'
 import { DEFAULT_SETTINGS, parseSettings, settingsText, type Settings } from './settings'
@@ -147,8 +147,9 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     textFamily: TEXT_FAMILY,
   }
   const doc = createDocument()
-  // Glyphs are drawn between frames (glyphsBetweenFrames), in the text font: App waits for it to load. Printable ASCII
-  // is drawn from the start, so most text shows at once.
+  // Glyphs are drawn between frames (glyphsBetweenFrames), in the text font, once the subset each needs has loaded
+  // (fontsFor). Printable ASCII is drawn from the start, so most text shows at once.
+  const fontsFor = fontLoader((text) => document.fonts.load(textFont(GLYPH_CAP_PX), text))
   const raster = canvasRaster(GLYPH_CAP_PX * GLYPH_SUPERSAMPLE)
   const glyphs = createGlyphAtlas({
     raster, capPx: GLYPH_CAP_PX, spread: GLYPH_SPREAD_PX, supersample: GLYPH_SUPERSAMPLE, maxSize: backend.maxTextureSize,
@@ -313,6 +314,11 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     drawingGlyphs = true
     const step = (): void => {
       if (view === null) return // disposed
+      const loading = fontsFor(glyphs.queued)
+      if (loading) {
+        void loading.then(step)
+        return
+      }
       const end = performance.now() + BUILD_TASK_MS
       glyphs.work(() => performance.now() < end)
       redrawScene()
