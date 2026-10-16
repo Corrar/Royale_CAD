@@ -415,7 +415,9 @@ describe('createScene', () => {
       }
       check()
     }
-  })
+    // About 4 s alone (25 rounds checked one by one, 20 000 entities in the last ones): the 5 s default is too close
+    // under load.
+  }, 30_000)
 
   it('re-emits primitives too big for f32 clipped to the view, in f64', () => {
     const { doc, f, scene } = setup()
