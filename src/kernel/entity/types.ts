@@ -62,4 +62,6 @@ export interface EntityType<E extends Entity> {
   /** tol: allowed chordal error in world units for curves flattened on the CPU; exact primitives ignore it. */
   primitives(e: E, tol: number, out: PrimSink): void
   distance(e: E, p: Vec2): number
+  /** A message when the fields break the type's invariants; the document also rejects non-finite bboxes. */
+  validate?(e: E): string | undefined
 }
