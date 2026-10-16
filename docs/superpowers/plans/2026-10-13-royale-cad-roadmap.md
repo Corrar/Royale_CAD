@@ -6,14 +6,14 @@
 
 **Architecture:** Kernel TypeScript puro (geometria, documento, comandos, DXF) sem DOM. `Scene` traduz entidades em primitivas para um `RenderBackend` que só executa `segment` e `arc` em WebGL2. Comandos são generators dirigidos por um interpretador de texto.
 
-**Tech Stack:** Electron · TypeScript `strict` · React · Vite (electron-vite) · WebGL2 · Vitest · flatbush · lucide-react · pnpm
+**Tech Stack:** Electron · TypeScript `strict` · React · Vite (electron-vite) · WebGL2 · Vitest · lucide-react · pnpm
 
 **Spec:** `docs/superpowers/specs/2026-10-13-royale-cad-design.md`
 
 ## Global Constraints
 
 - TypeScript `strict`; `src/kernel/` compila sem a lib `DOM` e não importa nada de fora de `src/kernel/`.
-- Dependências de runtime permitidas: `electron`, `react`, `react-dom`, `flatbush`, `lucide-react`, `@fontsource*` (Inter, Geist Mono). Qualquer outra exige revisão.
+- Dependências de runtime permitidas: `electron`, `react`, `react-dom`, `lucide-react`, `@fontsource*` (Inter, Geist Mono). Qualquer outra exige revisão. (O `flatbush` saiu no T12: ver o resultado lá.)
 - Clean-room: proibido copiar ou portar código do LibreCAD, libdxfrw, FreeCAD ou saída de descompilador. Fontes: Autodesk DXF Reference, literatura, derivação própria.
 - Kernel: `f64`, radianos, anti-horário, Y para cima. Igualdade `|a−b| ≤ 1e-9 · max(1, |a|, |b|)`.
 - Electron: `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`; todo argumento de IPC validado no main.
@@ -25,22 +25,25 @@
 - Todo modo de execução automática do Electron (`--smoke`, `--bench`) sai por uma função única e idempotente: a primeira chamada define o código de saída.
 - Verificação visual só pela captura do próprio app (`--shot`), com entrada injetada por `--play`. Nunca capturar a tela do sistema.
 - Tempo de GPU só se mede com sincronização (`readPixels`); um número que não cresce com a carga não é medida.
+- Em caminho quente com milhões de itens, nada de alocar arrays grandes a cada passada: reaproveitar buffers. Memória nova custa page fault e, com um heap grande, dispara coleta completa.
+- O que o benchmark precisa manter vivo vai para uma propriedade global: o minificador apaga variável de módulo que nunca é lida.
 
 ## Estrutura de arquivos
 
 ```
 electron/            main.ts · preload.ts
 src/kernel/
-  geom/              vec.ts · tol.ts · intersect.ts · curve.ts
+  geom/              vec.ts · tol.ts · intersect.ts · curve.ts · clip.ts · hilbert.ts
   entity/            types.ts · registry.ts · line.ts · circle.ts · arc.ts · polyline.ts
+  color.ts           Color (ACI ou true color) e tabela ACI
   view.ts            ViewState e matemática de pan/zoom
   document.ts        Document, transações, undo, layers
-  spatial.ts         SpatialIndex
+  spatial.ts         SpatialIndex (R-tree Hilbert empacotado)
   pick.ts · selection.ts · snap.ts
   command/           parser.ts · aliases.ts · runtime.ts · commands/*.ts
-  dxf/               tokenizer.ts · reader.ts · writer.ts · template.ts · aci.ts
+  dxf/               tokenizer.ts · reader.ts · writer.ts · template.ts
 src/render/          backend.ts · hilo.ts · grid.ts · scene.ts · overlay.ts · webgl2/{backend,shaders}.ts
-src/app/             controller.ts · input.ts · stores.ts · bench.ts
+src/app/             controller.ts · input.ts · theme.ts · stores.ts · bench.ts
 src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx · LayerPanel.tsx · tokens.css
 ```
 
@@ -99,31 +102,37 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
   - Verifica: G1. **Parada para decisão do usuário** se falhar (ver incógnita 1).
   - Resultado (2026-10-13, Radeon integrada 0x1638, 1920×1080): **G1 falha.** 1M segmentos: p50 ≈ 22 ms, p95 ≈ 47 ms; zoom ≥ 10×: ≈ 14 ms; tudo visível: ≈ 42 ms. Diagnóstico descartável: sem MSAA o p95 cai para ≈ 20 ms; linhas de hardware de 1 px sem MSAA, ≈ 17,4 ms.
 
-- [ ] **T09b · Tema injetado e testes do backend**
+- [x] **T09b · Tema injetado e testes do backend**
   - Arquivos: `src/render/webgl2/backend.ts`, `src/render/webgl2/backend.test.ts`, `src/app/controller.ts`, `src/app/bench.ts`
   - Produz: `createWebGL2Backend(canvas, { bg, gridMinor, gridMajor })`; a leitura dos tokens CSS sai do backend e vai para `src/app/`; a cor de desenho da demo usa o mesmo leitor.
   - Testa (GL falso por `Proxy`): caminhos de `RangeError`; a restauração reenvia todo batch vivo e pula os destruídos; `frame` com contexto perdido registra e não desenha.
   - Nota: vem antes de qualquer otimização do backend.
+  - Feito: `src/app/theme.ts` lê os tokens (`readBackendTheme`, `packRgba`); `createWebGL2Backend(canvas, theme)`.
 
 ## M2 — Documento (gate G2)
 
-- [ ] **T10 · Entidades e registro**
+- [x] **T10 · Entidades e registro**
   - Arquivos: `src/kernel/geom/tol.ts`, `src/kernel/geom/curve.ts`, `src/kernel/entity/{types,registry,line,circle,arc,polyline}.ts` + testes
   - Produz: `Entity`, `Line`, `Circle`, `Arc`, `Polyline`, `EntityType` (§5); `register(t)`, `typeOf(e)`; `bulgeToArc(a,b,bulge)`; `bbox`, `primitives`, `distance` por tipo.
   - Testa: bbox de arco que cruza 0°; polilinha com bulge 1 vira semicírculo; `distance` a segmento além das pontas.
+  - Decisões: geometria de tamanho fixo em campos numéricos (`Line {x0,y0,x1,y1}`, `Arc {cx,cy,r,a0,a1}` anti-horário de `a0` a `a1`); `Float64Array` só nas listas de vértices (`Polyline.pts`, `bulges`). Um `Float64Array` por linha custaria mais memória que os campos. `EntityType.validate?` opcional rejeita raio ≤ 0 e polilinha malformada.
+  - Cor (`src/kernel/color.ts`): ACI 1–255 ou `TRUE_COLOR | 0xRRGGBB`; ausente = ByLayer. A tabela ACI 10–249 sai do padrão de matiz/valor; o T31 confere contra LibreCAD/ODA.
 
-- [ ] **T11 · Document**
+- [x] **T11 · Document**
   - Arquivos: `src/kernel/document.ts`, `src/kernel/document.test.ts`
   - Produz: `createDocument(): Document` (§5); `LayerTable` com layer `0`.
   - Testa: um evento por transação; `undo` devolve os mesmos objetos; nova transação limpa o redo; exceção dentro de `transact` não altera nada.
+  - Contrato: ids inteiros positivos crescentes, nunca reaproveitados (o índice e a cena indexam arrays densos por id). `entities()` em ordem de inserção; desfazer uma remoção põe a entidade no fim. `undo()`/`redo()` devolvem o rótulo do passo.
+  - Fica para depois: mudanças na `LayerTable` não entram no undo (T34).
 
-- [ ] **T12 · SpatialIndex**
+- [x] **T12 · SpatialIndex**
   - Arquivos: `src/kernel/spatial.ts`, `src/kernel/spatial.test.ts`
   - Consome: `Document.onChange`, `typeOf(e).bbox`.
   - Produz: `createSpatialIndex(doc): { query(b: BBox): number[] }`.
   - Testa: igual à força bruta em 10 mil entidades aleatórias, antes e depois de adicionar e remover sem rebuild.
+  - Resultado: o `flatbush` saiu. O `finish()` dele leva ~230 ms para 1M itens nesta VM (a ordenação troca 4 f64 por movimento) e não aproveita entrada quase ordenada. No lugar, R-tree Hilbert empacotado próprio (`geom/hilbert.ts`: chave por tabela + radix sort), bbox em cache denso por id e duas reconstruções. A frio ordena tudo. Depois de edições, intercala os sujos ordenados na ordem antiga e escreve nos arrays da árvore anterior, sem alocar. Mudança maior que ¼ da árvore vai direto para a reconstrução a frio.
 
-- [ ] **T13 · Scene**
+- [x] **T13 · Scene**
   - Arquivos: `src/render/scene.ts`, `src/render/scene.test.ts`
   - Consome: `Document`, `RenderBackend`, `EntityType.primitives`.
   - Produz: `createScene(doc, backend): { draws(view: ViewState): Draw[] }`; slots com lista livre; arcos por faixa de raio; estilos por layer.
@@ -133,13 +142,19 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
     - `styleId 0` reservado como oculto: um slot zerado é um ponto visível em (0,0).
     - Carga em massa junta as escritas: um DXF não pode virar um milhão de `writeBatch`.
     - Primitiva cuja extensão na tela passe de ~4e6 px de dispositivo (segmento ou arco) é reemitida recortada em `f64`: além disso o `f32` do shader desloca o traço, engrossa e por fim some.
+  - Feito: carga em massa vai para pools empacotados em ordem de Hilbert, cortados em ~256 baldes de culling; baldes vizinhos visíveis viram um só draw (extensão inteira = 1 draw). Edições pequenas vão para pools abertos (lista livre, crescem dobrando). Arcos por faixa `floor(log2 r)`. O shader descarta segmento > `MAX_SEGMENT_PX` (4e6) e arco de raio > `MAX_ARC_RADIUS_PX` (1e6); a cena reemite em `f64`, recortado na vista (`geom/clip.ts`), o que passa de metade disso.
+  - Medido (1M linhas, Node, backend falso): `draws()` 0,02–0,06 ms por frame; zoom máximo 0,7 ms. Construção da cena ~1 s, uma vez por carga.
+  - Fica para depois: a ordem de desenho é espacial, não a de criação (DRAWORDER); a tabela de estilos aceita no máximo `MAX_TEXTURE_SIZE` combinações layer × cor.
 
-- [ ] **T14 · Pick, seleção e gate G2**
+- [x] **T14 · Pick, seleção e gate G2**
   - Arquivos: `src/kernel/pick.ts`, `src/kernel/selection.ts` + testes; `src/render/scene.ts`; `src/app/bench.ts`
   - Produz: `pick(doc, index, p: Vec2, tol: number): number | null`; `pickBox(doc, index, b: BBox, crossing: boolean): number[]`; `createSelection()` com `ids`, `set`, `add`, `remove`, `clear`, `onChange`; batch de realce.
   - Testa: escolhe o mais próximo entre sobrepostos; janela exige contido, crossing aceita toque.
   - Verifica: G2 no `pnpm bench`. **Parada para decisão do usuário** se falhar (incógnita 2).
   - Nota: a validação do resultado em `electron/main.ts` é específica do G1 (`frames === 300`, código de saída pelo `p95`); o G2 precisa da própria.
+  - Feito: `pnpm bench:g2` (`--gate=g2`) mede 1M entidades (85% linhas, 5% círculos, 5% arcos, 5% polilinhas) com documento, índice e cena vivos. Heap: o processo principal força GC e lê `Runtime.getHeapUsage` pelo DevTools (`performance.memory` não é preciso no Electron). Reconstrução: o maior de 5 rounds que movem 2% do desenho. Pick: p95 de 1000, na vista da extensão inteira. O G1 (`pnpm bench`) passa a desenhar por Document + Scene, então o culling conta. Clique seleciona, Shift+clique tira, Esc limpa (provisório até o T19).
+  - Resultado (2026-10-16, VM Xeon 2,1 GHz, SwiftShader, sem a máquina-alvo): **G2 passa.** Heap 177 MB; reconstrução após edição 64 ms (p50), 73 ms (máx.); pick p95 0,3 ms. Só informativo: carga 1,3 s; índice a frio 0,8 s; cena 1,6 s.
+  - Pendente: rodar `pnpm bench:g2` e `pnpm bench` na máquina-alvo (Radeon 0x1638). O culling só ajuda com zoom; o regime "tudo visível" do G1 (≈ 42 ms) não muda e continua na incógnita 1.
 
 ## M3 — Comandos
 
@@ -226,7 +241,7 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
   - Testa: CRLF e LF; espaços no código; arquivo truncado gera erro com número da linha.
 
 - [ ] **T31 · Reader**
-  - Arquivos: `src/kernel/dxf/{reader,aci}.ts` + teste; `dxf.read` em `entity/*.ts`; `entity/opaque.ts`
+  - Arquivos: `src/kernel/dxf/reader.ts` + teste; `dxf.read` em `entity/*.ts`; `entity/opaque.ts`; tabela ACI já em `src/kernel/color.ts` (conferir 10–249 aqui)
   - Produz: `readDxf(pairs): Document`; `Opaque { type:'opaque'; raw: Pair[] }`; handles preservados.
   - Testa (fixtures escritas à mão): cada entidade suportada; bulge; extrusão `(0,0,-1)` espelha; `HATCH` vira `Opaque`.
 
@@ -245,6 +260,7 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
   - Arquivos: `src/ui/LayerPanel.tsx`, `commands/layer.ts`
   - Produz: lista, cor, visibilidade, layer atual; `LA`.
   - Verifica: G3; arquivo gravado abre no LibreCAD e no ODA File Converter sem erro.
+  - Nota do M2: com 1M entidades, a carga no documento (~1,3 s), o índice a frio (~0,8 s) e a cena (~1,6 s) rodam na thread da UI. Para o G3, fatiar ou levar para fora da thread principal.
 
 ## M7 — Curvas e blocos
 

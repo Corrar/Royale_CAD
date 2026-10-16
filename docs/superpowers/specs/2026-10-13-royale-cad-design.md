@@ -19,7 +19,7 @@ CAD 2D para desktop. Operação igual à do AutoCAD (aliases, prompts sequenciai
 | Precisão | `f64` no documento; GPU recebe pares `f32` hi/lo (relative-to-eye) | Coordenadas UTM (~7e6) sem tremor e sem rebase |
 | Entidades | Objetos imutáveis; vértices em `Float64Array` | Undo = guardar antes/depois; sem alocador próprio |
 | Extensão | Registro `EntityType` (um registro por tipo) | Objeto paramétrico futuro = novo registro, sem mexer em render |
-| Índice espacial | `flatbush` reconstruído sob demanda + lista de sujos | Milhões de itens em typed arrays |
+| Índice espacial | R-tree Hilbert empacotado próprio, reconstruído sob demanda + lista de sujos | Milhões de itens em typed arrays; o `flatbush` não cabia no G2 (ver T12) |
 | Comandos | Generators (`function*`) que emitem pedidos de entrada | Cada comando é um roteiro linear, testável por script de texto |
 | Transiente | Canvas 2D sobreposto (mira, elástico, marcadores) | Poucos itens; dispensa pipeline GL extra |
 | Grid | Shader procedural em tela cheia | Zero geometria |
@@ -27,7 +27,7 @@ CAD 2D para desktop. Operação igual à do AutoCAD (aliases, prompts sequenciai
 | CSS | `tokens.css` com variáveis; sem framework | Seis componentes |
 | Testes | Vitest no kernel (Node, sem DOM); `pnpm bench` no render | Kernel é TS puro |
 
-Dependências de runtime: `electron`, `react`, `react-dom`, `flatbush`, `lucide-react`, fontes Inter e Geist Mono via `@fontsource` (empacotadas, offline). Nenhuma outra sem revisão.
+Dependências de runtime: `electron`, `react`, `react-dom`, `lucide-react`, fontes Inter e Geist Mono via `@fontsource` (empacotadas, offline). Nenhuma outra sem revisão.
 
 ## 3. Arquitetura
 
@@ -73,9 +73,11 @@ interface RenderBackend {
 | `segment` | Quad instanciado, 36 B: `p0` e `p1` em hi/lo (8×f32) + `styleId` (u32) |
 | `arc` | Faixa instanciada, 32 B: centro hi/lo (4×f32), `r`, `a0`, `sweep` (f32), `styleId` (u32). Posição avaliada no vertex shader |
 | LOD de arco | `Scene` agrupa arcos por faixa de raio (log2), um batch por faixa; `Draw.subdiv` é escolhido por frame conforme o zoom. Sem regen, sem reupload |
-| Estilo | Textura de dados indexada por `styleId`: cor, largura em px, visível. Trocar cor ou visibilidade de layer = 1 upload pequeno |
+| Estilo | Textura de dados indexada por `styleId`: cor, largura em px, visível. Trocar cor ou visibilidade de layer = 1 upload pequeno. `styleId 0` = oculto (slot livre), `1` = realce da seleção, depois um por (layer, cor) |
 | Curvas livres | Bézier, spline e elipse viram segmentos na CPU, tolerância por faixa de zoom; refaz só as visíveis |
 | Seleção | Batch próprio com as primitivas dos selecionados, desenhado por último |
+| Culling | Carga em massa vai para pools em ordem de Hilbert, cortados em ~256 baldes com bbox; `draws` devolve os visíveis e funde vizinhos. Edições pequenas vão para pools abertos até a próxima reconstrução |
+| Limite do `f32` | O shader descarta segmento > 4e6 px e arco de raio > 1e6 px; a cena os reemite recortados em `f64` |
 | Frame | Sob demanda: flag de sujo + `requestAnimationFrame` |
 | Overlay | Canvas 2D por cima: mira, elástico do comando, janela de seleção, marcadores de snap |
 
@@ -94,7 +96,8 @@ Unidades: `f64`, ângulos em radianos, sentido anti-horário, Y para cima. Graus
 
 ```ts
 type Entity = Line | Circle | Arc | Polyline            // v1; + Ellipse | Spline | Insert | Text | Opaque
-interface Base { id: number; layer: number; color?: number }
+interface Base { id: number; layer: number; color?: Color }  // ids: inteiros positivos crescentes, nunca reaproveitados
+// Color: ACI 1–255 ou TRUE_COLOR | 0xRRGGBB; ausente = ByLayer. ACI 7 segue o fundo (cor de desenho do tema).
 
 interface EntityType<E extends Entity> {
   type: E['type']
@@ -211,7 +214,7 @@ Medidos nesta máquina (AMD Radeon integrada, 1080p). Valores são metas a calib
 | Gate | Marco | Meta |
 |---|---|---|
 | G1 | M1 | 1M segmentos em coordenadas UTM, pan/zoom automático: p95 de frame ≤ 16,7 ms |
-| G2 | M2 | 1M entidades: heap ≤ 400 MB, rebuild do índice ≤ 200 ms, pick ≤ 1 ms |
+| G2 | M2 | 1M entidades: heap ≤ 400 MB, rebuild do índice ≤ 200 ms, pick ≤ 1 ms. Rebuild = o que segue edições; o build a frio da carga é informado à parte |
 | G3 | M6 | DXF de 100 MB abre sem travar a UI; ida-e-volta sem perda |
 
 ## 11. Incógnitas
