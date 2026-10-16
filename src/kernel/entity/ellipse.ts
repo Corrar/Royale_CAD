@@ -34,8 +34,8 @@ export const ellipseType: EntityType<Ellipse> = {
   },
   transform(e, m) {
     const c = applyAffine(m, e.cx, e.cy)
-    const end = applyAffine(m, e.cx + e.mx, e.cy + e.my)
-    const moved = { ...e, cx: c.x, cy: c.y, mx: end.x - c.x, my: end.y - c.y }
+    // The axis is a direction: the linear part alone takes it, as points far from the origin would round it.
+    const moved = { ...e, cx: c.x, cy: c.y, mx: m.a * e.mx + m.c * e.my, my: m.b * e.mx + m.d * e.my }
     if (affineDet(m) >= 0) return moved
     // Mirrored, the minor axis flips: counter-clockwise, the arc now runs over the opposite parameters.
     const t0 = normAngle(-e.t1)

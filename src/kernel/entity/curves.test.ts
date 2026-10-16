@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { nurbsEval } from '../geom/curve'
-import { mirroring, rotation, segmentDistance, applyAffine } from '../geom/vec'
+import { mirroring, rotation, segmentDistance, applyAffine, translation } from '../geom/vec'
 import { typeOf } from './registry'
 import { SNAP, type Ellipse, type Entity, type Spline } from './types'
 
@@ -79,6 +79,14 @@ describe('ellipse', () => {
     }
     const whole = typeOf(ellipse(0, 0)).transform!(ellipse(0, 0), mirroring({ x: 0, y: 0 }, { x: 0, y: 1 }))
     expect(whole.t0).toBe(whole.t1)
+  })
+
+  it('keeps its axis through a move far from the origin, and turns it exactly with a rotation', () => {
+    const e = ellipse(0.5, 4, { cx: 500000.125, cy: 7400000.5, mx: 600.3, my: 800.7 })
+    const moved = typeOf(e).transform!(e, translation(1, 1)) as Ellipse
+    expect([moved.mx, moved.my]).toEqual([600.3, 800.7])
+    const turned = typeOf(e).transform!(e, rotation({ x: 500000, y: 7400000 }, 90)) as Ellipse
+    expect([turned.mx, turned.my]).toEqual([-800.7, 600.3])
   })
 
   it('snaps: END at both ends of an arc only, CEN, and QUA at the axis ends the arc passes', () => {

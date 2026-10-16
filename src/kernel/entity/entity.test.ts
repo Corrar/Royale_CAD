@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { TAU } from '../geom/tol'
+import { mirroring, rotation, scaling, translation } from '../geom/vec'
 import { register, typeOf } from './registry'
 import { SNAP, type Arc, type Circle, type Entity, type Line, type Opaque, type Point, type Polyline, type PrimSink } from './types'
 
@@ -90,6 +91,20 @@ describe('arc', () => {
     expect(typeOf(arc).distance(arc, { x: 3, y: 0 })).toBeCloseTo(2, 12)
     const end = { x: Math.cos(deg(10)), y: Math.sin(deg(10)) }
     expect(typeOf(arc).distance(arc, { x: 0, y: 2 })).toBeCloseTo(Math.hypot(end.x, 2 - end.y), 12)
+  })
+
+  it('keeps its angles through a move or a scale far from the origin, and turns them exactly with a rotation or a mirror', () => {
+    const a: Arc = { type: 'arc', id: 3, layer: 0, cx: 500000.125, cy: 7400000.5, r: 1000, a0: 0.3, a1: 1.7 }
+    const moved = typeOf(a).transform!(a, translation(1, 1)) as Arc
+    expect([moved.a0, moved.a1]).toEqual([0.3, 1.7])
+    const scaled = typeOf(a).transform!(a, scaling({ x: 500000, y: 7400000 }, 3)) as Arc
+    expect([scaled.a0, scaled.a1, scaled.r]).toEqual([0.3, 1.7, 3000])
+    const turned = typeOf(a).transform!(a, rotation({ x: 500000, y: 7400000 }, 90)) as Arc
+    expect(Math.abs(turned.a0 - (0.3 + Math.PI / 2))).toBeLessThan(1e-15)
+    expect(Math.abs(turned.a1 - (1.7 + Math.PI / 2))).toBeLessThan(1e-15)
+    const mirrored = typeOf(a).transform!(a, mirroring({ x: 500000, y: 7400000 }, { x: 500000, y: 7400001 })) as Arc
+    expect(Math.abs(mirrored.a0 - (Math.PI - 1.7))).toBeLessThan(1e-15)
+    expect(Math.abs(mirrored.a1 - (Math.PI - 0.3))).toBeLessThan(1e-15)
   })
 })
 
