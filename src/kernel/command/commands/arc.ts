@@ -3,6 +3,7 @@ import { arcThrough, type ArcGeom } from '../../geom/curve'
 import { TAU, normAngle } from '../../geom/tol'
 import type { Vec2 } from '../../geom/vec'
 import { getPoint, type Command, type CommandContext } from '../runtime'
+import { LAST_END, type LastEnd } from './line'
 
 const isPoint = (v: unknown): v is Vec2 => typeof v === 'object' && v !== null
 
@@ -10,6 +11,18 @@ const isPoint = (v: unknown): v is Vec2 => typeof v === 'object' && v !== null
 export function arcEntity(ctx: CommandContext, g: ArcGeom): Omit<Arc, 'id'> {
   const start = g.sweep >= 0 ? g.a0 : g.a0 + g.sweep
   return { type: 'arc', layer: ctx.layer, cx: g.cx, cy: g.cy, r: g.r, a0: normAngle(start), a1: normAngle(start + Math.abs(g.sweep)) }
+}
+
+/** Adds the arc and keeps where it ends, heading the way it was drawn, for LINE's Enter (LINE_END). */
+function draw(ctx: CommandContext, g: ArcGeom): void {
+  ctx.doc.transact('ARC', (tx) => void tx.add(arcEntity(ctx, g)))
+  const end = g.a0 + g.sweep
+  const turn = Math.sign(g.sweep) // a clockwise arc heads the other way round
+  const last: LastEnd = {
+    p: { x: g.cx + g.r * Math.cos(end), y: g.cy + g.r * Math.sin(end) },
+    tangent: { x: -turn * Math.sin(end), y: turn * Math.cos(end) },
+  }
+  ctx.vars.set(LAST_END, last)
 }
 
 /** ARC through three points (AutoCAD's default), or by Center, start and end, counter-clockwise. */
@@ -26,7 +39,7 @@ export const arc: Command = function* (ctx) {
     const sweepTo = (p: Vec2): number => normAngle(Math.atan2(p.y - c.y, p.x - c.x) - a0) || TAU
     const e = yield* getPoint('Specify end point of arc', { base: c, preview: (p, out) => out.arc(c.x, c.y, r, a0, sweepTo(p)) })
     if (!isPoint(e)) return
-    ctx.doc.transact('ARC', (tx) => void tx.add(arcEntity(ctx, { cx: c.x, cy: c.y, r, a0, sweep: sweepTo(e) })))
+    draw(ctx, { cx: c.x, cy: c.y, r, a0, sweep: sweepTo(e) })
     return
   }
   if (!isPoint(first)) return
@@ -46,7 +59,7 @@ export const arc: Command = function* (ctx) {
       ctx.message('The points are collinear.')
       continue
     }
-    ctx.doc.transact('ARC', (tx) => void tx.add(arcEntity(ctx, g)))
+    draw(ctx, g)
     return
   }
 }

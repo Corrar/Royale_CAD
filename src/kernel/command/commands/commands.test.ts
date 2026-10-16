@@ -329,6 +329,20 @@ describe('AutoCAD parity (M3 review)', () => {
     expect(t.lines()).toEqual([[0, 0, 10, 0], [10, 0, 10, 5]])
   })
 
+  it('Enter at the first point after an arc goes on from its end, tangent to it, for a length', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.run('A⏎20,0⏎25,5⏎30,0⏎') // clockwise: it ends at (30,0) heading down
+    t.run('L⏎⏎')
+    expect(t.interp.prompt).toBe('Length of line:')
+    t.run('5⏎@5,0⏎⏎')
+    expect(t.lines()).toEqual([[0, 0, 10, 0], [30, 0, 30, -5], [30, -5, 35, -5]])
+    const u = commandBench()
+    u.run('A⏎C⏎0,0⏎5,0⏎0,5⏎') // counter-clockwise: it ends at (0,5) heading left
+    u.run('L⏎⏎2⏎⏎')
+    expect(u.lines()).toEqual([[0, 5, -2, 5]])
+  })
+
   it('ZOOM takes .5x and 0.5x; its prompt has one "or"', () => {
     const t = commandBench()
     const scale = t.view().scale
