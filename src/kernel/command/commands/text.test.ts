@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { textType } from '../../entity/text'
 import type { Text } from '../../entity/types'
 import { widthOf } from '../../text/layout'
+import type { TextRequest } from '../runtime'
 import { commandBench } from '../testing'
 
 const texts = (t: ReturnType<typeof commandBench>): Text[] => [...t.doc.entities()].filter((e): e is Text => e.type === 'text')
@@ -138,6 +139,39 @@ describe('TEXT', () => {
     expect(there).toMatchObject({ halign: 3, x: 0, x2: 30 })
     expect(there!.y2).toBe(there!.y)
     expect(textType.bbox(there!).maxY).toBeLessThan(textType.bbox(hi!).minY)
+  })
+
+  it('shows the line as it is typed, as Enter will make it, and a box where the next character or line goes', () => {
+    const t = commandBench()
+    t.run('TEXT⏎J⏎MC⏎10,20⏎2⏎0⏎')
+    const shown = (typed: string) => {
+      const glyphs: number[][] = []
+      const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+      ;(t.interp.request as TextRequest).preview!(typed, {
+        segment(x0, y0, x1, y1) {
+          box.minX = Math.min(box.minX, x0, x1)
+          box.minY = Math.min(box.minY, y0, y1)
+          box.maxX = Math.max(box.maxX, x0, x1)
+          box.maxY = Math.max(box.maxY, y0, y1)
+        },
+        arc() {},
+        glyph: (...g) => glyphs.push(g),
+      })
+      return { glyphs, box }
+    }
+    const typing = shown('Hi')
+    t.run('Hi⏎')
+    const [hi] = texts(t)
+    const made: number[][] = []
+    textType.primitives(hi!, 0, { segment() {}, arc() {}, glyph: (...g) => made.push(g) })
+    expect(typing.glyphs).toEqual(made)
+    // Middle-centred at (10, 20), 2 high: the box stands on the baseline at the text's end.
+    expect(round(typing.box.minX)).toBe(round(textType.bbox(hi!).maxX))
+    expect([round(typing.box.minY), round(typing.box.maxY)]).toEqual([19, 21])
+    // After Enter, nothing typed: the box is where the next line is centred, 5/3 of the height below.
+    const next = shown('')
+    expect(next.glyphs).toEqual([])
+    expect([round(next.box.minX), round(next.box.minY), round(next.box.maxY)]).toEqual([10, round(19 - 10 / 3), round(21 - 10 / 3)])
   })
 
   it('refuses a second endpoint on the first', () => {

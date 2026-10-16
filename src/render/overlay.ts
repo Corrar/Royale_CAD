@@ -1,11 +1,14 @@
 import { SNAP, type PrimSink } from '../kernel/entity/types'
 import type { Vec2 } from '../kernel/geom/vec'
+import { CAP_PER_EM } from '../kernel/text/font'
 import { screenToWorld, worldToScreen, type ViewState } from '../kernel/view'
 
 /** Arm length of the crosshair, CSS px. */
 export const CROSSHAIR_PX = 40
 /** Half size of a snap marker, CSS px. */
 export const MARKER_PX = 6
+/** Capital height a preview's text is set at, px, before it is scaled into place: large, for the font's own shapes. */
+export const TEXT_CAP_PX = 64
 
 export interface OverlayState {
   view: ViewState
@@ -25,7 +28,16 @@ export interface OverlayState {
   aim?: Vec2 | null
 }
 
-export interface OverlayTheme { crosshair: string; preview: string; window: string; windowFill: string; crossingFill: string; snap: string }
+export interface OverlayTheme {
+  crosshair: string
+  preview: string
+  window: string
+  windowFill: string
+  crossingFill: string
+  snap: string
+  /** The CSS family a preview's text is drawn in: the one the scene's glyphs come from. */
+  textFamily: string
+}
 
 /**
  * Everything that follows the cursor, drawn with Canvas 2D over the GL view: selection window, rubber band,
@@ -60,6 +72,8 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: OverlayState, them
   if (s.preview) {
     const p = s.aim ?? s.snap?.p ?? screenToWorld(view, s.cursor.x, s.cursor.y)
     ctx.beginPath()
+    ctx.fillStyle = theme.preview
+    ctx.font = `${TEXT_CAP_PX / CAP_PER_EM}px ${theme.textFamily}`
     s.preview(p, {
       segment(x0, y0, x1, y1) {
         const a = worldToScreen(view, x0, y0)
@@ -72,6 +86,15 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: OverlayState, them
         // The screen's Y points down: a counter-clockwise sweep in the world is anticlockwise on the canvas.
         ctx.moveTo(c.x + r * view.scale * Math.cos(a0), c.y - r * view.scale * Math.sin(a0))
         ctx.arc(c.x, c.y, r * view.scale, -a0, -(a0 + sweep), sweep > 0)
+      },
+      glyph(cp, x, y, ux, uy, vx, vy) {
+        // The character as set at TEXT_CAP_PX, its axes mapped onto u and v on screen, in device px (y down).
+        const o = worldToScreen(view, x, y)
+        const k = (view.dpr * view.scale) / TEXT_CAP_PX
+        ctx.save()
+        ctx.setTransform(k * ux, -k * uy, -k * vx, k * vy, view.dpr * o.x, view.dpr * o.y)
+        ctx.fillText(String.fromCodePoint(cp), 0, 0)
+        ctx.restore()
       },
     })
     ctx.strokeStyle = theme.preview

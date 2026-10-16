@@ -66,6 +66,8 @@ export interface TextRequest extends Ask {
   spaces?: boolean
   /** A click answers { kind: 'point' } instead of being refused: DTEXT starts its next line there. */
   acceptPoint?: boolean
+  /** Drawn while the words are typed, given those typed so far: TEXT shows its line in place. */
+  preview?: (typed: string, out: PrimSink) => void
 }
 
 export type Request = PointRequest | NumberRequest | KeywordRequest | SelectionRequest | TextRequest

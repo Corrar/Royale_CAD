@@ -1,10 +1,14 @@
+import type { PrimSink } from '../../entity/types'
 import type { Vec2 } from '../../geom/vec'
 import { decodeText } from '../../text/codes'
-import { widthOf } from '../../text/layout'
+import { atFrame, layoutText, widthOf, type TextProps } from '../../text/layout'
 import { formatNumber, getNumber, getPoint, type Command, type CommandContext, type CommandGen, type Request, type Input } from '../runtime'
 
 /** Between baselines of the lines a TEXT types, in heights: MTEXT's spacing 1. */
 const LINE_GAP = 5 / 3
+
+/** DTEXT's cursor, where the next character goes: a box a capital high and this wide, in capital heights. */
+const CURSOR = 0.6
 
 /** The last line a TEXT wrote: Enter at the first prompt goes on below it, as in AutoCAD. */
 const LAST_LINE = 'TEXT_LAST'
@@ -105,8 +109,30 @@ function* lines(ctx: CommandContext, at: TextLine, above: number | null): Comman
   const down = (p: Vec2, d: number): Vec2 => ({ x: p.x + Math.sin(rotation) * d, y: p.y - Math.cos(rotation) * d })
   // The points of the line above and its height; none above the first line, nor after a click.
   let { a, b } = at
+  // Where a line of these words goes. Align scales each line's height to the span, as the layout does: that is the
+  // height kept, and the one that spaces it from the line above, by the taller of the two.
+  const place = (value: string): TextLine => {
+    const w = widthOf(decodeText(value))
+    const h = halign === 3 && w > 0 ? span / w : height
+    const gap = above === null ? 0 : LINE_GAP * Math.max(above, h)
+    return { a: down(a, gap), b: down(b, gap), height: h, rotation, halign, valign }
+  }
+  const textOf = (value: string, l: TextLine): TextProps => ({
+    value, x: l.a.x, y: l.a.y, x2: l.b.x, y2: l.b.y, height: l.height, rotation, widthFactor: 1, oblique: 0,
+    halign, valign, backward: false, upsideDown: false,
+  })
+  // The line as typed so far, where Enter will put it, and the cursor at its end: after an Enter, where the next goes.
+  const preview = (typed: string, out: PrimSink): void => {
+    const { frame: f, glyphs, box } = layoutText(textOf(typed, place(typed)))
+    for (const g of glyphs) {
+      const p = atFrame(f, g.x, g.y)
+      out.glyph?.(g.cp, p.x, p.y, f.ux, f.uy, f.vx, f.vy)
+    }
+    const c = [atFrame(f, box.x1, 0), atFrame(f, box.x1 + CURSOR, 0), atFrame(f, box.x1 + CURSOR, 1), atFrame(f, box.x1, 1)]
+    for (let i = 0; i < 4; i++) out.segment(c[i]!.x, c[i]!.y, c[(i + 1) % 4]!.x, c[(i + 1) % 4]!.y)
+  }
   for (;;) {
-    const r: Input = yield { kind: 'text', prompt: 'Enter text', spaces: true, acceptPoint: true } satisfies Request
+    const r: Input = yield { kind: 'text', prompt: 'Enter text', spaces: true, acceptPoint: true, preview } satisfies Request
     if (r.kind === 'point') {
       // A click starts the next line there, as DTEXT does; Align's and Fit's second point keeps its place from the first.
       ;[a, b] = [r.p, { x: r.p.x + b.x - a.x, y: r.p.y + b.y - a.y }]
@@ -114,19 +140,10 @@ function* lines(ctx: CommandContext, at: TextLine, above: number | null): Comman
       continue
     }
     if (r.kind !== 'text' || r.text === '') return
-    const value = r.text
-    // Align scales each line's height to the span, as the layout does: that is the height kept, and the one that
-    // spaces it from the line above, by the taller of the two.
-    const w = widthOf(decodeText(value))
-    const h = halign === 3 && w > 0 ? span / w : height
-    const gap = above === null ? 0 : LINE_GAP * Math.max(above, h)
-    ;[a, b] = [down(a, gap), down(b, gap)]
-    above = h
-    const [x, y, x2, y2] = [a.x, a.y, b.x, b.y]
-    ctx.doc.transact('TEXT', (tx) => void tx.add({
-      type: 'text', layer: ctx.layer, value, x, y, x2, y2, height: h, rotation, widthFactor: 1, oblique: 0,
-      halign, valign, backward: false, upsideDown: false,
-    }))
-    ctx.vars.set(LAST_LINE, { a, b, height: h, rotation, halign, valign } satisfies TextLine)
+    const line = place(r.text)
+    ctx.doc.transact('TEXT', (tx) => void tx.add({ type: 'text', layer: ctx.layer, ...textOf(r.text, line) }))
+    ;({ a, b } = line)
+    above = line.height
+    ctx.vars.set(LAST_LINE, line)
   }
 }
