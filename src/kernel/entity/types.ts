@@ -50,6 +50,12 @@ export interface Polyline extends Base {
 
 export type Entity = Line | Circle | Arc | Polyline
 
+/** Object snap modes, as bits (AutoCAD's OSMODE uses its own values; these are ours). */
+export const SNAP = { END: 1, MID: 2, CEN: 4, INT: 8, QUA: 16, PER: 32, NEA: 64, NOD: 128 } as const
+
+/** Receives a snap point and the single mode it belongs to. */
+export type SnapSink = (x: number, y: number, mode: number) => void
+
 /** What the renderer draws. Arc sweep is signed (positive counter-clockwise); a full circle is 2π. */
 export interface PrimSink {
   segment(x0: number, y0: number, x1: number, y1: number): void
@@ -62,6 +68,8 @@ export interface EntityType<E extends Entity> {
   /** tol: allowed chordal error in world units for curves flattened on the CPU; exact primitives ignore it. */
   primitives(e: E, tol: number, out: PrimSink): void
   distance(e: E, p: Vec2): number
+  /** Emits the snap points of the modes asked for (a bit set of SNAP). */
+  snapPoints?(e: E, modes: number, out: SnapSink): void
   /** A message when the fields break the type's invariants; the document also rejects non-finite bboxes. */
   validate?(e: E): string | undefined
 }

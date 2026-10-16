@@ -1,6 +1,6 @@
 import { arcBBox, arcDistance, bulgeToArc } from '../geom/curve'
 import { bboxAdd, emptyBBox, segmentDistance } from '../geom/vec'
-import type { EntityType, Polyline, PrimSink } from './types'
+import { SNAP, type EntityType, type Polyline, type PrimSink } from './types'
 
 /** Emits each piece in vertex order; the closing piece last. */
 function pieces(e: Polyline, out: PrimSink): void {
@@ -37,6 +37,16 @@ export const polylineType: EntityType<Polyline> = {
     return b
   },
   primitives: (e, _tol, out) => pieces(e, out),
+  snapPoints(e, modes, out) {
+    if (modes & SNAP.END) for (let i = 0; i + 1 < e.pts.length; i += 2) out(e.pts[i]!, e.pts[i + 1]!, SNAP.END)
+    if (modes & SNAP.MID) {
+      pieces(e, {
+        segment: (x0, y0, x1, y1) => out((x0 + x1) / 2, (y0 + y1) / 2, SNAP.MID),
+        arc: (cx, cy, r, a0, sweep) => out(cx + r * Math.cos(a0 + sweep / 2), cy + r * Math.sin(a0 + sweep / 2), SNAP.MID),
+      })
+    }
+    if (modes & SNAP.CEN) pieces(e, { segment() {}, arc: (cx, cy) => out(cx, cy, SNAP.CEN) })
+  },
   distance(e, p) {
     let d = e.pts.length >= 2 ? Math.hypot(p.x - e.pts[0]!, p.y - e.pts[1]!) : Infinity
     pieces(e, {
