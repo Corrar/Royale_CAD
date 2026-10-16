@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { FileHost } from '../kernel/command/runtime'
 import { commandBench } from '../kernel/command/testing'
 import { createDocument } from '../kernel/document'
@@ -69,6 +69,7 @@ function benchSetup(parse: Parse = parseHere) {
   const host: FileHost = {
     name: () => files!.name(),
     dirty: () => files!.dirty(),
+    busy: () => files!.busy(),
     open: (saveFirst) => files!.open(saveFirst),
     create: (saveFirst) => files!.create(saveFirst),
     save: () => files!.save(),
@@ -283,5 +284,93 @@ describe('createFiles while the drawing changes', () => {
     await t.settle()
     expect(t.savedSize(1)).toBe(2)
     expect(t.fake.calls.slice(-2)).toEqual(['dirty false', 'closeNow'])
+  })
+})
+
+describe('commands while a file operation is under way', () => {
+  /** A parse that ends when the test lets it: a big file in the worker. */
+  function heldParse() {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    const parse: Parse = async (bytes, progress) => {
+      await gate
+      return parseHere(bytes, progress)
+    }
+    return { parse, release: () => release() }
+  }
+
+  it('none starts while a file is read, as AutoCAD holds the drawing while it opens one: the open completes', async () => {
+    const held = heldParse()
+    const t = benchSetup(held.parse)
+    t.fake.answers.opened = { token: 9, name: 'Plant.dxf', size: 0, bytes: latin1(PLANT) }
+    t.run('OPEN⏎')
+    await t.settle()
+    expect(t.files.state.get().busy).toBe('Reading Plant.dxf… 40%')
+    // Enter repeats OPEN; L would begin a LINE, whose undo group the drawing read could not replace.
+    t.run('⏎')
+    t.run('L⏎')
+    held.release()
+    for (let k = 0; k < 10 && t.files.state.get().busy !== null; k++) await t.settle()
+    expect(t.interp.history.slice(-5)).toEqual([
+      'Command:', 'Wait: Reading Plant.dxf… 40%', 'Command: L', 'Wait: Reading Plant.dxf… 40%', 'Opened Plant.dxf: 1 object.',
+    ])
+    expect(t.fake.calls).toContain('adopt 9')
+    expect(t.files.state.get()).toEqual({ name: 'Plant.dxf', dirty: false, busy: null })
+    // Once it is in, commands start again.
+    t.run('L⏎0,0⏎5,5⏎⏎')
+    expect(t.doc.size).toBe(2)
+  })
+
+  it('nor while the slices of a file come in', async () => {
+    const t = benchSetup(async (bytes, progress) => {
+      const r = await parseHere(bytes, progress)
+      const lines = Array.from({ length: 2000 }, (_, k) => ({ type: 'line' as const, layer: 0, x0: k, y0: 0, x1: k, y1: 1 }))
+      return { ...r, pack: packDrafts(lines) }
+    })
+    t.fake.answers.opened = { token: 4, name: 'Big.dxf', size: 0, bytes: latin1(PLANT) }
+    // The clock moves 10 ms at each look: one step of drafts per slice, then the UI's turn.
+    let clock = 0
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => (clock += 10))
+    try {
+      const off = t.doc.onChange((c) => {
+        if (!c.bulk) return
+        off()
+        t.run('L⏎')
+      })
+      t.run('OPEN⏎')
+      for (let k = 0; k < 20 && t.files.state.get().busy !== null; k++) await t.settle()
+    } finally {
+      now.mockRestore()
+    }
+    expect(t.interp.history).toEqual(['Command: OPEN', 'Command: L', 'Wait: Reading Big.dxf… 90%', 'Opened Big.dxf: 2000 objects.'])
+    expect(t.files.state.get()).toEqual({ name: 'Big.dxf', dirty: false, busy: null })
+    expect(t.doc.size).toBe(2000)
+  })
+
+  it('nor while the drawing is saved before NEW: the new drawing begins', async () => {
+    const t = benchSetup()
+    t.run('L⏎0,0⏎5,5⏎⏎')
+    t.fake.answers.holdSave = true
+    t.run('NEW⏎Y⏎')
+    await t.settle()
+    t.run('C⏎')
+    t.fake.finishSave()
+    await t.settle()
+    expect(t.interp.history.slice(-3)).toEqual(['Command: C', 'Wait: Saving Drawing1.dxf…', 'Saved Plant.dxf.'])
+    expect(t.doc.size).toBe(0)
+    expect(t.files.state.get()).toEqual({ name: 'Drawing2.dxf', dirty: false, busy: null })
+    expect(t.fake.calls.at(-1)).toBe('forget')
+  })
+
+  it('a command already under way when a save begins goes on', async () => {
+    const t = benchSetup()
+    t.run('L⏎0,0⏎5,5⏎')
+    t.fake.answers.holdSave = true
+    t.files.save()
+    await t.settle()
+    t.run('10,0⏎⏎')
+    t.fake.finishSave()
+    await t.settle()
+    expect(t.lines()).toEqual([[0, 0, 5, 5], [5, 5, 10, 0]])
   })
 })

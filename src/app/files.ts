@@ -293,6 +293,7 @@ export function createFiles(o: FilesOptions): Files {
     state,
     name: () => state.get().name,
     dirty: () => state.get().dirty,
+    busy: () => state.get().busy,
     open(saveFirst) {
       void run(async () => {
         if (saveFirst && !(await save(false))) return

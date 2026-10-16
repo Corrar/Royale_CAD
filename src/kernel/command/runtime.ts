@@ -112,6 +112,8 @@ export interface FileHost {
   name(): string
   /** Whether the drawing changed since it was opened, saved or begun. */
   dirty(): boolean
+  /** What a file operation under way is doing ("Reading Plant.dxf… 40%"); null when none. No command starts meanwhile. */
+  busy(): string | null
   /** Asks for a file and opens it; saves the current drawing first when told to. */
   open(saveFirst: boolean): void
   /** Begins an empty drawing; saves the current one first when told to. */
@@ -415,17 +417,27 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     }
   }
 
+  /**
+   * Whether a command must wait for a file operation under way, as AutoCAD holds the drawing while it opens or
+   * saves one: the drawing read would take the place of the command's (and cannot, inside its undo group).
+   */
+  function waits(echo: string): boolean {
+    const busy = host.files?.busy() ?? null
+    if (busy !== null) refuse(echo, `Wait: ${busy}`)
+    return busy !== null
+  }
+
   function onText(text: string): void {
     const t = parseInput(text)
     const echo = text.trim()
     if (!gen) {
       if (t.kind === 'empty') {
-        if (last) start(last)
+        if (last && !waits(echo)) start(last)
         return
       }
       const name = t.kind === 'word' ? resolveCommand(t.text, names, aliases) : undefined
-      if (name) start(name)
-      else refuse(echo, `Unknown command "${echo.toUpperCase()}".`)
+      if (!name) refuse(echo, `Unknown command "${echo.toUpperCase()}".`)
+      else if (!waits(echo)) start(name)
       return
     }
     const r = request!
