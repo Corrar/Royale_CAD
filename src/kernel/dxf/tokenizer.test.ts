@@ -105,6 +105,13 @@ describe('sections', () => {
     expect(() => sections(entities)).toThrow('line 9: section ENTITIES is not closed (0/EOF before 0/ENDSEC)')
   })
 
+  it('a file without 0/EOF is an error at its end: cut after an ENDSEC, or empty', () => {
+    expect(() => sections(tokenizeList(dxf('0', 'SECTION', '2', 'HEADER', '0', 'ENDSEC')))).toThrow('line 7: 0/EOF missing (file truncated?)')
+    expect(() => sections(tokenizeList(dxf('999', 'comment')))).toThrow('line 3: 0/EOF missing (file truncated?)')
+    expect(() => sections(tokenizeList(''))).toThrow('line 1: 0/EOF missing (file truncated?)')
+    expect(sections(tokenizeList(dxf('0', 'EOF')))).toEqual([])
+  })
+
   it('anything but a section at the top level is an error', () => {
     expect(() => sections(tokenizeList(dxf('0', 'LINE', '8', '0')))).toThrow('line 1: expected 0/SECTION, found 0/LINE')
     expect(() => sections(tokenizeList(dxf('0', 'SECTION', '8', '0')))).toThrow('line 3: a section starts with its name (code 2)')
