@@ -350,3 +350,90 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
   - Decidido: no app empacotado as chaves de teste (`--smoke`, `--shot`, `--play`, `--bench`, `--gate`, `--n`, `--lose-context`, `--settings`) são ignoradas, a não ser com `ROYALE_TEST_SWITCHES=1` (o teste do instalador). `--open` continua, e um `.dxf` passado sozinho (o que o Windows faz pela associação) abre.
   - Verificado aqui: o app Linux empacotado ignora `--smoke --shot` sem a variável (seguiu aberto, nenhum PNG) e com ela abre um DXF, desenha a interface e sai com 0; um `.dxf` sozinho na linha de comando abre. O instalador Windows foi gerado neste Linux (com wine para o desinstalador) e, sob wine, uma variante de teste (só sem a checagem de app aberto, que usa PowerShell, ausente no wine) instalou em silêncio: arquivos, atalhos, entrada de desinstalação e associação `.dxf` no registro; o desinstalador silencioso removeu pasta, atalhos e o ProgId (fica só o valor padrão de `.dxf`, como o electron-builder faz).
   - Falta (precisa de um Windows): abrir e gravar com o app instalado — sob wine o Electron não chega ao fim do smoke — e repetir instalar/desinstalar numa máquina limpa com o instalador real. Instalador sem assinatura de código: o SmartScreen avisa até haver um certificado.
+
+---
+
+## Continuação (depois do M8)
+
+O plano original termina no M8. O objetivo — trabalhar como no AutoCAD — pede mais: arquivos reais têm cotas, hachuras, tipos e espessuras de linha que hoje não aparecem; edição direta por grips, FILLET e companhia é o dia a dia de quem desenha. Os marcos abaixo seguem a ordem do que mais falta ao abrir e editar um desenho de verdade.
+
+## M9 — Fidelidade de exibição (gate G4)
+
+- [ ] **T42 · Cotas (DIMENSION)**
+  - Arquivos: `entity/dimension.ts`, `src/kernel/dxf/reader.ts`, `writer.ts`
+  - Produz: a cota mostra o bloco anônimo dela (`*Dn`, grupo 2) na posição do arquivo; MOVE/COPY/ROTATE/MIRROR/SCALE levam o bloco junto; gravação corrige 10/11/13/14 no registro.
+  - Verifica: as primitivas da cota caem nas do bloco explodido pelo ezdxf; cota sem bloco fica `Opaque` com aviso.
+
+- [ ] **T43 · Tipos de linha**
+  - Arquivos: `src/kernel/linetype.ts`, `dxf/reader.ts` (tabela LTYPE), `render/scene.ts`
+  - Produz: tracejado por entidade, ByLayer e ByBlock; `$LTSCALE` e escala da entidade (48); padrão contínuo ao reduzir abaixo de um pixel.
+  - Verifica: comprimentos dos traços conferem com a definição LTYPE a 1e-9; G1 sem regressão.
+
+- [ ] **T44 · Espessuras de linha**
+  - Arquivos: `dxf/reader.ts` (370), `render/scene.ts`, `src/ui/StatusBar.tsx`
+  - Produz: espessura por entidade e layer; LWT na barra de status (LWDISPLAY).
+  - Verifica: 0,50 mm aparece com a largura em px que a escala de exibição dá; desligado, tudo fino.
+
+- [ ] **T45 · Hachuras (HATCH)**
+  - Arquivos: `entity/hatch.ts`, `dxf/reader.ts`, `render/scene.ts`
+  - Produz: contornos (linhas, arcos, elipses, splines, polilinhas) com ilhas; sólido preenchido e padrão pelas linhas de definição do próprio arquivo (53/43/44/45/46/49).
+  - Verifica: linhas do padrão conferem com as do ezdxf; sólido sem buracos falsos; MOVE leva a hachura.
+
+- [ ] **G4 · Arquivos reais**
+  - Verifica: um conjunto de DXF públicos (amostras do ezdxf, desenhos de arquitetura e mecânica) abre sem erro, e cada entidade desenhada cai sobre a do ezdxf (explodida/achatada) dentro da tolerância; G3 sem regressão.
+
+## M10 — Edição direta
+
+- [ ] **T46 · Grips**
+  - Arquivos: `src/kernel/grips.ts`, `src/app/controller.ts`, `src/render/overlay.ts`
+  - Produz: entidades selecionadas mostram grips (pontas, meios, centros, quadrantes, vértices); clicar num grip o deixa quente e o arrasto estica; Espaço alterna STRETCH, MOVE, ROTATE, SCALE, MIRROR como no AutoCAD; Esc limpa.
+  - Verifica: esticar ponta de linha, vértice de polilinha, raio de círculo por quadrante e centro movendo dão a geometria esperada; um passo de desfazer por arrasto.
+
+- [ ] **T47 · FILLET e CHAMFER**
+  - Arquivos: `command/commands/fillet.ts`
+  - Produz: concordância por raio e chanfro por distâncias entre linhas, arcos e polilinha (opção Polyline), Trim/No trim, raio 0 como canto.
+  - Verifica: arco tangente às duas entidades a 1e-9; polilinha recebe o arco como bulge.
+
+- [ ] **T48 · EXPLODE, JOIN e BREAK**
+  - Arquivos: `command/commands/explode.ts`, `join.ts`, `break.ts`
+  - Produz: EXPLODE de polilinha, insert (com escala uniforme) e cota; JOIN de linhas, arcos e polilinhas encostadas; BREAK em dois pontos e no ponto (BREAKATPOINT).
+  - Verifica: explodir e juntar volta à mesma polilinha; o insert explodido cai no lugar.
+
+- [ ] **T49 · STRETCH e ARRAY**
+  - Arquivos: `command/commands/stretch.ts`, `array.ts`
+  - Produz: STRETCH por janela crossing; ARRAY retangular e polar (não associativo).
+  - Verifica: só os vértices dentro da janela andam; a matriz polar gira as cópias.
+
+## M11 — Desenho
+
+- [ ] **T50 · ELLIPSE, SPLINE, POLYGON, DONUT e XLINE**
+  - Arquivos: `command/commands/*.ts`
+  - Produz: os comandos com os prompts do AutoCAD (ELLIPSE por eixo e centro, Arc; SPLINE por pontos de ajuste; POLYGON inscrito e circunscrito; DONUT como polilinha larga; XLINE e RAY).
+  - Verifica: a geometria criada confere com a definição de cada opção.
+
+- [ ] **T51 · MTEXT e edição de texto**
+  - Arquivos: `src/ui/TextEditor.tsx`, `command/commands/mtext.ts`
+  - Produz: MTEXT por janela com editor no lugar; DDEDIT/TEXTEDIT para TEXT e MTEXT; duplo clique edita.
+  - Verifica: o texto editado grava os códigos certos e o layout confere.
+
+- [ ] **T52 · BLOCK, INSERT e WBLOCK**
+  - Arquivos: `command/commands/block.ts`, `src/kernel/document.ts` (tabela de blocos), `dxf/writer.ts`
+  - Produz: criar bloco da seleção com ponto base; INSERT com escala, rotação e atributos pedidos; blocos novos gravados na seção BLOCKS.
+  - Verifica: o bloco criado volta igual do DXF gravado; ezdxf audita sem erro.
+
+## M12 — Produtividade
+
+- [ ] **T53 · Propriedades e MATCHPROP**
+  - Arquivos: `src/ui/Properties.tsx`, `command/commands/matchprop.ts`
+  - Produz: paleta de propriedades (Ctrl+1) para a seleção: camada, cor, tipo e espessura de linha, e a geometria editável; MATCHPROP copia camada, cor, tipo, espessura.
+  - Verifica: editar na paleta é um passo de desfazer; seleção mista mostra só o comum.
+
+- [ ] **T54 · Rastreamento polar e de objeto**
+  - Arquivos: `src/kernel/tracking.ts`, `src/app/controller.ts`, `src/render/overlay.ts`
+  - Produz: POLAR (F10) com ângulos incrementais e OTRACK (F11) a partir de pontos de snap adquiridos, com as linhas de rastreio.
+  - Verifica: o ponto rastreado cai na interseção das retas de rastreio.
+
+- [ ] **T55 · Área de transferência e vários desenhos**
+  - Arquivos: `src/app/clipboard.ts`, `src/ui/Tabs.tsx`
+  - Produz: Ctrl+C/Ctrl+V (COPYCLIP, PASTECLIP, COPYBASE) entre desenhos; abas de desenhos abertos.
+  - Verifica: colar entre dois desenhos mantém camadas e cores; fechar uma aba com mudanças pergunta.
