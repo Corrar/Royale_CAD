@@ -103,6 +103,12 @@ function editable(t: EventTarget | null): boolean {
   return !!el && (el.isContentEditable === true || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')
 }
 
+/** A button with the keyboard focus ring: Tab brought the focus there, not a click. */
+function keyboardFocused(t: EventTarget | null): boolean {
+  const el = t as { tagName?: string; matches?: (selector: string) => boolean } | null
+  return !!el && el.tagName === 'BUTTON' && el.matches?.(':focus-visible') === true
+}
+
 /**
  * Typing goes to the command line wherever the focus is, as in AutoCAD: Space and Enter submit (Space types a space
  * where the command takes words), Esc cancels, Backspace edits; Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) undo and redo;
@@ -126,6 +132,8 @@ export function attachKeyboard(target: EventTarget, host: KeyboardHost): () => v
         else return false
         return true
       }
+      // A button reached with the keyboard (Tab) takes its Enter and Space; one merely clicked does not.
+      if ((e.key === 'Enter' || e.key === ' ') && keyboardFocused(e.target)) return false
       if (e.key === ' ' && host.literalSpace?.()) {
         host.setBuffer(host.buffer() + ' ')
         return true

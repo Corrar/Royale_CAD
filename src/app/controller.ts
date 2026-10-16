@@ -74,6 +74,10 @@ export interface AppSession {
   file: Store<FileState> | null
   layers: Store<LayersState>
   layerActions: LayerActions
+  /** The command under way, by name; null at the Command prompt. */
+  active: Store<string | null>
+  /** A toolbar button: ends the command under way, then types inputs (a command and its first answers). */
+  runCommand(inputs: readonly string[]): void
   toggleHistory(): void
   toggle(setting: Setting): void
   dispose(): void
@@ -294,6 +298,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     grid,
     tracking,
   )
+  const active = derivedStore(() => interp.command, { subscribe: (fn) => interp.onChange(fn) })
   const commandLine = derivedStore(
     () => {
       const history = interp.history.slice(-HISTORY_KEEP)
@@ -400,6 +405,13 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     file: files?.state ?? null,
     layers,
     layerActions,
+    active,
+    runCommand(inputs) {
+      const [name, ...answers] = inputs
+      if (name === undefined) return
+      run(name)
+      for (const a of answers) interp.feedText(a)
+    },
     toggleHistory,
     toggle,
     dispose() {
@@ -408,6 +420,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
       detachKeyboard()
       observer.disconnect()
       commandLine.dispose()
+      active.dispose()
       status.dispose()
       layers.dispose()
       offGrid()

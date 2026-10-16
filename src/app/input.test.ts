@@ -187,6 +187,17 @@ describe('attachKeyboard', () => {
     expect(t.calls).toEqual(['submit two words '])
   })
 
+  it('Enter and Space press a button the keyboard focused; on a clicked one they still submit', () => {
+    const t = keyboard()
+    const button = (focusVisible: boolean) => ({ tagName: 'BUTTON', matches: (s: string) => s === ':focus-visible' && focusVisible })
+    t.type('L')
+    expect(t.key('Enter', {}, button(true)).defaultPrevented).toBe(false)
+    expect(t.key(' ', {}, button(true)).defaultPrevented).toBe(false)
+    expect(t.calls).toEqual([])
+    expect(t.key('Enter', {}, button(false)).defaultPrevented).toBe(true)
+    expect(t.calls).toEqual(['submit L'])
+  })
+
   it('Backspace edits, Esc clears and cancels', () => {
     const t = keyboard()
     t.type('@5<9')

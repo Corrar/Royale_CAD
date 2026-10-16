@@ -330,3 +330,97 @@
   background: var(--surface-2);
   color: var(--text);
 }
+
+.toolbars {
+  position: fixed;
+  top: calc(var(--titlebar-h) + 8px);
+  left: 16px;
+  display: flex;
+  flex-direction: column;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 8px;
+  /* Clear of the command line: on a short window the bars go on in a second column. */
+  max-height: calc(100vh - var(--titlebar-h) - 8px - 136px);
+}
+
+.toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+}
+
+.toolbar-item {
+  position: relative;
+}
+
+.toolbar-button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.toolbar-button:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.toolbar-button[aria-pressed='true'] {
+  background: rgb(103 232 249 / 0.12);
+  color: var(--accent);
+}
+
+.toolbar-tip {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 10px);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.35);
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 80ms;
+}
+
+.toolbar-tip kbd {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.toolbar-item:hover .toolbar-tip {
+  opacity: 1;
+  transition-delay: 350ms;
+}
+
+.toolbar-button:focus-visible + .toolbar-tip {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toolbar-tip {
+    transition: none;
+  }
+}

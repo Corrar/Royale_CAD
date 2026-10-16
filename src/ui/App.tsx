@@ -6,6 +6,7 @@ import { CommandLine } from './CommandLine'
 import { LayerPanel } from './LayerPanel'
 import { StatusBar } from './StatusBar'
 import { TitleBar } from './TitleBar'
+import { Toolbar } from './Toolbar'
 import './App.css'
 
 export function App() {
@@ -43,9 +44,11 @@ export function App() {
       <canvas id="viewport" aria-label="Drawing viewport" />
       <canvas id="overlay" aria-hidden="true" />
       {session?.file ? <TitleBar store={session.file} /> : <header className="titlebar">Royale CAD</header>}
-      {session && <CommandLine store={session.commandLine} onToggleHistory={session.toggleHistory} />}
-      {session && <StatusBar store={session.status} onToggle={session.toggle} />}
+      {/* In reading order, which Tab follows: tools, layer, status, command line. */}
+      {session && <Toolbar active={session.active} onRun={session.runCommand} />}
       {session && <LayerPanel store={session.layers} actions={session.layerActions} />}
+      {session && <StatusBar store={session.status} onToggle={session.toggle} />}
+      {session && <CommandLine store={session.commandLine} onToggleHistory={session.toggleHistory} />}
     </>
   )
 }
