@@ -1,9 +1,11 @@
-import type { PrimSink } from '../kernel/entity/types'
+import { SNAP, type PrimSink } from '../kernel/entity/types'
 import type { Vec2 } from '../kernel/geom/vec'
 import { screenToWorld, worldToScreen, type ViewState } from '../kernel/view'
 
 /** Arm length of the crosshair, CSS px. */
 export const CROSSHAIR_PX = 40
+/** Half size of a snap marker, CSS px. */
+export const MARKER_PX = 6
 
 export interface OverlayState {
   view: ViewState
@@ -15,9 +17,13 @@ export interface OverlayState {
   preview: ((cursor: Vec2, out: PrimSink) => void) | null
   /** First corner of a selection window, world. */
   corner: Vec2 | null
+  /** The object snap found under the cursor. */
+  snap: { p: Vec2; mode: number } | null
+  /** Where the preview goes, world: the snapped or ORTHO-squared cursor. Default: the snap point, else the cursor. */
+  aim?: Vec2 | null
 }
 
-export interface OverlayTheme { crosshair: string; preview: string; window: string; windowFill: string; crossingFill: string }
+export interface OverlayTheme { crosshair: string; preview: string; window: string; windowFill: string; crossingFill: string; snap: string }
 
 /**
  * Everything that follows the cursor, drawn with Canvas 2D over the GL view: selection window, rubber band,
@@ -50,7 +56,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: OverlayState, them
   }
 
   if (s.preview) {
-    const p = screenToWorld(view, s.cursor.x, s.cursor.y)
+    const p = s.aim ?? s.snap?.p ?? screenToWorld(view, s.cursor.x, s.cursor.y)
     ctx.beginPath()
     s.preview(p, {
       segment(x0, y0, x1, y1) {
@@ -68,6 +74,24 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: OverlayState, them
     })
     ctx.strokeStyle = theme.preview
     ctx.stroke()
+  }
+
+  if (s.snap) {
+    // AutoCAD's marker shapes: square END, triangle MID, circle CEN.
+    const m = worldToScreen(view, s.snap.p.x, s.snap.p.y)
+    const k = MARKER_PX
+    ctx.lineWidth = 2
+    ctx.strokeStyle = theme.snap
+    ctx.beginPath()
+    if (s.snap.mode === SNAP.END) ctx.strokeRect(m.x - k, m.y - k, 2 * k, 2 * k)
+    else if (s.snap.mode === SNAP.MID) {
+      ctx.moveTo(m.x, m.y - k)
+      ctx.lineTo(m.x + k, m.y + k * 0.75)
+      ctx.lineTo(m.x - k, m.y + k * 0.75)
+      ctx.closePath()
+    } else ctx.arc(m.x, m.y, k, 0, 2 * Math.PI)
+    ctx.stroke()
+    ctx.lineWidth = 1
   }
 
   const x = px(s.cursor.x)

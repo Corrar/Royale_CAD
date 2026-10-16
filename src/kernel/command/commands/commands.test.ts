@@ -191,3 +191,65 @@ describe('ZOOM and PAN', () => {
     expect(t.doc.undo()).toBe('CIRCLE')
   })
 })
+
+describe('object snap and ORTHO', () => {
+  it('a click near an end lands exactly on it (OSNAP on); typed points are never snapped', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.interp.osnap = true
+    t.run('L⏎')
+    t.click(10.05, 0.03) // within 10 px at scale 10
+    t.click(10.02, 5)
+    t.run('10.05,0.03⏎⏎')
+    expect(t.lines()).toEqual([[0, 0, 10, 0], [10, 0, 10.02, 5], [10.02, 5, 10.05, 0.03]])
+  })
+
+  it('OSNAP off: clicks land where they are', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.interp.osnap = false
+    t.run('L⏎')
+    t.click(10.05, 0.03)
+    t.run('⏎')
+    t.interp.cursor = { x: 10.05, y: 0.03 }
+    expect(t.interp.tracked).toEqual({ p: { x: 10.05, y: 0.03 }, snap: null })
+  })
+
+  it('tracks the snap under the cursor while a point is asked for, not at the Command prompt', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.interp.osnap = true
+    t.interp.cursor = { x: 5.1, y: 0.2 }
+    expect(t.interp.tracked).toEqual({ p: { x: 5.1, y: 0.2 }, snap: null })
+    t.run('L⏎')
+    expect(t.interp.tracked).toEqual({ p: { x: 5, y: 0 }, snap: { p: { x: 5, y: 0 }, mode: 2, id: 1 } })
+  })
+
+  it('ORTHO: L⏎0,0⏎, cursor at (3,1), 10⏎ ends at (10,0); clicks are squared to the base too', () => {
+    const t = commandBench()
+    t.interp.ortho = true
+    t.run('L⏎0,0⏎')
+    t.interp.cursor = { x: 3, y: 1 }
+    t.run('10⏎')
+    t.click(12, 7) // from (10, 0): |dy| > |dx|, so vertical
+    t.run('⏎')
+    expect(t.lines()).toEqual([[0, 0, 10, 0], [10, 0, 10, 7]])
+  })
+
+  it('OSNAP wins over ORTHO, and both toggles notify', () => {
+    const t = commandBench()
+    t.run('C⏎5,5⏎1⏎')
+    let n = 0
+    t.interp.onChange(() => n++)
+    expect(t.interp.osnap).toBe(true) // on by default, as in AutoCAD
+    t.interp.osnap = false
+    t.interp.ortho = true
+    t.interp.ortho = true // no change, no notice
+    t.interp.osnap = true
+    expect(n).toBe(3)
+    t.run('L⏎0,0⏎')
+    t.click(5.95, 5.1) // on the circle: CEN, off the ortho line
+    t.run('⏎')
+    expect(t.lines()).toEqual([[0, 0, 5, 5]])
+  })
+})

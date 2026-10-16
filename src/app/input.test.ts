@@ -150,6 +150,7 @@ function keyboard() {
     redo: () => calls.push('redo'),
     erase: () => calls.push('erase'),
     toggleHistory: () => calls.push('history'),
+    toggle: (k) => calls.push(k),
   }
   const dispose = attachKeyboard(target, host)
   const key = (k: string, mods: Partial<Record<'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey', boolean>> = {}, from: object = {}): Event => {
@@ -197,6 +198,12 @@ describe('attachKeyboard', () => {
     t.type('x')
     t.key('Delete') // with text typed, Del does not erase
     expect(t.calls).toEqual(['undo', 'redo', 'redo', 'undo', 'erase', 'history'])
+  })
+
+  it('F3, F7 and F8 toggle object snap, grid and ortho', () => {
+    const t = keyboard()
+    for (const k of ['F3', 'F7', 'F8']) expect(t.key(k).defaultPrevented).toBe(true)
+    expect(t.calls).toEqual(['osnap', 'grid', 'ortho'])
   })
 
   it('leaves text fields, other shortcuts and Alt alone', () => {

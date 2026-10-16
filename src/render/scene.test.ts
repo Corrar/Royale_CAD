@@ -50,6 +50,7 @@ function fakeBackend() {
     },
     frame() {},
     resize() {},
+    setGrid() {},
     onRestore(fn) {
       restoreListeners.add(fn)
       return () => restoreListeners.delete(fn)

@@ -47,6 +47,7 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
   let nextId = 1
   let styleCopy = new Uint32Array(0)
   const restoreListeners = new Set<() => void>()
+  let gridVisible = true
   const eye = new Float32Array(4)
 
   const pipelines = {} as Record<Kind, Pipeline>
@@ -128,6 +129,11 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
 
   // Opaque and fullscreen, so it also replaces the clear.
   function drawGrid(view: ViewState): void {
+    if (!gridVisible) {
+      gl!.clearColor(bg[0]!, bg[1]!, bg[2]!, bg[3]!)
+      gl!.clear(gl!.COLOR_BUFFER_BIT)
+      return
+    }
     const g = gridParams(view)
     const k = view.dpr
     gl!.disable(gl!.BLEND)
@@ -267,6 +273,10 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
     resize(width, height, dpr) {
       canvas.width = Math.max(1, Math.round(width * dpr))
       canvas.height = Math.max(1, Math.round(height * dpr))
+    },
+
+    setGrid(visible) {
+      gridVisible = visible
     },
 
     onRestore(fn) {

@@ -11,6 +11,8 @@ export interface RenderBackend {
   setStyleTable(table: Uint32Array): void
   frame(view: ViewState, draws: readonly Draw[]): void
   resize(width: number, height: number, dpr: number): void
+  /** Shows or hides the grid (F7); hidden, frames clear to the background. */
+  setGrid(visible: boolean): void
   /**
    * After a lost GPU context comes back, every live batch exists again with its capacity but zeroed content (the
    * style table survives). The listener must rewrite the batches and draw a new frame: the backend keeps no CPU

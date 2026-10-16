@@ -89,6 +89,8 @@ export interface KeyboardHost {
   erase(): void
   /** F2. */
   toggleHistory(): void
+  /** F3, F7 and F8. */
+  toggle(setting: 'osnap' | 'grid' | 'ortho'): void
 }
 
 /** A field that takes typing itself: keys pressed there are not commands. */
@@ -99,7 +101,8 @@ function editable(t: EventTarget | null): boolean {
 
 /**
  * Typing goes to the command line wherever the focus is, as in AutoCAD: Space and Enter submit, Esc cancels,
- * Backspace edits; Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) undo and redo; Del erases the selection; F2 shows the history.
+ * Backspace edits; Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) undo and redo; Del erases the selection; F2 shows the history;
+ * F3, F7 and F8 toggle object snap, grid and ortho.
  */
 export function attachKeyboard(target: EventTarget, host: KeyboardHost): () => void {
   const onKey = (ev: Event): void => {
@@ -133,6 +136,15 @@ export function attachKeyboard(target: EventTarget, host: KeyboardHost): () => v
           return true
         case 'F2':
           host.toggleHistory()
+          return true
+        case 'F3':
+          host.toggle('osnap')
+          return true
+        case 'F7':
+          host.toggle('grid')
+          return true
+        case 'F8':
+          host.toggle('ortho')
           return true
       }
       if (e.key.length !== 1) return false

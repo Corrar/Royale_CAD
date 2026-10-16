@@ -4,6 +4,7 @@ import { createDocument, docExtents } from '../kernel/document'
 import type { Vec2 } from '../kernel/geom/vec'
 import { pick, pickBox } from '../kernel/pick'
 import { createSelection } from '../kernel/selection'
+import { APERTURE_PX, SNAP, snap } from '../kernel/snap'
 import { createSpatialIndex } from '../kernel/spatial'
 import { FIT_MARGIN_PX, fit, screenToWorld, type ViewState } from '../kernel/view'
 import { drawOverlay, type OverlayTheme } from '../render/overlay'
@@ -30,11 +31,27 @@ export interface CommandLineState {
   expanded: boolean
 }
 
+export type Setting = 'grid' | 'ortho' | 'osnap'
+
+export interface StatusState {
+  /** Where a click would land, world; null without a cursor over the drawing. */
+  x: number | null
+  y: number | null
+  grid: boolean
+  ortho: boolean
+  osnap: boolean
+}
+
 export interface AppSession {
   commandLine: Store<CommandLineState>
+  status: Store<StatusState>
   toggleHistory(): void
+  toggle(setting: Setting): void
   dispose(): void
 }
+
+/** The object snap modes in use (OSMODE); the settings (T40) will make them editable. */
+const SNAP_MODES = SNAP.END | SNAP.MID | SNAP.CEN
 
 export function createFrameLoop(
   requestFrame: (cb: () => void) => void,
@@ -73,6 +90,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     window: token('--accent'),
     windowFill: token('--window-fill'),
     crossingFill: token('--crossing-fill'),
+    snap: token('--snap'),
   }
   const doc = createDocument()
   const scene = createScene(doc, backend, {
@@ -94,6 +112,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
       extents: () => docExtents(doc),
       pick: (p) => pick(doc, index, p, PICKBOX_PX / view!.scale),
       pickBox: (b, crossing) => pickBox(doc, index, b, crossing),
+      snap: (p) => snap(doc, index, p, view!, SNAP_MODES, APERTURE_PX),
     },
   })
 
@@ -106,6 +125,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
         backend.frame(view, scene.draws(view))
       }
       const r = interp.request
+      const tracked = interp.tracked
       drawOverlay(
         overlayCtx,
         {
@@ -114,6 +134,8 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
           pickbox: !r || r.kind === 'selection',
           preview: r && (r.kind === 'point' || r.kind === 'number') ? (r.preview ?? null) : null,
           corner: interp.corner,
+          snap: tracked?.snap ?? null,
+          aim: tracked?.p ?? null,
         },
         overlayTheme,
         PICKBOX_PX,
@@ -144,6 +166,26 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
 
   const buffer = createStore('')
   const expanded = createStore(false)
+  const grid = createStore(true)
+  const cursorMoved = createStore(0) // ticks on every move: the status shows where the cursor would land
+  const offGrid = grid.subscribe(() => {
+    backend.setGrid(grid.get())
+    redrawScene()
+  })
+  const toggle = (setting: Setting): void => {
+    if (setting === 'grid') grid.set(!grid.get())
+    else if (setting === 'ortho') interp.ortho = !interp.ortho
+    else interp.osnap = !interp.osnap
+  }
+  const status = derivedStore(
+    () => {
+      const at = interp.tracked?.p ?? null
+      return { x: at?.x ?? null, y: at?.y ?? null, grid: grid.get(), ortho: interp.ortho, osnap: interp.osnap }
+    },
+    { subscribe: (fn) => interp.onChange(fn) },
+    grid,
+    cursorMoved,
+  )
   const commandLine = derivedStore(
     () => ({ prompt: interp.prompt, buffer: buffer.get(), history: interp.history.slice(-HISTORY_KEEP), expanded: expanded.get() }),
     { subscribe: (fn) => interp.onChange(fn) },
@@ -166,6 +208,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     redo: () => idle() && interp.feedText('REDO'),
     erase: () => idle() && selection.ids.size > 0 && interp.feedText('ERASE'),
     toggleHistory,
+    toggle,
   })
 
   const measure = (entries?: ResizeObserverEntry[]): void => {
@@ -194,19 +237,24 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     hover: (p) => {
       cursor = p
       interp.cursor = p && screenToWorld(view!, p.x, p.y)
+      cursorMoved.set(cursorMoved.get() + 1)
       loop.invalidate()
     },
   })
 
   return {
     commandLine,
+    status,
     toggleHistory,
+    toggle,
     dispose() {
       view = null // a frame still pending must not draw on a disposed backend
       detachInput()
       detachKeyboard()
       observer.disconnect()
       commandLine.dispose()
+      status.dispose()
+      offGrid()
       offInterp()
       offDoc()
       offLayers()

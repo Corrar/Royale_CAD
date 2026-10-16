@@ -127,3 +127,55 @@
 .cmdline.expanded .cmdline-toggle svg {
   transform: rotate(180deg);
 }
+
+.statusbar {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.statusbar-coords {
+  min-width: 13ch;
+  padding: 0 8px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.statusbar-toggle {
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.statusbar-toggle:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.statusbar-toggle[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+/* Not enough room beside the command line: the status bar goes up to the top right. */
+@media (max-width: 1400px) {
+  .statusbar {
+    top: calc(var(--titlebar-h) + 8px);
+    bottom: auto;
+  }
+}

@@ -1,6 +1,7 @@
 import { createDocument, docExtents } from '../document'
 import type { Entity } from '../entity/types'
 import { pick, pickBox } from '../pick'
+import { SNAP, snap } from '../snap'
 import { createSelection } from '../selection'
 import { createSpatialIndex } from '../spatial'
 import type { ViewState } from '../view'
@@ -21,6 +22,7 @@ export function commandBench(commands: Readonly<Record<string, Command>> = BUILT
     extents: () => docExtents(doc),
     pick: (p) => pick(doc, index, p, 0.25),
     pickBox: (b, crossing) => pickBox(doc, index, b, crossing),
+    snap: (p) => snap(doc, index, p, view, SNAP.END | SNAP.MID | SNAP.CEN, 10),
   }
   const interp = createInterpreter(doc, selection, { commands, host })
   const round = (v: number): number => Math.round(v * 1e9) / 1e9 + 0

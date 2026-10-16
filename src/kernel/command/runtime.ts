@@ -2,6 +2,7 @@ import type { Document } from '../document'
 import type { PrimSink } from '../entity/types'
 import type { BBox, Vec2 } from '../geom/vec'
 import type { Selection } from '../selection'
+import type { SnapHit } from '../snap'
 import type { ViewState } from '../view'
 import { DEFAULT_ALIASES, resolveCommand } from './aliases'
 import { parseInput, type Token } from './parser'
@@ -70,6 +71,8 @@ export interface InterpreterHost {
   /** The entity under p, within the pick box. */
   pick?(p: Vec2): number | null
   pickBox?(b: BBox, crossing: boolean): number[]
+  /** The object snap under p, with the app's modes and aperture; null when none. */
+  snap?(p: Vec2): SnapHit | null
 }
 
 export interface CommandContext {
@@ -97,6 +100,12 @@ export interface Interpreter {
   readonly lastPoint: Vec2
   /** Cursor in world units, for direct distance and previews; set by the app on every move. */
   cursor: Vec2 | null
+  /** Object snap on clicks while a point is asked for (F3). On by default, as in AutoCAD. */
+  osnap: boolean
+  /** Squares points to the base point's axes (F8). Typed coordinates are exempt; a snap wins over it. */
+  ortho: boolean
+  /** Where a click at the cursor would land now, and the snap that put it there; null without a cursor. */
+  readonly tracked: { p: Vec2; snap: SnapHit | null } | null
   feedText(text: string): void
   /** A click. At a selection prompt or idle it picks, or opens and closes a window. */
   feedPoint(p: Vec2, shift?: boolean): void
@@ -148,6 +157,8 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
   let lastPoint: Vec2 = { x: 0, y: 0 }
   let corner: Vec2 | null = null
   let cursor: Vec2 | null = null
+  let osnap = true
+  let ortho = false
 
   const emit = (): void => {
     for (const fn of [...listeners]) fn()
@@ -202,6 +213,22 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     say(message)
   }
 
+  /**
+   * A pointed (not typed) location as the active request will take it: the snap point when OSNAP finds one, else
+   * squared to the base when ORTHO is on. At the Command prompt and while selecting, the raw location.
+   */
+  function resolve(raw: Vec2): { p: Vec2; snap: SnapHit | null } {
+    const r = request
+    if (!r || (r.kind !== 'point' && r.kind !== 'number')) return { p: raw, snap: null }
+    const hit = osnap ? (host.snap?.(raw) ?? null) : null
+    if (hit) return { p: hit.p, snap: hit }
+    const base = r.base
+    if (ortho && base) {
+      return { p: Math.abs(raw.x - base.x) >= Math.abs(raw.y - base.y) ? { x: raw.x, y: base.y } : { x: base.x, y: raw.y }, snap: null }
+    }
+    return { p: raw, snap: null }
+  }
+
   const pointOf = (t: Extract<Token, { kind: 'point' }>): Vec2 =>
     t.mode === 'abs' ? { x: t.x, y: t.y } : { x: lastPoint.x + t.x, y: lastPoint.y + t.y }
 
@@ -233,11 +260,12 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
           return answer({ kind: 'number', value: t.kind === 'number' ? t.value : parseFloat(t.text) }, echo)
         }
         if (t.kind === 'number' && r.base) {
-          // Direct distance: along the rubber band, towards the cursor.
-          const d = cursor ? Math.hypot(cursor.x - r.base.x, cursor.y - r.base.y) : 0
+          // Direct distance: along the rubber band, towards where the cursor would land (ORTHO squares it).
+          const to = cursor ? resolve(cursor).p : r.base
+          const d = Math.hypot(to.x - r.base.x, to.y - r.base.y)
           if (d === 0) return refuse('Move the cursor to give the direction.')
           const k = t.value / d
-          return answer({ kind: 'point', p: { x: r.base.x + (cursor!.x - r.base.x) * k, y: r.base.y + (cursor!.y - r.base.y) * k } }, echo)
+          return answer({ kind: 'point', p: { x: r.base.x + (to.x - r.base.x) * k, y: r.base.y + (to.y - r.base.y) * k } }, echo)
         }
         if (t.kind === 'word' && keyword(t.text, echo)) return
         if (t.kind === 'empty' && r.allowEmpty) return answer({ kind: 'empty' }, '')
@@ -295,9 +323,10 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     corner = p
   }
 
-  function onPoint(p: Vec2, shift: boolean): void {
-    if (!gen || request?.kind === 'selection') return selectAt(p, shift)
+  function onPoint(raw: Vec2, shift: boolean): void {
+    if (!gen || request?.kind === 'selection') return selectAt(raw, shift)
     const r = request!
+    const p = resolve(raw).p
     if (r.kind === 'point') return answer({ kind: 'point', p }, '')
     if (r.kind === 'number' && r.base) return answer({ kind: 'number', value: Math.hypot(p.x - r.base.x, p.y - r.base.y) }, '')
     refuse(r.kind === 'number' ? 'Requires a number.' : 'Invalid option keyword.')
@@ -325,6 +354,25 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     },
     set cursor(p) {
       cursor = p
+    },
+    get osnap() {
+      return osnap
+    },
+    set osnap(on) {
+      if (on === osnap) return
+      osnap = on
+      emit()
+    },
+    get ortho() {
+      return ortho
+    },
+    set ortho(on) {
+      if (on === ortho) return
+      ortho = on
+      emit()
+    },
+    get tracked() {
+      return cursor && resolve(cursor)
     },
     feedText(text) {
       onText(text)

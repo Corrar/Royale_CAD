@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { runBench, runBenchG2 } from '../app/bench'
 import { startApp, type AppSession } from '../app/controller'
 import { CommandLine } from './CommandLine'
+import { StatusBar } from './StatusBar'
 import './App.css'
 
 export function App() {
@@ -33,6 +34,7 @@ export function App() {
       <canvas id="overlay" aria-hidden="true" />
       <header className="titlebar">Royale CAD</header>
       {session && <CommandLine store={session.commandLine} onToggleHistory={session.toggleHistory} />}
+      {session && <StatusBar store={session.status} onToggle={session.toggle} />}
     </>
   )
 }
