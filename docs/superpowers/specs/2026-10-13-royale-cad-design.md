@@ -65,6 +65,7 @@ interface RenderBackend {
   setStyleTable(table: Uint32Array): void
   frame(view: ViewState, draws: readonly Draw[]): void   // grid é passo fixo do frame
   resize(width: number, height: number, dpr: number): void
+  onRestore(fn: () => void): () => void   // contexto voltou: batches zerados, o dono reescreve
 }
 ```
 
@@ -214,7 +215,7 @@ Medidos nesta máquina (AMD Radeon integrada, 1080p). Valores são metas a calib
 | Gate | Marco | Meta |
 |---|---|---|
 | G1 | M1 | 1M segmentos em coordenadas UTM, pan/zoom automático: p95 de frame ≤ 16,7 ms |
-| G2 | M2 | 1M entidades: heap ≤ 400 MB, rebuild do índice ≤ 200 ms, pick ≤ 1 ms. Rebuild = o que segue edições; o build a frio da carga é informado à parte |
+| G2 | M2 | 1M entidades: memória ≤ 400 MB (heap do V8 + ArrayBuffers), rebuild do índice ≤ 200 ms, pick ≤ 1 ms. Rebuild = o que segue edições; o build a frio da carga é informado à parte |
 | G3 | M6 | DXF de 100 MB abre sem travar a UI; ida-e-volta sem perda |
 
 ## 11. Incógnitas
