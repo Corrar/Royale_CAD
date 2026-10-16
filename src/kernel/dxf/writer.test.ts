@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
 import { createDocument, type Document } from '../document'
-import type { Arc, Circle, Ellipse, Entity, Insert, Line, Polyline, Spline } from '../entity/types'
+import type { Arc, Circle, Ellipse, Entity, Insert, Line, MText, Polyline, Spline, Text } from '../entity/types'
 import { typeOf } from '../entity/registry'
 import { rotation } from '../geom/vec'
 import { commandBench } from '../command/testing'
@@ -286,6 +286,51 @@ describe('writeDxf', () => {
     expect(back.source.handleOf(2)).toBe('53')
     expect(span(2)).toContain(lines([230, -1]))
     expect(span(3)).not.toContain('ATTRIB')
+  })
+
+  it('TEXT and MTEXT: edits are patched in place (handle, style, extra groups kept), new ones written fresh; all read back the same', () => {
+    const TEXT: G = [0, 'TEXT', 5, '60', 330, '1F', 100, 'AcDbEntity', 8, 'Walls', 100, 'AcDbText', 10, 4.5, 20, 5.5, 30, 0, 40, 1, 1, 'MC', 7, 'ROMANS', 72, 1, 11, 5, 21, 6, 31, 0, 100, 'AcDbText', 73, 2, 1001, 'ROYALE', 1000, 'kept']
+    const MTEXT: G = [0, 'MTEXT', 5, '61', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbMText', 10, 0, 20, 10, 30, 0, 40, 2, 41, 20, 71, 1, 72, 1, 3, 'two ', 1, 'chunks\\Pand a paragraph', 7, 'Standard', 11, 1, 21, 0, 31, 0, 73, 1, 44, 1]
+    const d = readDxf(file([...TEXT, ...MTEXT]))
+    expect(d.warnings).toEqual([])
+    const [t, m] = [...d.doc.entities()] as [Text, MText]
+    const long = 'x'.repeat(300) + '\\P' + 'y'.repeat(260)
+    d.doc.transact('edit', (tx) => {
+      tx.replace({ ...t, x: 15, x2: 15, rotation: Math.PI / 2 })
+      tx.replace({ ...m, rotation: 0.5, x: 3 })
+      tx.add({ type: 'text', layer: 0, value: 'new', x: 1, y: 2, x2: 1, y2: 2, height: 2.5, rotation: 0, widthFactor: 0.8, oblique: -0.25, halign: 0, valign: 0, backward: true, upsideDown: false })
+      tx.add({ type: 'text', layer: 0, value: 'TR', x: 9, y: 9, x2: 9, y2: 9, height: 1, rotation: 0.25, widthFactor: 1, oblique: 0, halign: 2, valign: 3, backward: false, upsideDown: false })
+      tx.add({ type: 'text', layer: 0, value: 'fit', x: 0, y: 0, x2: 10, y2: 0, height: 1, rotation: 0, widthFactor: 1, oblique: 0, halign: 5, valign: 0, backward: false, upsideDown: false })
+      tx.add({ type: 'mtext', layer: 0, value: long, x: 1, y: 1, height: 1, width: 0, attachment: 5, rotation: 1, spacing: 1.25 })
+    })
+    const out = writeDxf(d.doc, d.source)
+    const back = readDxf(out)
+    expect(back.warnings).toEqual([])
+    const round = (e: Entity): unknown => JSON.parse(JSON.stringify(e, (_k, v: unknown) => (typeof v === 'number' ? Math.round(v * 1e9) / 1e9 + 0 : v)))
+    expect([...back.doc.entities()].map(round)).toEqual([...d.doc.entities()].map(round))
+    const span = (id: number): string => back.source.text.slice(back.source.loaded(id)!.start, back.source.loaded(id)!.end)
+    expect(back.source.handleOf(1)).toBe('60')
+    expect(span(1)).toContain(lines([7, 'ROMANS']))
+    expect(span(1)).toContain(lines([1001, 'ROYALE', 1000, 'kept']))
+    expect(span(1)).toContain(lines([50, '90.0']))
+    expect(back.source.handleOf(2)).toBe('61')
+    expect(span(2)).toContain(lines([7, 'Standard']))
+    // A left and baseline text has no second point; a justified one starts its baseline at 10, placed by 11.
+    expect(span(3)).not.toContain(lines([11, '1.0']))
+    expect(span(4)).toContain(lines([72, 2, 11, '9.0', 21, '9.0']))
+    // DXF strings hold 255 characters: a long MTEXT goes in chunks of 3, then 1.
+    expect(span(6)).toContain('\r\n  3\r\n')
+    for (const l of span(6).split('\r\n')) expect(l.length).toBeLessThanOrEqual(255)
+  })
+
+  it('an R12 file has no MTEXT: each of its lines goes as a TEXT where the line shows', () => {
+    const d = readDxf(lines([0, 'SECTION', 2, 'ENTITIES', 0, 'ENDSEC', 0, 'EOF'], '\n'))
+    d.doc.transact('add', (tx) => void tx.add({ type: 'mtext', layer: 0, value: 'A\\PB', x: 0, y: 0, height: 1, width: 0, attachment: 1, rotation: 0, spacing: 1 }))
+    const out = writeDxf(d.doc, d.source)
+    expect(out).not.toContain('MTEXT')
+    const [a, b] = [...readDxf(out).doc.entities()] as [Text, Text]
+    expect([a.value, a.x, a.y, a.height, a.halign]).toEqual(['A', 0, -1, 1, 0])
+    expect([b.value, b.x, Math.round(b.y * 1e12)]).toEqual(['B', 0, Math.round((-1 - 5 / 3) * 1e12)])
   })
 
   it('an R12 file has no ELLIPSE nor SPLINE: they go as polylines close to them', () => {

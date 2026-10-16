@@ -96,22 +96,41 @@ function wrap(paragraphs: readonly string[], maxWidth: number): string[] {
 /** Between baselines, in heights, at spacing 1. */
 const LINE_GAP = 5 / 3
 
+/** An MTEXT's lines, each with its baseline start in its frame, and the box they fill. */
+function mtextPlan(m: MTextProps): { frame: TextFrame; lines: { text: string; x: number; y: number }[]; box: Laid['box'] } {
+  const texts = wrap(mtextParagraphs(m.value), m.width > 0 ? m.width / m.height : Infinity)
+  const widths = texts.map(widthOf)
+  const w = m.width > 0 ? m.width / m.height : Math.max(0, ...widths)
+  const gap = LINE_GAP * m.spacing
+  const toLast = 1 + (texts.length - 1) * gap
+  const col = (m.attachment - 1) % 3
+  const row = Math.floor((m.attachment - 1) / 3)
+  const lines = texts.map((text, i) => ({ text, x: ((w - widths[i]!) * col) / 2, y: -1 - i * gap }))
+  const frame = frameAt(m.x, m.y, (col * w) / 2, (-row * toLast) / 2, m.rotation, m.height, 1, 0)
+  return { frame, lines, box: { x0: 0, y0: -toLast - DESCENT, x1: w, y1: 0 } }
+}
+
 /**
  * An MTEXT laid out: paragraphs wrapped to the width, the box put at its attachment point, each line aligned in
  * the box as the attachment's column says. The first baseline is one height below the top.
  */
 export function layoutMText(m: MTextProps): Laid {
-  const lines = wrap(mtextParagraphs(m.value), m.width > 0 ? m.width / m.height : Infinity)
-  const widths = lines.map(widthOf)
-  const w = m.width > 0 ? m.width / m.height : Math.max(0, ...widths)
-  const gap = LINE_GAP * m.spacing
-  const toLast = 1 + (lines.length - 1) * gap
-  const col = (m.attachment - 1) % 3
-  const row = Math.floor((m.attachment - 1) / 3)
+  const { frame, lines, box } = mtextPlan(m)
   const glyphs: Laid['glyphs'] = []
-  lines.forEach((line, i) => place(line, ((w - widths[i]!) * col) / 2, -1 - i * gap, glyphs))
-  const frame = frameAt(m.x, m.y, (col * w) / 2, (-row * toLast) / 2, m.rotation, m.height, 1, 0)
-  return { frame, glyphs, box: { x0: 0, y0: -toLast - DESCENT, x1: w, y1: 0 } }
+  for (const l of lines) place(l.text, l.x, l.y, glyphs)
+  return { frame, glyphs, box }
+}
+
+/** An MTEXT's lines as shown, codes gone: each line's text and where its baseline starts, in the world. */
+export function mtextLines(m: MTextProps): { text: string; x: number; y: number }[] {
+  const { frame, lines } = mtextPlan(m)
+  return lines.map((l) => ({ text: l.text, ...atFrame(frame, l.x, l.y) }))
+}
+
+/** Where the baseline of a TEXT starts, unmirrored: DXF's first alignment point, which its justification works out. */
+export function baselineStart(t: TextProps): Vec2 {
+  const f = layoutText({ ...t, backward: false, upsideDown: false }).frame
+  return { x: f.ox, y: f.oy }
 }
 
 /** a − b turned into (−π, π]. */

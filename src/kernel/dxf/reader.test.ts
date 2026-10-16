@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
-import { BY_BLOCK, type Arc, type Circle, type Ellipse, type Entity, type Insert, type Line, type Opaque, type Point, type Polyline, type Spline } from '../entity/types'
+import { BY_BLOCK, type Arc, type Circle, type Ellipse, type Entity, type Insert, type Line, type MText, type Opaque, type Point, type Polyline, type Spline, type Text } from '../entity/types'
 import { createDocument } from '../document'
 import { drawingFrom, loader, parseDxf, readDxf } from './reader'
 
@@ -129,6 +129,50 @@ describe('readDxf', () => {
     expect(w.t0).toBe(w.t1)
     expect(t.type).toBe('opaque')
     expect(d.warnings).toHaveLength(1)
+  })
+
+  it('TEXT: its point by the justification, height, angles in degrees, width factor and mirroring flags', () => {
+    const d = readDxf(file([
+      0, 'TEXT', 8, '0', 10, 1, 20, 2, 30, 0, 40, 2.5, 1, 'Hello %%c50', 50, 30, 41, 0.8, 51, 15, 7, 'Standard',
+      // Middle center: 10 is worked out from 11, the point the text is placed by.
+      0, 'TEXT', 8, '0', 10, 3, 20, 4, 11, 5, 21, 6, 40, 1, 1, 'MC', 72, 1, 73, 2,
+      // Aligned runs from 10 to 11.
+      0, 'TEXT', 8, '0', 10, 0, 20, 0, 11, 10, 21, 0, 40, 1, 1, 'Aligned', 72, 3,
+      // Backward and upside down; a justified one without 11 falls back on 10.
+      0, 'TEXT', 8, '0', 10, 7, 20, 8, 40, 1, 1, 'Flip', 71, 6, 72, 2,
+    ]))
+    const [left, mc, aligned, flip] = all(d) as Text[]
+    expect(left).toMatchObject({ type: 'text', value: 'Hello %%c50', x: 1, y: 2, x2: 1, y2: 2, height: 2.5, widthFactor: 0.8, halign: 0, valign: 0, backward: false, upsideDown: false })
+    expect([r9(left!.rotation), r9(left!.oblique)]).toEqual([r9(Math.PI / 6), r9(Math.PI / 12)])
+    expect(mc).toMatchObject({ value: 'MC', x: 5, y: 6, x2: 5, y2: 6, halign: 1, valign: 2, rotation: 0, oblique: 0, widthFactor: 1 })
+    expect(aligned).toMatchObject({ halign: 3, x: 0, y: 0, x2: 10, y2: 0 })
+    expect(flip).toMatchObject({ x: 7, y: 8, halign: 2, backward: true, upsideDown: true })
+    expect(d.warnings).toEqual([])
+  })
+
+  it('MTEXT: the chunks of 3 then 1 make the value; 11 gives the direction over 50; mirrored or tilted ones stay as is', () => {
+    const d = readDxf(file([
+      0, 'MTEXT', 8, '0', 10, 5, 20, 6, 30, 0, 40, 2, 41, 30, 71, 5, 72, 1, 3, 'first part, ', 1, 'end\\Pline 2', 50, 90, 44, 1.5,
+      0, 'MTEXT', 8, '0', 10, 0, 20, 0, 40, 1, 1, 'Up', 50, 30, 11, 0, 21, 2, 31, 0,
+      0, 'MTEXT', 8, '0', 10, 0, 20, 0, 40, 1, 1, 'Mirrored', 210, 0, 220, 0, 230, -1,
+      0, 'TEXT', 8, '0', 10, 0, 20, 0, 40, 1, 1, 'Mirrored', 210, 0, 220, 0, 230, -1,
+    ]))
+    const [m, up, mm, mt] = all(d) as [MText, MText, Opaque, Opaque]
+    expect(m).toMatchObject({ type: 'mtext', value: 'first part, end\\Pline 2', x: 5, y: 6, height: 2, width: 30, attachment: 5, spacing: 1.5 })
+    expect(r9(m.rotation)).toBe(r9(Math.PI / 2))
+    expect(up).toMatchObject({ value: 'Up', attachment: 1, width: 0, spacing: 1 })
+    expect(r9(up.rotation)).toBe(r9(Math.PI / 2))
+    expect([mm.type, mt.type]).toEqual(['opaque', 'opaque'])
+    expect(d.warnings).toEqual([
+      'line 71: MTEXT kept as is: mirrored text (extrusion (0, 0, -1)) is not supported.',
+      'line 89: TEXT kept as is: mirrored text (extrusion (0, 0, -1)) is not supported.',
+    ])
+  })
+
+  it('TEXT and MTEXT without a positive height stay as is', () => {
+    const d = readDxf(file([0, 'TEXT', 8, '0', 10, 0, 20, 0, 1, 'x', 0, 'MTEXT', 8, '0', 10, 0, 20, 0, 40, -1, 1, 'y']))
+    expect(all(d).map((e) => e.type)).toEqual(['opaque', 'opaque'])
+    expect(d.warnings).toEqual(['line 25: TEXT kept as is: height 0 is not positive.', 'line 35: MTEXT kept as is: height -1 is not positive.'])
   })
 
   it('SPLINE: degree, knots, control points, weights and the closed flag; 3D, fit points only and bad data stay as is', () => {

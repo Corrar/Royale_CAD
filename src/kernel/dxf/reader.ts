@@ -403,6 +403,101 @@ function parser(pairs: PairList) {
     }
   }
 
+  /** Text is read seen from +Z only: from -Z it reads mirrored, which a text cannot say yet. */
+  const upright = (): void => {
+    if (ocsSign(head) === -1) throw new Unsupported('mirrored text (extrusion (0, 0, -1)) is not supported')
+  }
+
+  /**
+   * TEXT: placed by the point of its justification, which is 11 (10 being worked out from it) unless it is left on
+   * the baseline; aligned and fit run from 10 to 11. Angles in degrees; the slant is kept within AutoCAD's ±85°.
+   */
+  const text = (a: number, b: number): Parsed => {
+    let value = ''
+    let x = 0
+    let y = 0
+    let x2 = NaN
+    let y2 = NaN
+    let height = 0
+    let rotation = 0
+    let widthFactor = 1
+    let oblique = 0
+    let flags = 0
+    let halign = 0
+    let valign = 0
+    for (let i = a + 1; i < b; i++) {
+      const c = codes[i]!
+      if (c === 1) value = pairs.value(i)
+      else if (c === 10) x = num(i)
+      else if (c === 20) y = num(i)
+      else if (c === 11) x2 = num(i)
+      else if (c === 21) y2 = num(i)
+      else if (c === 40) height = num(i)
+      else if (c === 41) widthFactor = num(i)
+      else if (c === 50) rotation = num(i)
+      else if (c === 51) oblique = num(i)
+      else if (c === 71) flags = num(i)
+      else if (c === 72) halign = num(i)
+      else if (c === 73) valign = num(i)
+      else common(c, i)
+    }
+    upright()
+    if (!(height > 0)) throw new Unsupported(`height ${height} is not positive`)
+    if (!(Number.isInteger(halign) && halign >= 0 && halign <= 5)) halign = 0
+    if (!(Number.isInteger(valign) && valign >= 0 && valign <= 3)) valign = 0
+    const second = !Number.isNaN(x2) && !Number.isNaN(y2)
+    const spanned = halign === 3 || halign === 5
+    const [px, py] = (halign !== 0 || valign !== 0) && !spanned && second ? [x2, y2] : [x, y]
+    const [qx, qy] = spanned && second ? [x2, y2] : [px, py]
+    const slant = ((((oblique + 180) % 360) + 360) % 360) - 180
+    return {
+      type: 'text', value, x: px, y: py, x2: qx, y2: qy, height, rotation: normAngle(rotation * DEG),
+      widthFactor: widthFactor > 0 ? widthFactor : 1, oblique: Math.max(-85, Math.min(85, slant)) * DEG,
+      halign, valign, backward: (flags & 2) !== 0, upsideDown: (flags & 4) !== 0,
+    }
+  }
+
+  /**
+   * MTEXT: its value is the 3 chunks then the 1 group, codes kept. The direction 11/21 (WCS), when given, wins
+   * over the rotation 50 (degrees, as AutoCAD writes it).
+   */
+  const mtext = (a: number, b: number): Parsed => {
+    const chunks: string[] = []
+    let last = ''
+    let x = 0
+    let y = 0
+    let dx = 0
+    let dy = 0
+    let height = 0
+    let width = 0
+    let attachment = 1
+    let rotation = 0
+    let spacing = 1
+    for (let i = a + 1; i < b; i++) {
+      const c = codes[i]!
+      if (c === 1) last = pairs.value(i)
+      else if (c === 3) chunks.push(pairs.value(i))
+      else if (c === 10) x = num(i)
+      else if (c === 20) y = num(i)
+      else if (c === 11) dx = num(i)
+      else if (c === 21) dy = num(i)
+      else if (c === 40) height = num(i)
+      else if (c === 41) width = num(i)
+      else if (c === 71) attachment = num(i)
+      else if (c === 50) rotation = num(i)
+      else if (c === 44) spacing = num(i)
+      else common(c, i)
+    }
+    upright()
+    if (!(height > 0)) throw new Unsupported(`height ${height} is not positive`)
+    return {
+      type: 'mtext', value: chunks.join('') + last, x, y, height, width: width > 0 ? width : 0,
+      attachment: Number.isInteger(attachment) && attachment >= 1 && attachment <= 9 ? attachment : 1,
+      rotation: normAngle(dx !== 0 || dy !== 0 ? Math.atan2(dy, dx) : rotation * DEG),
+      spacing: spacing > 0 ? spacing : 1,
+    }
+  }
+
   /** The entity [a, end) (its own groups end at own) as understood; null for a type it does not read. */
   const read = (name: string, a: number, own: number, end: number): Parsed | null => {
     reset()
@@ -425,6 +520,10 @@ function parser(pairs: PairList) {
         return spline(a, own)
       case 'INSERT':
         return insert(a, own)
+      case 'TEXT':
+        return text(a, own)
+      case 'MTEXT':
+        return mtext(a, own)
     }
     return null
   }

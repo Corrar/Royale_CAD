@@ -2,9 +2,10 @@ import { TRUE_COLOR, aciRgb, type Color } from '../color'
 import { docExtents, type Document, type Layer } from '../document'
 import { typeOf } from '../entity/registry'
 import { insertAffines } from '../entity/insert'
-import type { Ellipse, Entity, Insert, Polyline, Spline } from '../entity/types'
+import type { Ellipse, Entity, Insert, MText, Polyline, Spline, Text } from '../entity/types'
 import { affineDet, applyAffine, type Affine } from '../geom/vec'
 import { TAU, normAngle } from '../geom/tol'
+import { baselineStart, mtextLines } from '../text/layout'
 import type { DxfSource } from './reader'
 import { entryEnd, findTable, groupValue, layerEntry, type TableRange } from './tables'
 import { FIRST_FREE_HANDLE, H, writeTemplate } from './template'
@@ -193,6 +194,37 @@ function fresh(c: Ctx, e: Entity, handle: string | null): void {
       }
       return
     }
+    case 'text':
+      return freshText(c, e, handle)
+    case 'mtext': {
+      if (!f.modern) {
+        // R12 has no MTEXT: a TEXT for each line, where the line shows.
+        mtextLines(e).forEach((l, k) => freshText(c, {
+          type: 'text', id: e.id, layer: e.layer, ...(e.color !== undefined && { color: e.color }), value: l.text,
+          x: l.x, y: l.y, x2: l.x, y2: l.y, height: e.height, rotation: e.rotation, widthFactor: 1, oblique: 0,
+          halign: 0, valign: 0, backward: false, upsideDown: false,
+        }, k === 0 ? handle : f.handles ? c.ids.take() : null))
+        return
+      }
+      head(c, 'MTEXT', e, handle, 'AcDbMText')
+      o.real(10, e.x)
+      o.real(20, e.y)
+      o.real(30, 0)
+      o.real(40, e.height)
+      o.real(41, e.width)
+      o.int(71, e.attachment)
+      o.int(72, 1)
+      const chunks = chunksOf(e.value)
+      for (let k = 0; k < chunks.length - 1; k++) o.str(3, chunks[k]!)
+      o.str(1, chunks.at(-1)!)
+      // The direction as a vector: 50 is in radians to some readers, in degrees to others.
+      o.real(11, Math.cos(e.rotation))
+      o.real(21, Math.sin(e.rotation))
+      o.real(31, 0)
+      o.int(73, 1)
+      o.real(44, e.spacing)
+      return
+    }
     case 'spline':
       if (!f.modern) return oldPolyline(c, asPolyline(e), handle)
       head(c, 'SPLINE', e, handle, 'AcDbSpline')
@@ -207,6 +239,58 @@ function fresh(c: Ctx, e: Entity, handle: string | null): void {
       o.int(74, 0)
       for (const g of splineGroups(e, 0)) o.str(g[0], g[1])
   }
+}
+
+/**
+ * TEXT: 10 starts the baseline; a justified text is placed by 11, and aligned and fit run from 10 to 11. Groups at
+ * their defaults are left out.
+ */
+function freshText(c: Ctx, e: Text, handle: string | null): void {
+  const { o, f } = c
+  head(c, 'TEXT', e, handle, 'AcDbText')
+  const [first, second] = textPoints(e)
+  o.real(10, first.x)
+  o.real(20, first.y)
+  o.real(30, 0)
+  o.real(40, e.height)
+  o.str(1, e.value)
+  if (e.rotation !== 0) o.real(50, deg(e.rotation))
+  if (e.widthFactor !== 1) o.real(41, e.widthFactor)
+  if (e.oblique !== 0) o.real(51, deg(e.oblique))
+  const flags = textFlags(e)
+  if (flags !== 0) o.int(71, flags)
+  if (e.halign !== 0) o.int(72, e.halign)
+  if (second) {
+    o.real(11, second.x)
+    o.real(21, second.y)
+    o.real(31, 0)
+  }
+  if (f.modern) o.str(100, 'AcDbText')
+  if (e.valign !== 0) o.int(73, e.valign)
+}
+
+/** A TEXT's first alignment point (10) and, when it is justified, its second (11). */
+function textPoints(e: Text): [{ x: number; y: number }, { x: number; y: number } | null] {
+  if (e.halign === 3 || e.halign === 5) return [{ x: e.x, y: e.y }, { x: e.x2, y: e.y2 }]
+  if (e.halign === 0 && e.valign === 0) return [{ x: e.x, y: e.y }, null]
+  return [baselineStart(e), { x: e.x, y: e.y }]
+}
+
+const textFlags = (e: Text): number => (e.backward ? 2 : 0) | (e.upsideDown ? 4 : 0)
+
+/** DXF strings hold 255 characters: MTEXT's value in pieces of 250, none splitting a surrogate pair. */
+function chunksOf(s: string): string[] {
+  const out: string[] = []
+  let i = 0
+  while (s.length - i > 250) {
+    let j = i + 250
+    const u = s.charCodeAt(j - 1)
+    if (u >= 0xd800 && u <= 0xdbff) j--
+    out.push(s.slice(i, j))
+    i = j
+  }
+  out.push(s.slice(i))
+  return out
 }
 
 /** The ELLIPSE end parameter: a whole ellipse ends a turn after it starts. */
@@ -311,6 +395,18 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
   const s = z && Number(z[1]) < 0 ? -1 : 1
   let ok = true
   const put = (code: number, v: number): void => void (ok = set(code, real(v)) && ok)
+  /**
+   * A group a record may leave out at its default. Missing and needed, it goes after the last of `after` the record
+   * has (AutoCAD's order); with none of them, the record is written fresh.
+   */
+  const opt = (code: number, v: string, atDefault: boolean, after: readonly number[] = []): void => {
+    if (set(code, v) || atDefault) return
+    for (const a of after) {
+      const k = gs.findLastIndex((g) => g[0] === a)
+      if (k >= 0) return void gs.splice(k + 1, 0, [code, v])
+    }
+    ok = false
+  }
   switch (e.type) {
     case 'line':
       put(10, e.x0)
@@ -386,6 +482,53 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
       }
       break
     }
+    case 'text': {
+      const [first, second] = textPoints(e)
+      put(10, first.x)
+      put(20, first.y)
+      put(40, e.height)
+      ok = set(1, e.value) && ok
+      // In AutoCAD's order: 10 40 1 50 41 51 7 71 72 11, then (after a second AcDbText marker) 73.
+      const order = [72, 71, 7, 51, 41, 50, 1, 40]
+      opt(50, real(deg(e.rotation)), e.rotation === 0, order.slice(6))
+      opt(41, real(e.widthFactor), e.widthFactor === 1, order.slice(5))
+      opt(51, real(deg(e.oblique)), e.oblique === 0, order.slice(4))
+      opt(71, String(textFlags(e)), textFlags(e) === 0, order.slice(2))
+      opt(72, String(e.halign), e.halign === 0, order.slice(1))
+      if (second) {
+        opt(11, real(second.x), false, order)
+        opt(21, real(second.y), false, [11])
+        opt(31, '0.0', false, [21])
+      }
+      if (!set(73, String(e.valign)) && e.valign !== 0) {
+        const tail: [number, string][] = c.f.modern ? [[100, 'AcDbText'], [73, String(e.valign)]] : [[73, String(e.valign)]]
+        const markers = gs.flatMap((g, k) => (g[0] === 100 && g[1].trim() === 'AcDbText' ? [k] : []))
+        if (c.f.modern && markers.length > 1) gs.splice(markers.at(-1)! + 1, 0, tail[1]!)
+        else {
+          const k = [31, 21, 11, ...order].map((code) => gs.findLastIndex((g) => g[0] === code)).find((i) => i >= 0)
+          if (k === undefined) ok = false
+          else gs.splice(k + 1, 0, ...tail)
+        }
+      }
+      break
+    }
+    case 'mtext':
+      put(10, e.x)
+      put(20, e.y)
+      put(40, e.height)
+      // In AutoCAD's order: 10 40 41 71 72 3… 1 7 11 50 73 44.
+      opt(41, real(e.width), e.width === 0, [40])
+      opt(71, String(e.attachment), e.attachment === 1, [41, 40])
+      // The direction where the record gives it, 11/21 winning over 50 (degrees) as on reading.
+      if (at(11) >= 0) {
+        put(11, Math.cos(e.rotation))
+        put(21, Math.sin(e.rotation))
+        set(50, real(deg(e.rotation)))
+      } else opt(50, real(deg(e.rotation)), e.rotation === 0, [7, 1])
+      opt(44, real(e.spacing), e.spacing === 1, [73, 50, 31, 7, 1])
+      // The value is in chunks: a new one is written fresh.
+      if (e.value !== (was as MText).value) ok = false
+      break
     case 'polyline': {
       const VERTEX = new Set([10, 20, 40, 41, 42, 91])
       const first = gs.findIndex((g) => VERTEX.has(g[0]))
