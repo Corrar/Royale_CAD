@@ -1,8 +1,10 @@
 import { TRUE_COLOR, type Color } from '../color'
 import { createDocument, type Document, type Draft, type Layer } from '../document'
+import { typeOf } from '../entity/registry'
 import { BY_BLOCK, type Block, type BlockEntity, type Entity, type Insert } from '../entity/types'
 import { nurbsProblem } from '../geom/curve'
 import { TAU, normAngle } from '../geom/tol'
+import { bboxEmpty, bboxFinite } from '../geom/vec'
 import { entryEnd, findTable, layerEntry } from './tables'
 import { sections, tokenize, type PairList } from './tokenizer'
 
@@ -56,6 +58,28 @@ function numberAt(pairs: PairList, i: number): number {
   // Number('') and Number('  ') are 0; only then is the value worth a second look.
   if (Number.isFinite(x) && (x !== 0 || v.trim() !== '')) return x
   throw new Unsupported(`invalid number "${v.trim()}"`, 2 * i + 2)
+}
+
+/**
+ * Whether flattening a spline, which its box needs, would pass the largest double: control points too far apart
+ * make its tolerance infinite, and a weighted one past it makes a NaN that never flattens.
+ */
+function splineOverflows(ctrl: Float64Array, weights: Float64Array | null): boolean {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (let i = 0; i < ctrl.length; i += 2) {
+    const x = ctrl[i]!
+    const y = ctrl[i + 1]!
+    const w = weights ? weights[i >> 1]! : 1
+    if (!Number.isFinite(x * w) || !Number.isFinite(y * w)) return true
+    minX = Math.min(minX, x)
+    minY = Math.min(minY, y)
+    maxX = Math.max(maxX, x)
+    maxY = Math.max(maxY, y)
+  }
+  return !Number.isFinite(Math.hypot(maxX - minX, maxY - minY))
 }
 
 /** The groups every entity may have. */
@@ -338,6 +362,7 @@ function parser(pairs: PairList) {
     const curve = { type: 'spline' as const, degree, knots: Float64Array.from(knots), ctrl: Float64Array.from(xy), weights: w, closed: (flags & 1) !== 0 }
     const problem = nurbsProblem(weights.length > 0 && !w ? { ...curve, weights } : curve)
     if (problem) throw new Unsupported(problem)
+    if (splineOverflows(curve.ctrl, w)) throw new Unsupported('its geometry overflows')
     return curve
   }
 
@@ -598,7 +623,8 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
   }
   /**
    * A parsed entity with its layer and color from the head, and an insert's block found: null when it is not
-   * drawn (a type not read, paper space, invisible). Throws Unsupported as the parsers do.
+   * drawn (a type not read, paper space, invisible). Throws Unsupported as the parsers do, and for what the
+   * document would refuse.
    */
   function resolve(parsed: Parsed | null, inBlock: boolean): Draft | null {
     if (!parsed || head.paper || head.invisible) return null
@@ -610,6 +636,12 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
       d = { ...rest, layer, block: blockOf(blockName) }
     } else d = { ...(parsed as Omit<Draft, 'layer'>), layer } as Draft
     if (color !== undefined) (d as { color?: Color }).color = color
+    // Finite numbers can still make a box past the largest double (a radius of 1e308), which the document refuses.
+    const t = typeOf(d as Entity)
+    const problem = t.validate?.(d as Entity)
+    if (problem) throw new Unsupported(problem)
+    const b = t.bbox(d as Entity)
+    if (!(bboxFinite(b) || bboxEmpty(b))) throw new Unsupported('its geometry overflows')
     return d
   }
   const drafts: Draft[] = new Array(recs.n)

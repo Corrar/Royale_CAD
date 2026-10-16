@@ -209,6 +209,46 @@ describe('readDxf', () => {
     expect(d.warnings.join(' ')).toMatch(/external/)
   })
 
+  it('numbers whose geometry a double cannot hold keep the entity as is, with a warning; the rest opens', () => {
+    const huge: G = [0, 'CIRCLE', 8, '0', 10, 1e308, 20, 0, 40, 1e308]
+    const blocks: G = [0, 'BLOCK', 8, '0', 2, 'B', 70, 0, 10, 0, 20, 0, 0, 'LINE', 8, '0', 10, 0, 20, 0, 11, 1e10, 21, 0, ...huge, 0, 'ENDBLK']
+    const entities: G = [
+      ...huge,
+      0, 'LWPOLYLINE', 8, '0', 90, 2, 70, 0, 10, 0, 20, 0, 42, 1e300, 10, 1, 20, 0,
+      0, 'ELLIPSE', 8, '0', 10, 1e308, 20, 0, 11, 1e308, 21, 0, 40, 1,
+      0, 'INSERT', 8, '0', 2, 'B', 10, 0, 20, 0, 41, 1e300, 42, 1e300,
+      0, 'INSERT', 8, '0', 2, 'B', 10, 0, 20, 0, 41, 0,
+      0, 'INSERT', 8, '0', 2, 'B', 10, 0, 20, 0,
+    ]
+    const d = readDxf(lines([0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES', ...entities, 0, 'ENDSEC', 0, 'EOF']))
+    const list = all(d)
+    expect(list.map((e) => e.type)).toEqual(['opaque', 'opaque', 'opaque', 'opaque', 'opaque', 'insert'])
+    // The block keeps its line; its circle is not drawn.
+    expect((list[5] as Insert).block.entities.map((e) => e.type)).toEqual(['line'])
+    expect(d.warnings).toEqual([
+      'line 47: CIRCLE kept as is: its geometry overflows.',
+      'line 57: LWPOLYLINE kept as is: its geometry overflows.',
+      'line 75: ELLIPSE kept as is: its geometry overflows.',
+      'line 89: INSERT kept as is: its geometry overflows.',
+      'line 103: INSERT kept as is: insert scale must not be zero, got 0, 1.',
+      '1 entity in blocks not drawn.',
+    ])
+  })
+
+  it('a spline whose flattening would pass the largest double is kept as is: wide control points, heavy weights', () => {
+    const knots = [0, 0, 0, 0, 1, 1, 1, 1].flatMap((k) => [40, k])
+    const spline = (pts: number[][], weights: number[] = []): G => [
+      0, 'SPLINE', 8, '0', 70, weights.length > 0 ? 12 : 8, 71, 3, 72, 8, 73, 4, ...knots, ...weights.flatMap((w) => [41, w]), ...pts.flatMap(([x, y]) => [10, x!, 20, y!, 30, 0]),
+    ]
+    const wide = spline([[0, 0], [1e308, 0], [-1e308, 0], [0, 1]])
+    // 1e10 × 1e300 is past the largest double: flattening it never ends.
+    const heavy = spline([[0, 0], [1e10, 1e10], [2e10, 0], [3e10, 1e10]], [1, 1e300, 1e300, 1])
+    const fine = spline([[0, 0], [1e10, 1e10], [2e10, 0], [3e10, 1e10]], [1, 2, 2, 1])
+    const d = readDxf(file([...wide, ...heavy, ...fine]))
+    expect(all(d).map((e) => e.type)).toEqual(['opaque', 'opaque', 'spline'])
+    expect(d.warnings).toEqual(['line 25: SPLINE kept as is: its geometry overflows.', 'line 77: SPLINE kept as is: its geometry overflows.'])
+  })
+
   it('layers: color, off, frozen, locked and true color from the table; an unknown layer is created', () => {
     const d = readDxf(file(
       [0, 'LINE', 8, 'Nowhere', 10, 0, 20, 0, 11, 1, 21, 1],
