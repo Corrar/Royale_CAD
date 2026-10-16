@@ -48,6 +48,16 @@ describe('layoutText', () => {
     near([atFrame(down.frame, 0, 1).y], [18])
   })
 
+  it('%%u, %%o and %%k draw a line under, over and through the characters they mark; the box reaches the overline', () => {
+    const under = layoutText(text({ value: '%%uHH%%u H' }))
+    expect(under.rules).toEqual([{ x0: 0, x1: 2 * H, y: -0.2 }])
+    expect(under.glyphs).toHaveLength(3)
+    const over = layoutText(text({ value: '%%o%%kH H' }))
+    expect(over.rules.map((r) => [r.x0, r.y])).toEqual([[0, 1.2], [0, 0.5]])
+    over.rules.forEach((r) => expect(r.x1).toBeCloseTo(widthOf('H H'), 12))
+    expect(over.box.y1).toBe(1.2)
+  })
+
   it('backward and upside down pivot on the justification point, as MIRROR with MIRRTEXT 1 writes them', () => {
     // The span of the box along x and y, in the world: [min, max].
     const xs = (t: TextProps): number[] => { const l = layoutText(t); return [atFrame(l.frame, l.box.x0, 0).x, atFrame(l.frame, l.box.x1, 0).x].sort((a, b) => a - b) }
@@ -76,6 +86,16 @@ describe('layoutMText', () => {
     expect(wrapped.glyphs.filter((g) => g.y === -1).length).toBe(4) // a space has no glyph
     const two = layoutMText(mtext({ value: 'A\\PB', spacing: 2 }))
     expect([...new Set(two.glyphs.map((g) => g.y))]).toEqual([-1, -1 - 10 / 3])
+  })
+
+  it('\\L, \\O and \\K draw their lines on each line they mark, not across the space where a line wraps', () => {
+    const l = layoutMText(mtext({ value: '\\LHH HH\\l HH', width: widthOf('HH HH') + 0.01 }))
+    expect(l.rules).toHaveLength(1)
+    expect(l.rules[0]!.y).toBeCloseTo(-1.2, 12)
+    expect(l.rules[0]!.x1).toBeCloseTo(widthOf('HH HH'), 12)
+    const wrapped = layoutMText(mtext({ value: '\\LHH HH HH', width: widthOf('HH HH') + 0.01 }))
+    expect(wrapped.rules.map((r) => [r.x0, r.x1])).toEqual([[0, widthOf('HH HH')], [0, widthOf('HH')]])
+    expect(layoutMText(mtext({ value: '\\OHH' })).box.y1).toBeCloseTo(0.2, 12)
   })
 
   it('a word wider than the width keeps its line and runs out of the box: the box takes it in', () => {

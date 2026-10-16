@@ -26,7 +26,13 @@ function bboxOf(e: Text | MText): BBox {
 }
 
 function glyphsOf(e: Text | MText, out: PrimSink): void {
-  const { frame: f, glyphs } = layoutOf(e)
+  const { frame: f, glyphs, rules } = layoutOf(e)
+  // Underlines, overlines and strike-throughs are lines.
+  for (const r of rules) {
+    const a = atFrame(f, r.x0, r.y)
+    const b = atFrame(f, r.x1, r.y)
+    out.segment(a.x, a.y, b.x, b.y)
+  }
   if (!out.glyph) return
   for (const g of glyphs) {
     const p = atFrame(f, g.x, g.y)

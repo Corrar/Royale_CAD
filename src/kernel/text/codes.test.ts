@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeText, mtextParagraphs } from './codes'
+import { decodeText, decodeTextMarked, MARK, mtextParagraphs, mtextParagraphsMarked } from './codes'
 
 describe('decodeText', () => {
   it('turns the %% codes and \\U+ escapes into the characters they stand for', () => {
@@ -42,5 +42,20 @@ describe('mtextParagraphs', () => {
     expect(mtextParagraphs('x^ y')).toEqual(['x^y'])
     // A tolerance stack keeps its caret: it splits the stack, it is no code.
     expect(mtextParagraphs('\\S+0.1^ -0.2;')).toEqual(['+0.1 -0.2'])
+  })
+})
+
+describe('marks: underline, overline, strike-through', () => {
+  const { UNDER, OVER, STRIKE } = MARK
+  it('TEXT: %%u, %%o and %%k switch them on and off, character by character', () => {
+    expect(decodeTextMarked('%%uAB%%u C')).toEqual({ text: 'AB C', marks: [UNDER, UNDER, 0, 0] })
+    expect(decodeTextMarked('%%o%%kX%%O%%KY')).toEqual({ text: 'XY', marks: [OVER | STRIKE, 0] })
+  })
+
+  it('MTEXT: \\L, \\O and \\K switch them; a group ends them; they go on past a paragraph', () => {
+    expect(mtextParagraphsMarked('{\\LA}B')).toEqual([{ text: 'AB', marks: [UNDER, 0] }])
+    expect(mtextParagraphsMarked('\\OA\\PB\\o C\\KD\\k')).toEqual([{ text: 'A', marks: [OVER] }, { text: 'B CD', marks: [OVER, 0, 0, STRIKE] }])
+    // %%u is TEXT's: an MTEXT has none, and it goes as before.
+    expect(mtextParagraphsMarked('%%uA')).toEqual([{ text: 'A', marks: [0] }])
   })
 })
