@@ -47,7 +47,7 @@ function setup() {
   const lines: string[] = []
   let replaced = 0
   const fake = fakeApi()
-  const files = createFiles({ api: fake.api, doc, parse: parseHere, print: (l) => lines.push(l), replaced: () => replaced++ })
+  const files = createFiles({ api: fake.api, doc, parse: parseHere, print: (l) => lines.push(l), replaced: () => replaced++, currentLayer: () => '0' })
   /** Lets the async operation started by a call finish. */
   const settle = () => new Promise((r) => setTimeout(r, 0))
   return { doc, files, lines, fake, settle, replaced: () => replaced }

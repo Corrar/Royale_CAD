@@ -58,8 +58,10 @@ export interface FilesOptions {
   parse: Parse
   /** A line in the command history. */
   print(line: string): void
-  /** A drawing was put in place (opened or new): the view frames it, the selection goes. */
-  replaced(): void
+  /** A drawing was put in place (opened or new): the view frames it, the selection goes, its layer is current. */
+  replaced(currentLayer: string | null): void
+  /** The current layer's name, which the file keeps ($CLAYER). */
+  currentLayer(): string
 }
 
 declare global {
@@ -118,13 +120,13 @@ export function createFiles(o: FilesOptions): Files {
       replacing = false
     }
     setDirty(false)
-    o.replaced()
+    o.replaced(source?.header.get('$CLAYER') ?? null)
   }
 
   async function save(asNew: boolean): Promise<boolean> {
     const name = state.get().name
     patch({ busy: `Saving ${name}…` })
-    const bytes = encodeDxf(writeDxf(doc, source ?? undefined), encoding)
+    const bytes = encodeDxf(writeDxf(doc, source ?? undefined, { currentLayer: o.currentLayer() }), encoding)
     const r = await (asNew ? api.saveAs(bytes, name) : api.save(bytes, name))
     if (r === null) {
       o.print('Save cancelled.')
@@ -184,8 +186,8 @@ export function createFiles(o: FilesOptions): Files {
     create(saveFirst) {
       void run(async () => {
         if (saveFirst && !(await save(false))) return
-        replace(() => doc.replace([{ name: '0', color: 7, visible: true, locked: false }], []))
         source = null
+        replace(() => doc.replace([{ name: '0', color: 7, visible: true, locked: false }], []))
         encoding = DEFAULT_ENCODING
         patch({ name: `Drawing${++untitled}.dxf` })
         await api.forget()

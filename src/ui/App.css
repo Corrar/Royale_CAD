@@ -177,10 +177,156 @@
   color: var(--accent);
 }
 
-/* Not enough room beside the command line: the status bar goes up to the top right. */
+/* Not enough room beside the command line: the status bar goes up, to the left of the layer panel. */
 @media (max-width: 1400px) {
   .statusbar {
     top: calc(var(--titlebar-h) + 8px);
     bottom: auto;
+    right: calc(16px + var(--layerpanel-w) + 8px);
   }
+}
+
+.layerpanel {
+  position: fixed;
+  top: calc(var(--titlebar-h) + 8px);
+  right: 16px;
+  width: var(--layerpanel-w);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.layerpanel-current {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.layerpanel-current:hover {
+  background: var(--surface-2);
+}
+
+.layerpanel-current[aria-expanded='true'] .layerpanel-chevron {
+  transform: rotate(180deg);
+}
+
+.layerpanel-chevron {
+  margin-left: auto;
+  color: var(--text-muted);
+}
+
+.layerpanel-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layerpanel-swatch {
+  display: inline-block;
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.layerpanel-swatch.big {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.layerpanel-swatch.big[aria-pressed='true'] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.layerpanel-list {
+  border-top: 1px solid var(--border);
+  padding: 4px;
+}
+
+.layerpanel-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.layerpanel-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+}
+
+.layerpanel-row.current {
+  background: var(--surface-2);
+}
+
+.layerpanel-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.layerpanel-icon:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.layerpanel-row .layerpanel-name {
+  flex: 1;
+  min-width: 0;
+  padding-left: 4px;
+}
+
+.layerpanel-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: 100%;
+  padding: 4px 4px 4px 28px;
+}
+
+.layerpanel-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.layerpanel-add:hover {
+  background: var(--surface-2);
+  color: var(--text);
 }

@@ -71,6 +71,8 @@ describe('writeDxf', () => {
     const text = file([...LINE, ...CIRCLE, ...HATCH, ...LWPOLY])
     const d = readDxf(text)
     expect(writeDxf(d.doc, d.source)).toBe(text)
+    // A new current layer goes into the header.
+    expect(readDxf(writeDxf(d.doc, d.source, { currentLayer: 'Walls' })).source.header.get('$CLAYER')).toBe('Walls')
   })
 
   it('read, edit, write, read: the same document; opaque text identical; extra groups and OCS survive the edit', () => {
@@ -153,9 +155,10 @@ describe('writeDxf', () => {
       tx.add({ type: 'point', layer: 0, x: 7, y: 8 })
       tx.add({ type: 'polyline', layer: 0, pts: new Float64Array([0, 0, 4, 0]), bulges: new Float64Array([0.25, 0]), closed: false })
     })
-    const out = writeDxf(doc)
+    const out = writeDxf(doc, undefined, { currentLayer: 'Walls' })
     const back = readDxf(out)
     expect(back.warnings).toEqual([])
+    expect(back.source.header.get('$CLAYER')).toBe('Walls')
     expect(back.source.header.get('$ACADVER')).toBe('AC1015')
     const strip = (es: Entity[]) => es.map(({ id: _id, ...rest }) => rest)
     const got = strip([...back.doc.entities()])

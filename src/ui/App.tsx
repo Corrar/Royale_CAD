@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { runBench, runBenchG2 } from '../app/bench'
 import { startApp, type AppSession } from '../app/controller'
 import { CommandLine } from './CommandLine'
+import { LayerPanel } from './LayerPanel'
 import { StatusBar } from './StatusBar'
 import { TitleBar } from './TitleBar'
 import './App.css'
@@ -36,6 +37,7 @@ export function App() {
       {session?.file ? <TitleBar store={session.file} /> : <header className="titlebar">Royale CAD</header>}
       {session && <CommandLine store={session.commandLine} onToggleHistory={session.toggleHistory} />}
       {session && <StatusBar store={session.status} onToggle={session.toggle} />}
+      {session && <LayerPanel store={session.layers} actions={session.layerActions} />}
     </>
   )
 }

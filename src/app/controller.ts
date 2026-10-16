@@ -1,6 +1,6 @@
 import { BUILTIN_COMMANDS } from '../kernel/command/commands'
 import { createInterpreter, type InterpreterHost } from '../kernel/command/runtime'
-import { createDocument, docExtents } from '../kernel/document'
+import { createDocument, docExtents, type Layer } from '../kernel/document'
 import type { Vec2 } from '../kernel/geom/vec'
 import { pick, pickBox } from '../kernel/pick'
 import { createSelection } from '../kernel/selection'
@@ -46,11 +46,30 @@ export interface StatusState {
   osnap: boolean
 }
 
+export interface LayersState {
+  layers: readonly Layer[]
+  /** The current layer, where new entities go. */
+  current: number
+  /** The list is showing. */
+  open: boolean
+}
+
+/** What the layer panel can do. */
+export interface LayerActions {
+  setCurrent(index: number): void
+  update(index: number, patch: Partial<Layer>): void
+  /** A new layer, LayerN, made current. */
+  add(): void
+  toggle(): void
+}
+
 export interface AppSession {
   commandLine: Store<CommandLineState>
   status: Store<StatusState>
   /** The drawing's file; null where there are no files (a plain browser). */
   file: Store<FileState> | null
+  layers: Store<LayersState>
+  layerActions: LayerActions
   toggleHistory(): void
   toggle(setting: Setting): void
   dispose(): void
@@ -130,13 +149,18 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
         doc,
         parse: parseInWorker,
         print: (line) => interp.print(line),
-        replaced: () => {
+        replaced: (currentLayer) => {
           selection.clear()
+          const i = currentLayer === null ? -1 : doc.layers.indexOf(currentLayer)
+          interp.layer = i >= 0 ? i : 0
           frame()
         },
+        currentLayer: () => doc.layers.get(interp.layer)!.name,
       })
     : null
   if (files) host.files = files
+  const panelOpen = createStore(false)
+  host.showLayers = () => panelOpen.set(true)
 
   const loop = createFrameLoop(
     (cb) => requestAnimationFrame(cb),
@@ -221,6 +245,34 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     expanded,
   )
   const toggleHistory = (): void => expanded.set(!expanded.get())
+  // The interpreter notifies on every key: the same state comes back unless a layer, the current one or the panel
+  // changed, so the panel does not render for nothing.
+  let lastLayers: LayersState = { layers: [], current: -1, open: false }
+  const layersNow = (): LayersState => {
+    const list = Array.from({ length: doc.layers.size }, (_, i) => doc.layers.get(i)!)
+    const same = list.length === lastLayers.layers.length && list.every((l, i) => l === lastLayers.layers[i])
+    if (same && interp.layer === lastLayers.current && panelOpen.get() === lastLayers.open) return lastLayers
+    lastLayers = { layers: same ? lastLayers.layers : list, current: interp.layer, open: panelOpen.get() }
+    return lastLayers
+  }
+  const layers = derivedStore(
+    layersNow,
+    { subscribe: (fn) => doc.layers.onChange(fn) },
+    { subscribe: (fn) => interp.onChange(fn) },
+    panelOpen,
+  )
+  const layerActions: LayerActions = {
+    setCurrent: (i) => {
+      interp.layer = i
+    },
+    update: (i, patch) => doc.layers.update(i, patch),
+    add() {
+      let n = 1
+      while (doc.layers.indexOf(`Layer${n}`) !== -1) n++
+      interp.layer = doc.layers.add({ name: `Layer${n}`, color: 7, visible: true, locked: false })
+    },
+    toggle: () => panelOpen.set(!panelOpen.get()),
+  }
   const submit = (): void => {
     const text = buffer.get()
     buffer.set('')
@@ -286,6 +338,8 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     commandLine,
     status,
     file: files?.state ?? null,
+    layers,
+    layerActions,
     toggleHistory,
     toggle,
     dispose() {
@@ -295,6 +349,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
       observer.disconnect()
       commandLine.dispose()
       status.dispose()
+      layers.dispose()
       offGrid()
       offInterp()
       offDoc()

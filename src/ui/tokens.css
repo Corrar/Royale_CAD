@@ -15,6 +15,7 @@
   --crossing-fill: rgb(103 232 249 / 0.05);
   --radius: 8px;
   --titlebar-h: 32px;
+  --layerpanel-w: 240px;
   --font-ui: 'Inter Variable', system-ui, sans-serif;
   --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
 }

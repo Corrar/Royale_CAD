@@ -428,20 +428,20 @@ function writeTables(c: Ctx, text: string, nl: string): string {
   return text.slice(0, p.offset(endsec)) + o.text() + text.slice(p.offset(endsec))
 }
 
-/** The HEADER section with $HANDSEED set to seed (added when missing). */
-function writeHeader(text: string, nl: string, seed: string): string {
+/** The HEADER section with the variable `name` set to value (added, with group `code`, when missing). */
+function setHeaderVar(text: string, nl: string, name: string, code: number, value: string): string {
   const p = tokenize(text)
   for (let i = 0; i + 1 < p.length; i++) {
-    if (!p.is(i, 9, '$HANDSEED')) continue
+    if (!p.is(i, 9, name)) continue
     const start = p.offset(i + 1)
     const valueStart = text.indexOf('\n', start) + 1
     let valueEnd = text.indexOf('\n', valueStart)
     if (valueEnd < 0) valueEnd = text.length
     if (text.charCodeAt(valueEnd - 1) === 13) valueEnd--
-    return text.slice(0, valueStart) + seed + text.slice(valueEnd)
+    return text.slice(0, valueStart) + value + text.slice(valueEnd)
   }
   const endsec = p.length - 1
-  return text.slice(0, p.offset(endsec)) + codeText(9) + nl + '$HANDSEED' + nl + codeText(5) + nl + seed + nl + text.slice(p.offset(endsec))
+  return text.slice(0, p.offset(endsec)) + codeText(9) + nl + name + nl + codeText(code) + nl + value + nl + text.slice(p.offset(endsec))
 }
 
 /** The model space BLOCK_RECORD's handle, owner of the entities; null when the file has none. */
@@ -467,8 +467,13 @@ const section = (nl: string, name: string, body: string): string =>
  * edited as read, edited ones patched in their own records, new ones in the file's version with handles past
  * the file's. Without a source, a new AC1015 file.
  */
-export function writeDxf(doc: Document, source?: DxfSource): string {
-  if (!source) return writeNew(doc)
+export interface WriteOptions {
+  /** The current layer's name, kept as $CLAYER. */
+  currentLayer?: string
+}
+
+export function writeDxf(doc: Document, source?: DxfSource, opts: WriteOptions = {}): string {
+  if (!source) return writeNew(doc, opts)
   const nl = source.newline
   const version = source.header.get('$ACADVER') ?? 'AC1009'
   const f = flavorOf(version, source.header.get('$HANDLING'))
@@ -493,11 +498,14 @@ export function writeDxf(doc: Document, source?: DxfSource): string {
     sections.splice(objects >= 0 ? objects : sections.length, 0, { name: 'ENTITIES', text: body })
   }
   const header = sections.find((s) => s.name === 'HEADER')
-  if (header && f.handles) header.text = writeHeader(header.text, nl, ids.seed())
+  if (header && f.handles) header.text = setHeaderVar(header.text, nl, '$HANDSEED', 5, ids.seed())
+  if (header && opts.currentLayer !== undefined && opts.currentLayer !== source.header.get('$CLAYER')) {
+    header.text = setHeaderVar(header.text, nl, '$CLAYER', 8, opts.currentLayer)
+  }
   return sections.map((s) => s.text).join('') + codeText(0) + nl + 'EOF' + nl
 }
 
-function writeNew(doc: Document): string {
+function writeNew(doc: Document, opts: WriteOptions): string {
   const nl = '\r\n'
   const f = flavorOf('AC1015', undefined)
   const ids = allocator(FIRST_FREE_HANDLE)
@@ -506,6 +514,7 @@ function writeNew(doc: Document): string {
     o,
     {
       extents: docExtents(doc),
+      currentLayer: opts.currentLayer ?? '0',
       layers(out) {
         for (let i = 0; i < doc.layers.size; i++) freshLayer(out, f, doc.layers.get(i)!, i === 0 ? H.layer0 : ids.take(), H.layerTable, H.plotStyleNormal)
         return doc.layers.size

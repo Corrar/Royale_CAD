@@ -47,13 +47,22 @@ export interface KeywordRequest extends Ask {
   kind: 'keyword'
   keywords: readonly string[]
   default?: string
+  /** Enter answers { kind: 'empty' } (ends a loop of options, as -LAYER's). */
+  allowEmpty?: boolean
 }
 
 export interface SelectionRequest extends Ask {
   kind: 'selection'
 }
 
-export type Request = PointRequest | NumberRequest | KeywordRequest | SelectionRequest
+/** A name or other free text, typed as is (Space ends it, as in AutoCAD). */
+export interface TextRequest extends Ask {
+  kind: 'text'
+  /** What Enter answers, shown as <…>; without it Enter answers the empty text. */
+  default?: string
+}
+
+export type Request = PointRequest | NumberRequest | KeywordRequest | SelectionRequest | TextRequest
 
 export type Input =
   | { kind: 'point'; p: Vec2 }
@@ -61,6 +70,7 @@ export type Input =
   | { kind: 'keyword'; word: string }
   | { kind: 'empty' }
   | { kind: 'selection'; ids: number[] }
+  | { kind: 'text'; text: string }
 
 export type CommandGen = Generator<Request, void, Input>
 
@@ -89,6 +99,8 @@ export interface InterpreterHost {
   query?(b: BBox): number[]
   /** Files: the app runs the dialogs and the reading and writing after the command has ended. */
   files?: FileHost
+  /** Shows the layer panel (LAYER, LA). */
+  showLayers?(): void
 }
 
 export interface FileHost {
@@ -110,8 +122,10 @@ export interface CommandContext {
   readonly doc: Document
   readonly selection: Selection
   readonly host: InterpreterHost
-  /** Layer that new entities go to. */
+  /** The current layer (CLAYER): new entities go to it. */
   readonly layer: number
+  /** Makes another layer current. */
+  setLayer(index: number): void
   /** Values kept between commands, like AutoCAD system variables (CIRCLERAD, …). */
   readonly vars: Map<string, unknown>
   message(text: string): void
@@ -135,6 +149,8 @@ export interface Interpreter {
   readonly lastPoint: Vec2
   /** Cursor in world units, for direct distance and previews; set by the app on every move. */
   cursor: Vec2 | null
+  /** The current layer (CLAYER), where new entities go; listeners hear when it changes. */
+  layer: number
   /** Object snap on clicks while a point is asked for (F3). On by default, as in AutoCAD. */
   osnap: boolean
   /** Squares points to the base point's axes (F8). Typed coordinates are exempt; a snap wins over it. */
@@ -174,7 +190,7 @@ export function formatPrompt(r: Request | null): string {
   const keywords = r.keywords && r.keywords.length > 0 ? `${r.kind === 'keyword' ? '' : ' or'} [${r.keywords.join('/')}]` : ''
   let def = ''
   if (r.kind === 'number' && r.default !== undefined) def = ` <${formatNumber(r.default, r.integer ? 'integer' : r.angle ? 'angle' : 'length')}>`
-  else if ((r.kind === 'point' || r.kind === 'keyword') && r.default !== undefined) def = ` <${r.default}>`
+  else if ((r.kind === 'point' || r.kind === 'keyword' || r.kind === 'text') && r.default !== undefined) def = ` <${r.default}>`
   return `${r.prompt}${keywords}${def}:`
 }
 
@@ -225,11 +241,18 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     if (history.length > HISTORY_MAX) history.splice(0, history.length - HISTORY_MAX)
   }
 
+  let layer = 0
   const ctx: CommandContext = {
     doc,
     selection,
     host,
-    layer: 0,
+    get layer() {
+      return layer
+    },
+    setLayer(index) {
+      if (!doc.layers.get(index)) throw new Error(`no layer ${index}`)
+      layer = index
+    },
     vars,
     message: say,
     setLastPoint(p) {
@@ -424,9 +447,15 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
         return answerNumber(r, value, echo)
       }
       case 'keyword': {
-        if (t.kind === 'word' && keyword(t.text, echo)) return
+        // A word, or a sign such as AutoCAD's "?" (list).
+        if ((t.kind === 'word' || t.kind === 'invalid') && keyword(echo, echo)) return
         if (t.kind === 'empty' && r.default !== undefined) return answer({ kind: 'keyword', word: r.default }, '')
+        if (t.kind === 'empty' && r.allowEmpty) return answer({ kind: 'empty' }, '')
         return refuse(echo, 'Invalid option keyword.')
+      }
+      case 'text': {
+        if (t.kind === 'empty') return answer({ kind: 'text', text: r.default ?? '' }, '')
+        return answer({ kind: 'text', text: echo }, echo)
       }
       case 'selection': {
         if (t.kind === 'empty') {
@@ -492,7 +521,7 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     const p = resolve(raw).p
     if (r.kind === 'point') return answer({ kind: 'point', p }, '')
     if (r.kind === 'number' && r.base) return answerNumber(r, measure(r, p), '')
-    refuse('', r.kind === 'number' ? 'Requires a number.' : 'Invalid option keyword.')
+    refuse('', r.kind === 'number' ? 'Requires a number.' : r.kind === 'text' ? 'Requires a name.' : 'Invalid option keyword.')
   }
 
   return {
@@ -520,6 +549,14 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     },
     set cursor(p) {
       cursor = p
+    },
+    get layer() {
+      return layer
+    },
+    set layer(index) {
+      if (index === layer) return
+      ctx.setLayer(index)
+      emit()
     },
     get osnap() {
       return osnap
