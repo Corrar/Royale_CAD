@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
 import { createDocument, type Document } from '../document'
-import type { Arc, Circle, Ellipse, Entity, Insert, Line, MText, Polyline, Spline, Text } from '../entity/types'
+import type { Arc, Circle, Ellipse, Entity, Insert, Line, MText, Polyline, Solid, Spline, Text } from '../entity/types'
 import { typeOf } from '../entity/registry'
 import { rotation } from '../geom/vec'
 import { commandBench } from '../command/testing'
@@ -503,6 +503,42 @@ describe('writeDxf', () => {
     // DXF strings hold 255 characters: a long MTEXT goes in chunks of 3, then 1.
     expect(span(6)).toContain('\r\n  3\r\n')
     for (const l of span(6).split('\r\n')) expect(l.length).toBeLessThanOrEqual(255)
+  })
+
+  it('SOLID: edits are patched in place in its OCS (handle, thickness, linetype kept), new ones written fresh (R2000 and R12)', () => {
+    const QUAD: G = [0, 'SOLID', 5, '70', 330, '1F', 100, 'AcDbEntity', 8, 'Walls', 6, 'DASHED', 100, 'AcDbTrace', 39, 2, 10, 1, 20, 1, 30, 1, 11, 11, 21, 1, 31, 1, 12, 1, 22, 5, 32, 1, 13, 11, 23, 5, 33, 1, 210, 0, 220, 0, 230, -1]
+    const TRI: G = [0, 'SOLID', 5, '71', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbTrace', 10, 0, 20, 0, 30, 2, 11, 4, 21, 0, 31, 2, 12, 2, 22, 3, 32, 2, 1001, 'ROYALE', 1000, 'kept']
+    const d = readDxf(file([...QUAD, ...TRI]))
+    expect(d.warnings).toEqual([])
+    const [quad, tri] = [...d.doc.entities()] as [Solid, Solid]
+    expect(quad).toMatchObject({ x0: -1, y0: 1, x1: -11, x3: -11, y3: 5 })
+    d.doc.transact('edit', (tx) => {
+      tx.replace(typeOf(quad).transform!(quad, rotation({ x: 0, y: 0 }, 90)))
+      // The triangle gets a fourth corner of its own.
+      tx.replace({ ...tri, x3: 5, y3: 4 })
+      tx.add({ type: 'solid', layer: 0, color: 3, x0: 1, y0: 1, x1: 2, y1: 1, x2: 1, y2: 2, x3: 1, y3: 2 })
+    })
+    const out = writeDxf(d.doc, d.source)
+    const back = readDxf(out)
+    expect(back.warnings).toEqual([])
+    same([...d.doc.entities()], [...back.doc.entities()])
+    const span = (id: number): string => back.source.text.slice(back.source.loaded(id)!.start, back.source.loaded(id)!.end)
+    expect(back.source.handleOf(1)).toBe('70')
+    expect(span(1)).toContain(lines([6, 'DASHED']))
+    expect(span(1)).toContain(lines([39, 2]))
+    expect(span(1)).toContain(lines([230, -1]))
+    // Turned 90° about the origin, (−11, 1) goes to (−1, −11), which the record's OCS holds as (1, −11).
+    expect(span(1)).toContain(lines([11, '1.0', 21, '-11.0', 31, 1]))
+    expect(back.source.handleOf(2)).toBe('71')
+    expect(span(2)).toContain(lines([12, '2.0', 22, '3.0', 32, 2, 13, '5.0', 23, '4.0', 33, 2, 1001, 'ROYALE']))
+    expect(span(3)).toContain(lines([100, 'AcDbEntity', 8, '0', 62, 3, 100, 'AcDbTrace', 10, '1.0', 20, '1.0', 30, '0.0']))
+    expect(span(3)).toContain(lines([13, '1.0', 23, '2.0', 33, '0.0']))
+    // R12: the same record without subclass markers.
+    const old = readDxf(r12Only([0, 'LINE', 8, '0', 10, 0, 20, 0, 11, 1, 21, 1]))
+    old.doc.transact('add', (tx) => void tx.add({ type: 'solid', layer: 0, x0: 0, y0: 0, x1: 1, y1: 0, x2: 0, y2: 1, x3: 1, y3: 1 }))
+    const r12Out = writeDxf(old.doc, old.source)
+    expect(r12Out).not.toContain('AcDb')
+    same([...old.doc.entities()], [...readDxf(r12Out).doc.entities()])
   })
 
   it('an R12 file has no MTEXT: each of its lines goes as a TEXT where the line shows', () => {
