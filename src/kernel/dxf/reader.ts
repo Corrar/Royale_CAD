@@ -175,6 +175,16 @@ function textOf(t: TextGroups): TextFields {
 }
 
 /**
+ * A text in its OCS seen from -Z as one in the world, and back: x the other way, so it reads backward, its angles
+ * the other way round, and an aligned or fit one between the same two points, its second first.
+ */
+export function seenFromBelow<T extends TextFields>(t: T): T {
+  return {
+    ...t, x: 0 - t.x2, y: t.y2, x2: 0 - t.x, y2: t.y, rotation: normAngle(0 - t.rotation), oblique: 0 - t.oblique, backward: !t.backward,
+  }
+}
+
+/**
  * The entity readers of one file. They share one head, reset for each entity: a load of a million entities makes
  * no garbage per entity beyond the draft itself.
  */
@@ -564,7 +574,8 @@ function parser(pairs: PairList) {
 
   /**
    * An ATTRIB record [a, b) with its own layer and color (the insert's head stays as it is); null when it is not
-   * understood. A multiline one's embedded MTEXT, after 101, is left out: the line of text has the value.
+   * understood. A multiline one's embedded MTEXT, after 101, is left out: the line of text has the value. Seen from
+   * -Z, it is mirrored into the world.
    */
   const attribAt = (a: number, b: number): PendingAttrib | null => {
     const t = textGroups()
@@ -597,8 +608,9 @@ function parser(pairs: PairList) {
         else if (c === 220) ey = num(i)
         else if (c === 230) ez = num(i)
       }
-      if (!(Math.abs(ex) <= 1e-9 && Math.abs(ey) <= 1e-9 && Math.abs(ez - 1) <= 1e-9)) return null
-      return { ...textOf(t), tag, hidden: (flags & 1) !== 0 || invisible, layerName, aci, trueColor }
+      if (!(Math.abs(ex) <= 1e-9 && Math.abs(ey) <= 1e-9 && Math.abs(Math.abs(ez) - 1) <= 1e-9)) return null
+      const text = ez < 0 ? seenFromBelow(textOf(t)) : textOf(t)
+      return { ...text, tag, hidden: (flags & 1) !== 0 || invisible, layerName, aci, trueColor }
     } catch (error) {
       if (error instanceof Unsupported) return null
       throw error
@@ -952,6 +964,9 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
       else if (head.invisible) keep('invisible')
       else draft = resolve(parsed)
       if (draft && isWide(draft)) wide++
+      if (draft?.type === 'insert' && (parsed as PendingInsert).attribs === null) {
+        warnings.push(`line ${2 * a + 1}: INSERT keeps its attributes as is, not shown: one is not understood.`)
+      }
     } catch (error) {
       if (!(error instanceof Unsupported)) throw error
       warnings.push(`line ${error.line ?? 2 * a + 1}: ${name} kept as is: ${error.message}.`)

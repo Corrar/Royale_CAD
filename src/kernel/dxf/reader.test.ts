@@ -267,7 +267,7 @@ describe('readDxf', () => {
     expect(d.warnings.join(' ')).toMatch(/knots/)
   })
 
-  it('INSERT attributes: each ATTRIB a text in the world with its tag, layer and color; hidden kept; a mirrored one leaves them all as is', () => {
+  it('INSERT attributes: each ATTRIB a text in the world with its tag, layer and color; hidden kept; one not understood leaves them all as is', () => {
     const blocks: G = [0, 'BLOCK', 8, '0', 2, 'DOOR', 70, 2, 10, 0, 20, 0, 0, 'LINE', 8, '0', 10, 0, 20, 0, 11, 1, 21, 0, 0, 'ENDBLK']
     const attribs: G = [
       0, 'INSERT', 8, 'Plan', 62, 5, 66, 1, 2, 'DOOR', 10, 1, 20, 1,
@@ -278,13 +278,14 @@ describe('readDxf', () => {
       0, 'ATTRIB', 8, '0', 10, 5, 20, 6, 40, 1, 1, 'ML', 2, 'MULTI', 70, 0, 101, 'Embedded Object', 10, 99, 20, 99, 40, 9, 1, 'ML',
       0, 'SEQEND', 8, 'Plan',
     ]
-    const mirrored: G = [
+    const tilted: G = [
       0, 'INSERT', 8, '0', 66, 1, 2, 'DOOR', 10, 0, 20, 0,
-      0, 'ATTRIB', 8, '0', 10, 0, 20, 0, 40, 1, 1, 'M', 2, 'M', 210, 0, 220, 0, 230, -1,
+      0, 'ATTRIB', 8, '0', 10, 0, 20, 0, 40, 1, 1, 'T', 2, 'T', 210, 0, 220, 1, 230, 0,
       0, 'SEQEND', 8, '0',
     ]
-    const d = readDxf(lines([0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES', ...attribs, ...mirrored, 0, 'ENDSEC', 0, 'EOF']))
-    expect(d.warnings).toEqual([])
+    const d = readDxf(lines([0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES', ...attribs, ...tilted, 0, 'ENDSEC', 0, 'EOF']))
+    // Kept in the record, but not shown, and a copy is without them: said.
+    expect(d.warnings).toEqual(['line 125: INSERT keeps its attributes as is, not shown: one is not understood.'])
     const [door, plain] = all(d) as [Insert, Insert]
     const L = (name: string): number => d.doc.layers.indexOf(name)
     expect(door).toMatchObject({ layer: L('Plan'), color: 5 })
@@ -295,6 +296,28 @@ describe('readDxf', () => {
     ])
     expect(plain.type).toBe('insert')
     expect(plain.attribs).toBeUndefined()
+  })
+
+  it('INSERT attributes seen from -Z: in the world, mirrored (backward, angles the other way), aligned ones between their points', () => {
+    const blocks: G = [0, 'BLOCK', 8, '0', 2, 'DOOR', 70, 2, 10, 0, 20, 0, 0, 'LINE', 8, '0', 10, 0, 20, 0, 11, 1, 21, 0, 0, 'ENDBLK']
+    const z: G = [210, 0, 220, 0, 230, -1]
+    const entities: G = [
+      0, 'INSERT', 8, '0', 66, 1, 2, 'DOOR', 10, -100, 20, 50, ...z,
+      0, 'ATTRIB', 8, '0', 10, -98, 20, 51, 40, 1, 1, 'M', 50, 30, 51, 10, ...z, 2, 'M', 70, 0,
+      0, 'ATTRIB', 8, '0', 10, -100, 20, 40, 11, -100, 21, 40, 40, 1, 1, 'C', 71, 2, 72, 1, ...z, 2, 'C', 70, 0,
+      0, 'ATTRIB', 8, '0', 10, 0, 20, 0, 11, 4, 21, 0, 40, 1, 1, 'A', 72, 3, ...z, 2, 'A', 70, 0,
+      0, 'SEQEND', 8, '0',
+    ]
+    const d = readDxf(lines([0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES', ...entities, 0, 'ENDSEC', 0, 'EOF']))
+    expect(d.warnings).toEqual([])
+    const [door] = all(d) as [Insert]
+    expect(door.attribs!.map((a) => [a.tag, a.x, a.y, a.x2, a.y2, r9(a.rotation), r9(a.oblique), a.halign, a.backward])).toEqual([
+      ['M', 98, 51, 98, 51, r9(2 * Math.PI - Math.PI / 6), r9(-Math.PI / 18), 0, true],
+      // Backward in the file, it reads forward from -Z.
+      ['C', 100, 40, 100, 40, 0, 0, 1, false],
+      // Aligned from (0, 0) to (4, 0) in its OCS: from (-4, 0) to (0, 0), backward, in the world.
+      ['A', -4, 0, 0, 0, 0, 0, 3, true],
+    ])
   })
 
   it('R2018 ATTRIB: the 71 (attribute type), 72 and 11 AcDbAttribute repeats are not text groups; AcDbText justifies it', () => {

@@ -7,7 +7,7 @@ import { affineDet, applyAffine, type Affine } from '../geom/vec'
 import { TAU, normAngle } from '../geom/tol'
 import { caretCoded } from '../text/codes'
 import { baselineStart, mtextLines } from '../text/layout'
-import type { DxfSource } from './reader'
+import { seenFromBelow, type DxfSource } from './reader'
 import { entryEnd, findTable, groupValue, layerEntry, type TableRange } from './tables'
 import { FIRST_FREE_HANDLE, H, TEXTSIZE, textSizeOf, writeTemplate } from './template'
 import { tokenize, type PairList } from './tokenizer'
@@ -725,7 +725,9 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
     const embedded = cut >= 0 ? movedMText(child.splice(cut), move) : []
     const flags = Number(child.find((g) => g[0] === 70)?.[1] ?? 0)
     const patchedChild = a && child.map((g): [number, string] => [g[0], g[1]])
-    if (a && patchedChild && patchText(patchedChild, a, 74, c.f.modern) && patchedChild.some((g) => g[0] === 70) && patchedChild.some((g) => g[0] === 8)) {
+    // Seen from -Z, the attribute goes back into its OCS.
+    const below = Number(child.find((g) => g[0] === 230)?.[1] ?? 1) < 0
+    if (a && patchedChild && patchText(patchedChild, below ? seenFromBelow(a) : a, 74, c.f.modern) && patchedChild.some((g) => g[0] === 70) && patchedChild.some((g) => g[0] === 8)) {
       for (const g of patchedChild) {
         if (g[0] === 70) g[1] = String((flags & ~1) | (a.hidden ? 1 : 0))
         if (g[0] === 8) g[1] = fileLayer(c, a.layer)
