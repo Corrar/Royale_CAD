@@ -22,7 +22,15 @@ export interface Change {
   bulk?: true
 }
 
-export interface Layer { readonly name: string; readonly color: Color; readonly visible: boolean; readonly locked: boolean }
+export interface Layer {
+  readonly name: string
+  readonly color: Color
+  /** Whether its entities show: false when the layer is off or frozen. */
+  readonly visible: boolean
+  readonly locked: boolean
+  /** Hidden by freezing rather than turning off, which a file keeps apart; the table drops it once shown. */
+  readonly frozen?: boolean
+}
 
 export interface LayerTable {
   readonly size: number
@@ -124,6 +132,11 @@ function subscribe<T>(listeners: Set<(x: T) => void>, fn: (x: T) => void): () =>
 
 const INVALID_NAME = /[<>/\\":;?*|,=`]/
 
+/** A copy of l as the table keeps it: frozen only while hidden. */
+const stored = (l: Layer): Layer => ({
+  name: l.name, color: l.color, visible: l.visible, locked: l.locked, ...(!l.visible && l.frozen === true && { frozen: true }),
+})
+
 function createLayerTable(): LayerTable & { reset(list: readonly Layer[]): void; check(list: readonly Layer[]): void } {
   let layers: Layer[] = [{ name: '0', color: 7, visible: true, locked: false }]
   const listeners = new Set<(index: number) => void>()
@@ -146,7 +159,7 @@ function createLayerTable(): LayerTable & { reset(list: readonly Layer[]): void;
     get: (index) => layers[index],
     indexOf,
     add(layer) {
-      const l = { name: layer.name, color: layer.color, visible: layer.visible, locked: layer.locked }
+      const l = stored(layer)
       check(l, -1)
       layers.push(l)
       emit(listeners, layers.length - 1)
@@ -155,7 +168,7 @@ function createLayerTable(): LayerTable & { reset(list: readonly Layer[]): void;
     update(index, patch) {
       const prev = layers[index]
       if (!prev) throw new Error(`no layer ${index}`)
-      const next = { ...prev, ...patch }
+      const next = stored({ ...prev, ...patch })
       if (index === 0 && next.name !== '0') throw new Error('layer 0 cannot be renamed')
       check(next, index)
       layers[index] = next
@@ -175,7 +188,7 @@ function createLayerTable(): LayerTable & { reset(list: readonly Layer[]): void;
     },
     /** Takes list (checked) in place of every layer, then tells the listeners about each index. */
     reset(list) {
-      layers = list.map((l) => ({ name: l.name, color: l.color, visible: l.visible, locked: l.locked }))
+      layers = list.map(stored)
       for (let i = 0; i < layers.length; i++) emit(listeners, i)
     },
   }

@@ -273,6 +273,28 @@ describe('readDxf', () => {
     expect(d.source.text.slice(s.start, s.end)).toBe(lines(tables))
   })
 
+  it('layer names: a valid one is never changed; one a layer cannot have gets a name no layer has, which the warning gives', () => {
+    const line = (layer: string): G => [0, 'LINE', 8, layer, 10, 0, 20, 0, 11, 1, 21, 1]
+    // An xref-dependent layer (70 bit 16) named like a layer of the drawing once its | is replaced.
+    const d = readDxf(file(
+      [...line('PLAN|WALLS'), ...line('PLAN_WALLS')],
+      LAYER_TABLE([2, '0', 70, 0, 62, 7], [2, 'PLAN|WALLS', 70, 48, 62, 1], [2, 'PLAN_WALLS', 70, 0, 62, 2]),
+    ))
+    const L = (name: string): number => d.doc.layers.indexOf(name)
+    expect(d.doc.layers.get(L('PLAN_WALLS'))).toEqual({ name: 'PLAN_WALLS', color: 2, visible: true, locked: false })
+    expect(d.doc.layers.get(L('PLAN_WALLS_'))).toEqual({ name: 'PLAN_WALLS_', color: 1, visible: true, locked: false })
+    expect(all(d).map((e) => e.layer)).toEqual([L('PLAN_WALLS_'), L('PLAN_WALLS')])
+    expect(d.warnings).toEqual(['Layer "PLAN|WALLS" renamed "PLAN_WALLS_": its name has characters layers cannot have.'])
+    // A valid name the table lacks, met only after the table: still its own.
+    const e = readDxf(file([...line('A_B'), ...line('a/b')], LAYER_TABLE([2, 'A|B', 70, 0, 62, 3])))
+    expect(Array.from({ length: e.doc.layers.size }, (_, i) => e.doc.layers.get(i)!.name)).toEqual(['0', 'A_B_', 'A_B', 'a_b__'])
+    expect(all(e).map((x) => e.doc.layers.get(x.layer)!.name)).toEqual(['A_B', 'a_b__'])
+    expect(e.warnings).toEqual([
+      'Layer "A|B" renamed "A_B_": its name has characters layers cannot have.',
+      'Layer "a/b" renamed "a_b__": its name has characters layers cannot have.',
+    ])
+  })
+
   it('colors: 256 is ByLayer, ByBlock (0) shows white, 420 true color wins over 62', () => {
     const line = (...extra: G): G => [0, 'LINE', 8, '0', ...extra, 10, 0, 20, 0, 11, 1, 21, 1]
     const d = readDxf(file([...line(62, 256), ...line(62, 0), ...line(62, 1, 420, 0x00ff80), ...line()]))

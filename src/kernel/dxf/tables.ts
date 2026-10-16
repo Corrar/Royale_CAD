@@ -35,6 +35,7 @@ export interface LayerEntry {
   color: Color
   visible: boolean
   locked: boolean
+  frozen: boolean
   /** Group 70: 1 frozen, 4 locked. */
   flags: number
   /** Group 62: negative when the layer is off. */
@@ -67,5 +68,5 @@ export function layerEntry(pairs: PairList, a: number, b: number): LayerEntry {
   const a62 = Math.abs(aci)
   const color = trueColor !== undefined ? TRUE_COLOR | (trueColor & 0xffffff) : Number.isInteger(a62) && a62 >= 1 && a62 <= 255 ? a62 : 7
   // Off (negative color) and frozen (flag 1) both hide the layer.
-  return { name, color, visible: aci >= 0 && !(flags & 1), locked: (flags & 4) !== 0, flags, aci }
+  return { name, color, visible: aci >= 0 && !(flags & 1), locked: (flags & 4) !== 0, frozen: (flags & 1) !== 0, flags, aci }
 }
