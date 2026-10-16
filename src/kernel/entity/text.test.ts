@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { applyAffine, mirroring, rotation, scaling, translation } from '../geom/vec'
-import { advanceOf } from '../text/font'
+import { advanceOf, DESCENT } from '../text/font'
 import { typeOf } from './registry'
 import { SNAP, type Block, type Entity, type Insert, type MText, type Text } from './types'
 
@@ -105,5 +105,16 @@ describe('text in a block', () => {
     const block: Block = { name: 'T', x: 0, y: 0, entities: [{ ...text({ x: 0, y: 0 }), id: undefined } as never] }
     const ins: Insert = { type: 'insert', id: 3, layer: 0, block, x: 100, y: 0, sx: 2, sy: 3, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }
     expect(glyphs(ins)[0]).toEqual([72, 100, 0, 4, 0, 0, 6])
+  })
+
+  it('is picked by clicking its letters, however the insert scales them', () => {
+    const block: Block = { name: 'T', x: 0, y: 0, entities: [{ ...text({ x: 0, y: 0, value: 'HHHH', height: 1 }), id: undefined } as never] }
+    for (const [sx, sy] of [[2, 2], [2, 1], [1, -3]]) {
+      const ins: Insert = { type: 'insert', id: 3, layer: 0, block, x: 100, y: 0, sx, sy, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }
+      const top = Math.max(sy, -sy * DESCENT)
+      expect(typeOf(ins).distance(ins, { x: 101, y: sy / 2 })).toBe(0)
+      // One unit past the cap line (or, mirrored, past the descent): as far as that from the letters.
+      expect(typeOf(ins).distance(ins, { x: 101, y: top + 1 })).toBeCloseTo(1, 9)
+    }
   })
 })
