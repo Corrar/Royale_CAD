@@ -48,6 +48,11 @@ export interface Document {
    *  increasing order and never reused. */
   entities(): IterableIterator<Entity>
   readonly size: number
+  /**
+   * The first id of the drawing put in place last (replace), 1 before any: no entity has a lower one, nor can undo
+   * bring one back. Arrays kept per id start here, so they do not grow with every drawing opened before.
+   */
+  readonly firstId: number
   /** Runs fn as one undo step with one change event. If fn throws, nothing changes and the error propagates. */
   transact(label: string, fn: (tx: Tx) => void): void
   /** Returns the label of the step undone, or undefined when there is none. */
@@ -205,6 +210,7 @@ export function createDocument(): Document {
   const undoStack: Step[] = []
   const redoStack: Step[] = []
   let nextId = 1
+  let firstId = 1
   let count = 0
   // Original value of every pre-existing id the open transaction touched; null when no transaction is open.
   // Ids from txStart on were created by the transaction, so their original value is known to be absent.
@@ -316,6 +322,9 @@ export function createDocument(): Document {
     get size() {
       return count
     },
+    get firstId() {
+      return firstId
+    },
     transact(label, fn) {
       if (open) throw new Error('transact cannot be nested')
       const touched = new Map<number, Entity | undefined>()
@@ -412,6 +421,7 @@ export function createDocument(): Document {
       const removed = [...items.values()] as Entity[]
       items.clear()
       for (const e of added) items.set(e.id, e)
+      firstId = nextId
       nextId += added.length
       count = added.length
       undoStack.length = 0

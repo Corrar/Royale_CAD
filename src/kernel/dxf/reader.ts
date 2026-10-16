@@ -710,6 +710,10 @@ function records(pairs: PairList, start: number, end: number): { n: number; star
 /** Layer names AutoCAD refuses; the document refuses them too. */
 const INVALID_NAME = /[<>/\\":;?*|,=`]/g
 
+/** \U+XXXX: how a file before AC1021 (and encodeDxf) writes a character its code page lacks. */
+const ESCAPED = /\\[Uu]\+([0-9A-Fa-f]{4})/g
+const unescaped = (name: string): string => name.replace(ESCAPED, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+
 interface Layers {
   /** The layer index for a name the file uses, created with defaults when the table lacks it. */
   of(name: string): number
@@ -750,12 +754,15 @@ function layerTable(pairs: PairList, start: number, end: number, warnings: strin
       const taken = new Set(names.filter((n) => clean(n) === n).map((n) => n.toLowerCase()))
       const renamed: string[] = []
       names.forEach((name, i) => {
-        let to = clean(name)
-        if (to === name) return
+        if (clean(name) === name) return
+        // "\U+0394-COTA" is Δ-COTA, as AutoCAD shows it: the backslash is the file's, not the name's.
+        const read = unescaped(name)
+        let to = clean(read)
+        const valid = to === read
         while (taken.has(to.toLowerCase())) to += '_'
         taken.add(to.toLowerCase())
         list[i] = { ...list[i]!, name: to }
-        renamed.push(`Layer "${name}" renamed "${to}": its name has characters layers cannot have.`)
+        if (to !== read) renamed.push(`Layer "${read}" renamed "${to}": ${valid ? 'another layer has that name' : 'its name has characters layers cannot have'}.`)
       })
       // Ahead of the entities' warnings, as the table comes before them.
       warnings.unshift(...renamed)

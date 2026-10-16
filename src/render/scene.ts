@@ -95,8 +95,11 @@ function drain<T>(g: Generator<void, T>): T {
   }
 }
 
-/** Handles per entity id: one[id] = handle + 1 for a single primitive, -1 when the list is in `multi`, 0 for none. */
-interface Handles { one: Float64Array; multi: Map<number, number[]> }
+/**
+ * Handles per entity id from `base` (the drawing's first id) on: one[id - base] = handle + 1 for a single primitive,
+ * -1 when the list is in `multi`, 0 for none.
+ */
+interface Handles { one: Float64Array; multi: Map<number, number[]>; base: number }
 
 /** Style rows: 0 hidden, 1 highlight, then one per (layer, color) in use. */
 interface Styles { table: Uint32Array; count: number; byKey: Map<number, number>; layer: number[]; color: (Color | undefined)[] }
@@ -189,27 +192,28 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   /** The document changed since the last draws() or build(). */
   let changed = false
 
-  let handles: Handles = { one: new Float64Array(1024), multi: new Map() }
+  let handles: Handles = { one: new Float64Array(1024), multi: new Map(), base: doc.firstId }
 
   function addHandle(hs: Handles, id: number, h: number): void {
-    if (id >= hs.one.length) {
-      const grown = new Float64Array(Math.max(Math.ceil(1.5 * hs.one.length), id + 1))
+    const i = id - hs.base
+    if (i >= hs.one.length) {
+      const grown = new Float64Array(Math.max(Math.ceil(1.5 * hs.one.length), i + 1))
       grown.set(hs.one)
       hs.one = grown
     }
-    const v = hs.one[id]!
-    if (v === 0) hs.one[id] = h + 1
+    const v = hs.one[i]!
+    if (v === 0) hs.one[i] = h + 1
     else if (v > 0) {
       hs.multi.set(id, [v - 1, h])
-      hs.one[id] = -1
+      hs.one[i] = -1
     } else hs.multi.get(id)!.push(h)
   }
 
   function takeHandles(id: number): number[] {
-    const { one, multi } = handles
-    const v = one[id] ?? 0
+    const { one, multi, base } = handles
+    const v = one[id - base] ?? 0
     if (v === 0) return []
-    one[id] = 0
+    one[id - base] = 0
     if (v > 0) return [v - 1]
     const list = multi.get(id)!
     multi.delete(id)
@@ -538,6 +542,8 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       hlDirty = c.added.some(touches) || c.removed.some(touches) || c.changed.some(([, e]) => touches(e))
     }
     if (building) abortBuild()
+    // Another drawing (replace): a generation of its own, with handles from its first id on.
+    if (doc.firstId !== handles.base) needsRebuild = true
     if (needsRebuild) return
     if (c.bulk || c.added.length + c.changed.length > Math.max(BULK_MIN, doc.size / 4)) {
       needsRebuild = true
@@ -708,7 +714,10 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   function* generation(into: Pool[]): Generator<void, Generation> {
     const st = newStyles()
     buildingStyles = st
-    const hs: Handles = { one: new Float64Array(handles.one.length), multi: new Map() }
+    // For another drawing, room for as many ids as it has entities (a file read has them in a row).
+    const base = doc.firstId
+    const room = base === handles.base ? handles.one.length : Math.max(1024, doc.size)
+    const hs: Handles = { one: new Float64Array(room), multi: new Map(), base }
     const packedLive = yield* packAll(doc.entities(), (layer, color) => styleIn(st, layer, color), into, doc.size, hs)
     return { pools: into, handles: hs, styles: st, packedLive }
   }

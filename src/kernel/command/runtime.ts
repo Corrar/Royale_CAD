@@ -112,6 +112,8 @@ export interface FileHost {
   name(): string
   /** Whether the drawing changed since it was opened, saved or begun. */
   dirty(): boolean
+  /** What a file operation under way is doing ("Reading Plant.dxf… 40%"); null when none. No command starts meanwhile. */
+  busy(): string | null
   /** Asks for a file and opens it; saves the current drawing first when told to. */
   open(saveFirst: boolean): void
   /** Begins an empty drawing; saves the current one first when told to. */
@@ -169,6 +171,11 @@ export interface Interpreter {
   /** A click. At a selection prompt or idle it picks, or opens and closes a window. */
   feedPoint(p: Vec2, shift?: boolean): void
   cancel(): void
+  /**
+   * Another drawing is in place (OPEN, NEW): LASTPOINT is 0,0 again and a window begun in the old one goes, as
+   * every drawing starts in AutoCAD.
+   */
+  newDrawing(): void
   onChange(fn: () => void): () => void
 }
 
@@ -415,17 +422,27 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     }
   }
 
+  /**
+   * Whether a command must wait for a file operation under way, as AutoCAD holds the drawing while it opens or
+   * saves one: the drawing read would take the place of the command's (and cannot, inside its undo group).
+   */
+  function waits(echo: string): boolean {
+    const busy = host.files?.busy() ?? null
+    if (busy !== null) refuse(echo, `Wait: ${busy}`)
+    return busy !== null
+  }
+
   function onText(text: string): void {
     const t = parseInput(text)
     const echo = text.trim()
     if (!gen) {
       if (t.kind === 'empty') {
-        if (last) start(last)
+        if (last && !waits(echo)) start(last)
         return
       }
       const name = t.kind === 'word' ? resolveCommand(t.text, names, aliases) : undefined
-      if (name) start(name)
-      else refuse(echo, `Unknown command "${echo.toUpperCase()}".`)
+      if (!name) refuse(echo, `Unknown command "${echo.toUpperCase()}".`)
+      else if (!waits(echo)) start(name)
       return
     }
     const r = request!
@@ -617,6 +634,11 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
         finish()
         selection.clear()
       } else if (!corner) selection.clear()
+      corner = null
+      emit()
+    },
+    newDrawing() {
+      lastPoint = { x: 0, y: 0 }
       corner = null
       emit()
     },

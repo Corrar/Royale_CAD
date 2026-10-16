@@ -116,6 +116,25 @@ function rng(seed: number): () => number {
   }
 }
 
+/** The lengths of the Float64Arrays made while fn runs. */
+function float64Made(fn: () => void): number[] {
+  const made: number[] = []
+  const Real = Float64Array
+  globalThis.Float64Array = new Proxy(Real, {
+    construct(target, args, newTarget) {
+      const a = Reflect.construct(target, args, newTarget) as Float64Array
+      made.push(a.length)
+      return a
+    },
+  })
+  try {
+    fn()
+  } finally {
+    globalThis.Float64Array = Real
+  }
+  return made
+}
+
 function setup(doc: Document = createDocument(), sliceFrom = Infinity) {
   const f = fakeBackend()
   const scene = createScene(doc, f.backend, { ...OPTS, sliceFrom })
@@ -426,6 +445,46 @@ describe('createScene', () => {
     // About 4 s alone (25 rounds checked one by one, 20 000 entities in the last ones): the 5 s default is too close
     // under load.
   }, 30_000)
+
+  it('drawings put in place one after another: the handles per id are as many as the drawing has, and stay right', () => {
+    const { doc, f, scene } = setup()
+    const L0 = [{ name: '0', color: 7, visible: true, locked: false }]
+    const lines = (n: number, dy: number): Draft[] => Array.from({ length: n }, (_, i) => line(i, dy + (i % 50), i + 0.5, dy + (i % 50) + 0.5))
+    const check = (): void => {
+      scene.draws(FAR)
+      const got = [...f.batches.values()].flatMap((b) => decode(b)).filter((i) => i.style !== 0).map((i) => i.v.map((v) => v.toFixed(3)).join(' '))
+      const want = [...doc.entities()].map((e) => (e.type === 'line' ? [e.x0, e.y0, e.x1, e.y1].map((v) => v.toFixed(3)).join(' ') : ''))
+      expect(got.sort()).toEqual(want.sort())
+    }
+    // The same file opened ten times: ids reach 20 000.
+    const reopened = float64Made(() => {
+      for (let k = 0; k < 10; k++) {
+        doc.replace(L0, lines(2000, 0))
+        scene.draws(FAR)
+      }
+    })
+    // The rebuild's columns take 4 values a line; a handle for every id given would take 10 a line of the drawing.
+    expect(Math.max(...reopened)).toBeLessThan(8 * 2000)
+    check()
+    // Then edits, an erase undone, a small drawing, a file in slices: still in sync.
+    doc.transact('more', (tx) => {
+      for (const d of lines(5, 0.25)) tx.add(d)
+    })
+    check()
+    doc.transact('erase all', (tx) => {
+      for (const e of [...doc.entities()]) tx.remove(e.id)
+    })
+    check()
+    doc.undo()
+    check()
+    doc.replace(L0, lines(3, 100))
+    check()
+    doc.transact('erase one', (tx) => tx.remove([...doc.entities()][1]!.id))
+    check()
+    doc.replace(L0, [])
+    for (let k = 0; k < 4; k++) doc.append(lines(500, 10 * k))
+    check()
+  })
 
   it('re-emits primitives too big for f32 clipped to the view, in f64', () => {
     const { doc, f, scene } = setup()

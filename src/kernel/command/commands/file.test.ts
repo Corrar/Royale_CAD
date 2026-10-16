@@ -7,6 +7,7 @@ function fakeFiles(dirty: boolean) {
   const files: FileHost = {
     name: () => 'Plant.dxf',
     dirty: () => dirty,
+    busy: () => null,
     open: (save) => void calls.push(`open save=${save}`),
     create: (save) => void calls.push(`new save=${save}`),
     save: () => void calls.push('save'),
@@ -45,6 +46,27 @@ describe('file commands', () => {
     t.run('SAVEAS⏎')
     expect(calls).toEqual(['save', 'save', 'saveAs'])
     expect(t.doc.undo()).toBe('LINE')
+  })
+
+  it('while a file operation is under way no command starts, typed or repeated by Enter', () => {
+    const { files, calls } = fakeFiles(false)
+    let busy: string | null = null
+    const t = commandBench(undefined, { files: { ...files, busy: () => busy } })
+    t.run('QSAVE⏎')
+    busy = 'Saving Plant.dxf…'
+    t.run('L⏎')
+    t.run('⏎')
+    t.run('XYZ⏎')
+    expect(t.interp.command).toBeNull()
+    expect(t.interp.history.slice(1)).toEqual([
+      'Command: L', 'Wait: Saving Plant.dxf…',
+      'Command:', 'Wait: Saving Plant.dxf…',
+      'Command: XYZ', 'Unknown command "XYZ".',
+    ])
+    expect(calls).toEqual(['save'])
+    busy = null
+    t.run('L⏎')
+    expect(t.interp.command).toBe('LINE')
   })
 
   it('without a file host they say so', () => {

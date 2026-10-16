@@ -398,6 +398,21 @@ describe('writeDxf', () => {
     expect(writeDxf(back.doc, back.source, { currentLayer: 'ROADS_MAIN' })).toBe(out)
   })
 
+  it('a layer named with \\U+XXXX is saved under that name: as read when unedited, and its entities stay on it', () => {
+    const LAYERS: G[] = [[2, '0', 70, 0, 62, 7, 6, 'CONTINUOUS'], [2, '\\U+0394-COTA', 70, 0, 62, 1, 6, 'CONTINUOUS']]
+    const text = r12(LAYERS, [0, 'LINE', 5, '20', 8, '\\U+0394-COTA', 10, 0, 20, 3, 30, 0, 11, 10, 21, 3, 31, 0], [9, '$CLAYER', 8, '\\U+0394-COTA'])
+    const d = readDxf(text)
+    expect(layerNames(d)).toEqual(['0', 'Δ-COTA'])
+    // Unedited, with it current: the file as read.
+    expect(writeDxf(d.doc, d.source, { currentLayer: 'Δ-COTA' })).toBe(text)
+    const [moved] = [...d.doc.entities()] as [Line]
+    d.doc.transact('edit', (tx) => tx.replace({ ...moved, y0: 6, y1: 6 }))
+    const out = writeDxf(d.doc, d.source, { currentLayer: 'Δ-COTA' })
+    expect(out).toContain(lines([0, 'LINE', 5, '20', 8, '\\U+0394-COTA']))
+    expect(out.split(lines([0, 'LAYER']))).toHaveLength(3) // no layer added
+    expect(layerNames(readDxf(out))).toEqual(['0', 'Δ-COTA'])
+  })
+
   it('layer state: off and frozen stays off when its color changes; -LAYER Freeze is saved frozen, not off', () => {
     const text = r12([[2, '0', 70, 0, 62, 7, 6, 'CONTINUOUS'], [2, 'OFFFROZEN', 70, 1, 62, -6, 6, 'CONTINUOUS'], [2, 'WALLS', 70, 0, 62, 3, 6, 'CONTINUOUS']], [])
     const t = commandBench()

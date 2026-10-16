@@ -37,6 +37,25 @@ const brute = (doc: Document, b: BBox): number[] =>
 
 const sorted = (xs: number[]): number[] => [...xs].sort((p, q) => p - q)
 
+/** The lengths of the Float64Arrays made while fn runs. */
+function float64Made(fn: () => void): number[] {
+  const made: number[] = []
+  const Real = Float64Array
+  globalThis.Float64Array = new Proxy(Real, {
+    construct(target, args, newTarget) {
+      const a = Reflect.construct(target, args, newTarget) as Float64Array
+      made.push(a.length)
+      return a
+    },
+  })
+  try {
+    fn()
+  } finally {
+    globalThis.Float64Array = Real
+  }
+  return made
+}
+
 describe('createSpatialIndex', () => {
   it('leaves out entities without geometry, even from an infinite query', () => {
     const doc = createDocument()
@@ -259,6 +278,44 @@ describe('createSpatialIndex', () => {
       }
       for (const b of boxes) expect(sorted(index.query(b))).toEqual(brute(doc, b))
     }
+  })
+
+  it('drawings put in place one after another: the per-id arrays are as big as the drawing, not as every id given', () => {
+    const L0 = [{ name: '0', color: 7, visible: true, locked: false }]
+    const lines = (n: number, dy: number): Draft[] =>
+      Array.from({ length: n }, (_, i) => ({ type: 'line', layer: 0, x0: i, y0: dy + (i % 50), x1: i + 0.5, y1: dy + (i % 50) + 0.5 }))
+    const all = { minX: -1e9, minY: -1e9, maxX: 1e9, maxY: 1e9 }
+    const doc = createDocument()
+    const index = createSpatialIndex(doc)
+    const check = (b: BBox): void => expect(sorted(index.query(b))).toEqual(brute(doc, b))
+    // The same file opened ten times: ids reach 20 000.
+    const reopened = float64Made(() => {
+      for (let k = 0; k < 10; k++) {
+        doc.replace(L0, lines(2000, 0))
+        index.query(all)
+      }
+    })
+    // 4 bbox values an entity and room to grow; every id given would take 40 an entity of the drawing.
+    expect(Math.max(...reopened)).toBeLessThan(8 * 2000)
+    check(all)
+    check({ minX: 10, minY: 10, maxX: 20, maxY: 20 })
+    // Then edits, an erase undone, a small drawing (no cold build), a file in slices: still exact.
+    doc.transact('more', (tx) => {
+      for (const d of lines(5, 0.25)) tx.add(d)
+    })
+    check(all)
+    doc.transact('erase all', (tx) => {
+      for (const e of [...doc.entities()]) tx.remove(e.id)
+    })
+    check(all)
+    doc.undo()
+    check(all)
+    doc.replace(L0, lines(3, 100))
+    check(all)
+    doc.replace(L0, [])
+    for (let k = 0; k < 4; k++) doc.append(lines(500, 10 * k))
+    check(all)
+    check({ minX: 10, minY: 10, maxX: 20, maxY: 20 })
   })
 
   it('handles the empty document and a document emptied after a build', () => {

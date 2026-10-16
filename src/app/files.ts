@@ -136,18 +136,24 @@ export function createFiles(o: FilesOptions): Files {
   let encoding = DEFAULT_ENCODING
   /** Changes made now put another drawing in place: they are not edits. */
   let quiet = false
+  /** Edits so far: a save that took the drawing before the last one did not write it. */
+  let edits = 0
 
   const setDirty = (dirty: boolean): void => {
     if (state.get().dirty === dirty) return
     patch({ dirty })
     api.setDirty(dirty)
   }
+  const edited = (): void => {
+    edits++
+    setDirty(true)
+  }
   // The slices of a file being read (bulk) are not edits either; what is drawn meanwhile is.
   const offDoc = doc.onChange((c) => {
-    if (!quiet && !c.bulk) setDirty(true)
+    if (!quiet && !c.bulk) edited()
   })
   const offLayers = doc.layers.onChange(() => {
-    if (!quiet) setDirty(true)
+    if (!quiet) edited()
   })
   const quietly = <T>(fn: () => T): T => {
     quiet = true
@@ -177,10 +183,12 @@ export function createFiles(o: FilesOptions): Files {
     o.replaced(source?.header.get('$CLAYER') ?? null)
   }
 
+  /** Whether the file now holds the drawing: false when not saved, or when it changed while being written. */
   async function save(asNew: boolean): Promise<boolean> {
     const name = state.get().name
     patch({ busy: `Saving ${name}…` })
     const bytes = encodeDxf(writeDxf(doc, source ?? undefined, { currentLayer: o.currentLayer() }), encoding)
+    const taken = edits
     const r = await (asNew ? api.saveAs(bytes, name) : api.save(bytes, name))
     if (r === null) {
       o.print('Save cancelled.')
@@ -191,12 +199,16 @@ export function createFiles(o: FilesOptions): Files {
       return false
     }
     patch({ name: r.name })
-    setDirty(false)
-    o.print(`Saved ${r.name}.`)
-    return true
+    // The UI stays live while the main process writes: what was drawn meanwhile is not in the file, and keeps the
+    // drawing dirty (closing still asks; what was to follow the save does not go on).
+    const whole = edits === taken
+    setDirty(!whole)
+    o.print(whole ? `Saved ${r.name}.` : `Saved ${r.name}, without the changes made while it was being written.`)
+    return whole
   }
 
-  async function load(f: Opened): Promise<void> {
+  /** Reads f in place of the drawing as it was at `asked` edits (when the user chose to leave it). */
+  async function load(f: Opened, asked: number): Promise<void> {
     patch({ busy: `Reading ${f.name}…` })
     let result: ParseResult
     try {
@@ -212,6 +224,11 @@ export function createFiles(o: FilesOptions): Files {
       result = await o.parse(bytes, (done) => patch({ busy: `Reading ${f.name}… ${40 + Math.round(done * 50)}%` }))
     } catch (error) {
       o.print(`Could not open ${f.name}: ${messageOf(error)}`)
+      return
+    }
+    // A change made during the read (the layer panel stays live) was not in what the user chose to leave.
+    if (edits !== asked) {
+      o.print(`${f.name} was not opened: the drawing changed while it was being read.`)
       return
     }
     let warnings: readonly string[] = []
@@ -282,12 +299,14 @@ export function createFiles(o: FilesOptions): Files {
     state,
     name: () => state.get().name,
     dirty: () => state.get().dirty,
+    busy: () => state.get().busy,
     open(saveFirst) {
       void run(async () => {
+        const asked = edits
         if (saveFirst && !(await save(false))) return
         performance.mark('royale:open')
         const f = await api.open()
-        if (f) await load(f)
+        if (f) await load(f, asked)
       })
     },
     create(saveFirst) {
@@ -304,9 +323,10 @@ export function createFiles(o: FilesOptions): Files {
     },
     openInitial: () =>
       run(async () => {
+        const asked = edits
         performance.mark('royale:open')
         const f = await api.initial()
-        if (f) await load(f)
+        if (f) await load(f, asked)
       }),
     dispose() {
       offDoc()

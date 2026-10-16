@@ -103,6 +103,18 @@ describe('createInterpreter', () => {
     expect(t.interp.lastPoint).toEqual({ x: 3, y: 8 })
   })
 
+  it('a new drawing starts with LASTPOINT at 0,0 and no window begun', () => {
+    const t = commandBench()
+    t.run('L⏎500,500⏎600,600⏎⏎')
+    t.click(-50, -50)
+    t.doc.replace([{ name: '0', color: 7, visible: true, locked: false }], [])
+    t.interp.newDrawing()
+    expect(t.interp.lastPoint).toEqual({ x: 0, y: 0 })
+    expect(t.interp.corner).toBeNull()
+    t.run('L⏎@10,0⏎@0,10⏎⏎')
+    expect(t.lines()).toEqual([[10, 0, 10, 10]])
+  })
+
   it('a picked point answers a distance request with its distance from the base', () => {
     const t = commandBench()
     t.run('C⏎0,0⏎')

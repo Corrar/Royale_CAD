@@ -120,10 +120,10 @@ function copyBox(from: Float64Array, i: number, to: Float64Array, j: number): vo
 }
 
 /**
- * Full build: sorts every item, yielding every BUILD_STEP items. `cache` holds 4 bbox values per id and must not
- * change until the end. Rare (loads, big edits): its scratch is not kept.
+ * Full build: sorts every item, yielding every BUILD_STEP items. `cache` holds 4 bbox values per id from `base` on
+ * and must not change until the end. Rare (loads, big edits): its scratch is not kept.
  */
-function* coldBuild(ids: Float64Array, cache: Float64Array, spare: Tree | null): Generator<void, Tree> {
+function* coldBuild(ids: Float64Array, cache: Float64Array, base: number, spare: Tree | null): Generator<void, Tree> {
   const n = ids.length
   // Doubled bbox centres and their keys.
   const cx = new Float64Array(n)
@@ -131,7 +131,7 @@ function* coldBuild(ids: Float64Array, cache: Float64Array, spare: Tree | null):
   const keys = new Uint32Array(n)
   for (let i = 0; i < n; i++) {
     if (i % BUILD_STEP === BUILD_STEP - 1) yield
-    const o = 4 * ids[i]!
+    const o = 4 * (ids[i]! - base)
     cx[i] = cache[o]! + cache[o + 2]!
     cy[i] = cache[o + 1]! + cache[o + 3]!
   }
@@ -151,7 +151,7 @@ function* coldBuild(ids: Float64Array, cache: Float64Array, spare: Tree | null):
     const id = ids[j]!
     t.ids[i] = id
     t.keys[i] = keys[j]!
-    copyBox(cache, id, t.boxes, i)
+    copyBox(cache, id - base, t.boxes, i)
   }
   yield
   packLevels(t)
@@ -163,12 +163,12 @@ function* coldBuild(ids: Float64Array, cache: Float64Array, spare: Tree | null):
  * extra falls outside the old frame: its key would not be comparable.
  */
 function mergeBuild(
-  old: Tree, spare: Tree | null, extra: readonly number[], isStale: (id: number) => boolean, cache: Float64Array, n: number,
+  old: Tree, spare: Tree | null, extra: readonly number[], isStale: (id: number) => boolean, cache: Float64Array, base: number, n: number,
 ): Tree | null {
   const m = extra.length
   const ek = new Uint32Array(m)
   for (let i = 0; i < m; i++) {
-    const o = 4 * extra[i]!
+    const o = 4 * (extra[i]! - base)
     const k = hilbertKey(old.frame, cache[o]! + cache[o + 2]!, cache[o + 1]! + cache[o + 3]!)
     if (k < 0) return null
     ek[i] = k
@@ -193,7 +193,7 @@ function mergeBuild(
       const id = extra[eo[j]!]!
       t.ids[w] = id
       t.keys[w] = ek[eo[j]!]!
-      copyBox(cache, id, t.boxes, w)
+      copyBox(cache, id - base, t.boxes, w)
       j++
     }
     w++
@@ -229,14 +229,16 @@ function searchTree(t: Tree, b: BBox, isStale: (id: number) => boolean, out: num
 
 /**
  * Packed Hilbert R-tree rebuilt on demand. Each id's bbox is cached in a dense array (ids are small increasing
- * integers), so a rebuild never walks the document. Edits since the build form a dirty list scanned by every
- * query: `extra` holds the added and changed ids, stale ids mask their entries in the tree. A rebuild after edits
- * merges the sorted extras into the old leaf order instead of sorting everything again. A big tree that must be
- * sorted again goes in steps (build); until it is whole, queries scan the cache.
+ * integers from the drawing's first id on), so a rebuild never walks the document. Edits since the build form a
+ * dirty list scanned by every query: `extra` holds the added and changed ids, stale ids mask their entries in the
+ * tree. A rebuild after edits merges the sorted extras into the old leaf order instead of sorting everything again.
+ * A big tree that must be sorted again goes in steps (build); until it is whole, queries scan the cache.
  */
 export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}): SpatialIndex {
+  // Per id from `base` on: 4 bbox values, and LIVE | STALE.
+  let base = doc.firstId
   let cache = new Float64Array(4 * 1024)
-  let flags = new Uint8Array(1024) // LIVE | STALE per id
+  let flags = new Uint8Array(1024)
   const LIVE = 1
   const STALE = 2
   let liveCount = 0
@@ -253,14 +255,15 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
   let changed = false
   const big = (): boolean => liveCount >= (opts.sliceFrom ?? SLICE_FROM)
 
-  const isStale = (id: number): boolean => (flags[id]! & STALE) !== 0
+  const isStale = (id: number): boolean => (flags[id - base]! & STALE) !== 0
 
   /** Caches e's bbox; false, leaving e out, when e has no geometry (an opaque entity). */
   function put(e: Entity): boolean {
     const b = typeOf(e).bbox(e)
     if (bboxEmpty(b)) return false
-    if (e.id >= flags.length) {
-      const grown = Math.max(Math.ceil(1.5 * flags.length), e.id + 1)
+    const s = e.id - base
+    if (s >= flags.length) {
+      const grown = Math.max(Math.ceil(1.5 * flags.length), s + 1)
       const c = new Float64Array(4 * grown)
       c.set(cache)
       cache = c
@@ -268,19 +271,19 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
       f.set(flags)
       flags = f
     }
-    const o = 4 * e.id
+    const o = 4 * s
     cache[o] = b.minX
     cache[o + 1] = b.minY
     cache[o + 2] = b.maxX
     cache[o + 3] = b.maxY
-    if (!(flags[e.id]! & LIVE)) liveCount++
-    flags[e.id]! |= LIVE
+    if (!(flags[s]! & LIVE)) liveCount++
+    flags[s]! |= LIVE
     return true
   }
 
   function markStale(id: number): void {
     if (isStale(id)) return
-    flags[id]! |= STALE
+    flags[id - base]! |= STALE
     staleIds.push(id)
   }
 
@@ -292,7 +295,7 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
   /** Drops what tracks edits since the build: the tree is to be sorted again. */
   function unbuild(): void {
     built = false
-    for (const id of staleIds) flags[id]! &= ~STALE
+    for (const id of staleIds) flags[id - base]! &= ~STALE
     staleIds.length = 0
     extra.clear()
   }
@@ -300,15 +303,26 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
   const off = doc.onChange((c) => {
     changed = true
     pending = null // it read the cache as it was
+    if (doc.firstId !== base) {
+      // Another drawing (replace): what was indexed went with this change, and no id below firstId comes back. The
+      // per-id arrays begin again at its first id, instead of growing with every drawing opened before.
+      unbuild()
+      spare = tree ?? spare
+      tree = null
+      base = doc.firstId
+      cache = new Float64Array(4 * 1024)
+      flags = new Uint8Array(1024)
+      liveCount = 0
+    }
     // A change that rivals the tree (a load, a mass erase) goes straight to a cold build: tracking it entity by
     // entity would cost more than the build, and a merge would gain nothing over a full sort.
     const dirty = staleIds.length + extra.size + c.added.length + c.changed.length + c.removed.length
     const bulk = c.bulk === true || !built || dirty > Math.max(limit(), (tree?.n ?? 0) / 4)
     if (bulk) unbuild()
     for (const e of c.removed) {
-      if (!(flags[e.id]! & LIVE)) continue // never indexed
+      if (e.id < base || !(flags[e.id - base]! & LIVE)) continue // never indexed, or the drawing before
       liveCount--
-      flags[e.id]! &= ~LIVE
+      flags[e.id - base]! &= ~LIVE
       if (bulk) continue
       markStale(e.id)
       extra.delete(e.id)
@@ -325,8 +339,8 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
   function startCold(): Generator<void, Tree> {
     const ids = new Float64Array(liveCount)
     let k = 0
-    for (let id = 1; id < flags.length; id++) if (flags[id]! & LIVE) ids[k++] = id
-    return coldBuild(ids, cache, spare ?? tree)
+    for (let s = 0; s < flags.length; s++) if (flags[s]! & LIVE) ids[k++] = base + s
+    return coldBuild(ids, cache, base, spare ?? tree)
   }
 
   /**
@@ -336,7 +350,7 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
   function rebuild(): void {
     let next: Tree | null = null
     if (liveCount > 0) {
-      next = tree && built ? mergeBuild(tree, spare, [...extra], isStale, cache, liveCount) : null
+      next = tree && built ? mergeBuild(tree, spare, [...extra], isStale, cache, base, liveCount) : null
       if (!next) {
         if (big()) return unbuild()
         next = drain(startCold())
@@ -353,7 +367,7 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
     tree = next
     if (prev && prev.boxes !== next?.boxes) spare = prev
     else if (spare && spare.boxes === next?.boxes) spare = null
-    for (const id of staleIds) flags[id]! &= ~STALE
+    for (const id of staleIds) flags[id - base]! &= ~STALE
     staleIds.length = 0
     extra.clear()
     built = true
@@ -362,10 +376,10 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
 
   /** Every live id whose cached bbox meets b: what a query answers while a big tree is not built. */
   function scan(b: BBox, out: number[]): void {
-    for (let id = 1; id < flags.length; id++) {
-      if (!(flags[id]! & LIVE)) continue
-      const o = 4 * id
-      if (cache[o]! <= b.maxX && b.minX <= cache[o + 2]! && cache[o + 1]! <= b.maxY && b.minY <= cache[o + 3]!) out.push(id)
+    for (let s = 0; s < flags.length; s++) {
+      if (!(flags[s]! & LIVE)) continue
+      const o = 4 * s
+      if (cache[o]! <= b.maxX && b.minX <= cache[o + 2]! && cache[o + 1]! <= b.maxY && b.minY <= cache[o + 3]!) out.push(base + s)
     }
   }
 
@@ -380,7 +394,7 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
       }
       if (tree) searchTree(tree, b, isStale, out)
       for (const id of extra) {
-        const o = 4 * id
+        const o = 4 * (id - base)
         if (cache[o]! <= b.maxX && b.minX <= cache[o + 2]! && cache[o + 1]! <= b.maxY && b.minY <= cache[o + 3]!) out.push(id)
       }
       return out

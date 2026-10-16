@@ -428,6 +428,24 @@ describe('readDxf', () => {
     ])
   })
 
+  it('layer names: \\U+XXXX, as a file before AC1021 writes a character its code page lacks, is that character', () => {
+    const line = (layer: string): G => [0, 'LINE', 8, layer, 10, 0, 20, 0, 11, 1, 21, 1]
+    const d = readDxf(file(line('\\U+0394-COTA'), LAYER_TABLE([2, '0', 70, 0, 62, 7], [2, '\\U+0394-COTA', 70, 0, 62, 1])))
+    expect(d.doc.layers.get(1)).toEqual({ name: 'Δ-COTA', color: 1, visible: true, locked: false })
+    expect(all(d).map((e) => e.layer)).toEqual([1])
+    expect(d.warnings).toEqual([])
+    expect(d.source.layerNames).toEqual(['0', '\\U+0394-COTA'])
+    // The drawing has one Δ-COTA: another is refused, not written twice.
+    expect(() => d.doc.layers.add({ name: 'δ-cota', color: 2, visible: true, locked: false })).toThrow('already exists')
+    // Taken by a layer spelled out (a UTF-8 file, a code page with Δ), or still not a layer name: renamed as any other.
+    const e = readDxf(file([...line('\\U+0394-COTA'), ...line('Δ-COTA'), ...line('\\U+0394/X')]))
+    expect(Array.from({ length: e.doc.layers.size }, (_, i) => e.doc.layers.get(i)!.name)).toEqual(['0', 'Δ-COTA_', 'Δ-COTA', 'Δ_X'])
+    expect(e.warnings).toEqual([
+      'Layer "Δ-COTA" renamed "Δ-COTA_": another layer has that name.',
+      'Layer "Δ/X" renamed "Δ_X": its name has characters layers cannot have.',
+    ])
+  })
+
   it('colors: 256 is ByLayer, ByBlock (0) is kept in model space too (it shows white), 420 true color wins over 62', () => {
     const line = (...extra: G): G => [0, 'LINE', 8, '0', ...extra, 10, 0, 20, 0, 11, 1, 21, 1]
     const d = readDxf(file([...line(62, 256), ...line(62, 0), ...line(62, 1, 420, 0x00ff80), ...line()]))
