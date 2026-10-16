@@ -160,34 +160,42 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
 
 ## M3 — Comandos
 
-- [ ] **T15 · Parser de entrada**
+- [x] **T15 · Parser de entrada**
   - Arquivos: `src/kernel/command/parser.ts`, `parser.test.ts`
   - Produz: `parseInput(text): Token`; `Token = point{mode:'abs'|'rel', x, y} | number{value} | word{text} | empty | invalid`.
   - Testa (tabela, ≥ 20 casos): `10,20` · `@5,0` · `@10<45` · `10<90` · `5` · `-2.5` · vazio · `c` · ` 1.5 , 2 ` · `1,,2` inválido · `@` sozinho inválido.
+  - Feito: 36 casos. Ângulos múltiplos de 90° dão coordenadas exatas (`@10<90` → `0,10`). Forma de número nunca vira palavra (`1e999` é inválido); palavra precisa de uma letra (`3P`, `-LAYER`).
 
-- [ ] **T16 · Runtime de comandos**
+- [x] **T16 · Runtime de comandos**
   - Arquivos: `src/kernel/command/runtime.ts`, `aliases.ts`, `runtime.test.ts`
   - Produz: `Request`, `Input`, `Command = (ctx) => Generator<Request, void, Input>`; `createInterpreter(doc, selection)` com `feedText(s)`, `feedPoint(p)`, `cancel()`, `request`, `onChange`; `runScript(interp, text)` para testes.
   - Testa: alias resolve; Enter vazio repete o último; Esc encerra sem transação pendente; palavra-chave por prefixo; entrada inválida mantém o pedido.
+  - Feito: pedidos `point` (base → distância direta; `allowEmpty`; `acceptNumber` para o ZOOM; `preview`), `number` (ponto vira distância da base; `default`; `positive`), `keyword` e `selection`. Opção casa exata, depois por prefixo único. `@` parte do LASTPOINT. Histórico ecoa prompt + resposta como o AutoCAD. Helpers `getPoint`, `getNumber`, `getSelection`; `commandBench()` em `testing.ts` para os testes.
+  - Document ganhou grupos de undo (`beginGroup`/`endGroup`): o interpretador abre um por comando (exceto os marcados `noUndoGroup`: U, UNDO, REDO, ZOOM, PAN). Cada trecho do LINE é uma transação e aparece na hora; no fim, o comando vira um passo só. Dentro do grupo o undo não passa do início do comando.
 
-- [ ] **T17 · LINE e CIRCLE**
+- [x] **T17 · LINE e CIRCLE**
   - Arquivos: `src/kernel/command/commands/{line,circle}.ts` + testes
   - Testa por script: `L⏎0,0⏎10,0⏎@0,5⏎C⏎` cria triângulo fechado; `U` dentro do LINE desfaz o último trecho; `C⏎0,0⏎5⏎` e `C⏎0,0⏎D⏎10⏎` dão raio 5; cada comando = 1 passo de undo.
 
-- [ ] **T18 · ERASE, UNDO, REDO, ZOOM, PAN**
-  - Arquivos: `src/kernel/command/commands/{erase,undo,zoom}.ts` + testes
+- [x] **T18 · ERASE, UNDO, REDO, ZOOM, PAN**
+  - Arquivos: `src/kernel/command/commands/{erase,undo,view}.ts` + testes
   - Produz: pedido `selection` (clique, janela, crossing, Shift remove, pré-seleção).
   - Testa: `E` com pré-seleção apaga direto; `E⏎` + cliques + `⏎` apaga; `U` restaura; `Z⏎E⏎` enquadra a extensão.
+  - Feito: seleção no prompt e ociosa pelo próprio interpretador (clique, janela/crossing pela ordem dos cantos, Shift tira, `ALL`). A seleção global é o conjunto de trabalho, realçado enquanto se escolhe. ERASE pula layers travados. ZOOM: janela, fator (`n` ou `nX`, relativo à vista), `All`/`Extents` (sem limites, os dois enquadram o desenho). PAN pela linha de comando: deslocamento por dois pontos ou um vetor.
+  - T16–T18 foram num commit só: os testes do runtime usam os comandos reais.
+  - Fica para depois: ZOOM Previous (precisa de histórico de vistas, inclusive da roda).
 
-- [ ] **T19 · InputRouter e CommandLine**
+- [x] **T19 · InputRouter e CommandLine**
   - Arquivos: `src/app/input.ts`, `src/app/stores.ts`, `src/ui/CommandLine.tsx`
   - Produz: teclado global alimenta o buffer sem foco; Espaço = Enter; Esc; clique direito = Enter; histórico; atalhos `Ctrl+Z/Y`, `Del`.
   - Verifica: desenhar linha só com teclado; desenhar com `L⏎` + cliques; digitar dentro de campo de texto da UI não vaza para o comando.
+  - Feito: `attachKeyboard` (Ctrl+Z/Ctrl+Y viram U/REDO só com o comando ocioso; Del vira ERASE com seleção; F2 expande o histórico); botão direito = Enter, sem menu de contexto. Pílula flutuante com 3 linhas de histórico (30 com F2 ou chevron). Verificado por `--play` digitando `L⏎100,100⏎300,100⏎300,250⏎C⏎`. A demo saiu: o app abre vazio numa folha A3.
 
-- [ ] **T20 · Overlay**
+- [x] **T20 · Overlay**
   - Arquivos: `src/render/overlay.ts`
   - Produz: mira com pickbox, elástico de `Request.preview`, retângulo de janela (sólido) e crossing (tracejado).
   - Verifica: elástico acompanha o cursor sem atraso perceptível em relação ao GL.
+  - Feito: Canvas 2D por cima, redesenhado no mesmo frame do GL (a cena GL só quando muda). Mira de 40 px por braço, cursor do sistema escondido no viewport; pickbox quando o clique seleciona; elástico na cor de destaque; janela sólida, crossing tracejado, com preenchimentos novos nos tokens (`--window-fill`, `--crossing-fill`).
 
 ## M4 — Precisão
 
