@@ -105,6 +105,32 @@ describe('TEXT', () => {
     expect(textType.bbox(scale!).minX).toBeGreaterThan(textType.bbox(title!).maxX)
   })
 
+  it('Enter at the first prompt goes on below the last line, set as it was, even after another command', () => {
+    const t = commandBench()
+    t.run('TEXT⏎⏎')
+    // With no line before, Enter is refused as ever.
+    expect(t.interp.prompt).toBe('Specify start point of text or [Justify]:')
+    t.interp.cancel()
+    t.run('TEXT⏎J⏎MC⏎10,20⏎2⏎90⏎First⏎⏎LINE⏎0,0⏎1,1⏎⏎TEXT⏎⏎')
+    expect(t.interp.prompt).toBe('Enter text:')
+    t.run('Second⏎Third⏎⏎')
+    const [, second, third] = texts(t)
+    expect(second).toMatchObject({ value: 'Second', height: 2, halign: 1, valign: 2 })
+    expect(round(second!.rotation)).toBe(round(Math.PI / 2))
+    // Turned 90°, down the page is +x, 5/3 of the height a line.
+    expect([round(second!.x), round(second!.y)]).toEqual([round(10 + 10 / 3), 20])
+    expect([round(third!.x), round(third!.y)]).toEqual([round(10 + 20 / 3), 20])
+  })
+
+  it('Enter goes on below an aligned line between points moved down with it', () => {
+    const t = commandBench()
+    t.run('TEXT⏎J⏎A⏎0,0⏎30,0⏎Hi⏎⏎TEXT⏎⏎There⏎⏎')
+    const [hi, there] = texts(t)
+    expect(there).toMatchObject({ halign: 3, x: 0, x2: 30 })
+    expect(there!.y2).toBe(there!.y)
+    expect(textType.bbox(there!).maxY).toBeLessThan(textType.bbox(hi!).minY)
+  })
+
   it('refuses a second endpoint on the first', () => {
     const t = commandBench()
     t.run('TEXT⏎J⏎A⏎0,0⏎0,0⏎')

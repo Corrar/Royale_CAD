@@ -1,10 +1,16 @@
 import type { Vec2 } from '../../geom/vec'
 import { decodeText } from '../../text/codes'
 import { widthOf } from '../../text/layout'
-import { formatNumber, getNumber, getPoint, type Command, type Request, type Input } from '../runtime'
+import { formatNumber, getNumber, getPoint, type Command, type CommandContext, type CommandGen, type Request, type Input } from '../runtime'
 
 /** Between baselines of the lines a TEXT types, in heights: MTEXT's spacing 1. */
 const LINE_GAP = 5 / 3
+
+/** The last line a TEXT wrote: Enter at the first prompt goes on below it, as in AutoCAD. */
+const LAST_LINE = 'TEXT_LAST'
+
+/** A line of TEXT as written: its points (Align's and Fit's second one too), height, rotation and justification. */
+interface TextLine { a: Vec2; b: Vec2; height: number; rotation: number; halign: number; valign: number }
 
 const JUSTIFY = ['Left', 'Center', 'Right', 'Align', 'Middle', 'Fit', 'TL', 'TC', 'TR', 'ML', 'MC', 'MR', 'BL', 'BC', 'BR']
 
@@ -30,13 +36,20 @@ const pointName = (name: string): string => (name.endsWith('baseline') ? name : 
 /**
  * TEXT (DTEXT): a line of single-line text per Enter, each below the last, until an empty line. The height
  * (TEXTSIZE) and the rotation asked last are the defaults. Justify places the text by another point of it; Align
- * and Fit run it between two, Align scaling its height to the width.
+ * and Fit run it between two, Align scaling its height to the width. Enter at the first prompt goes on below the
+ * last line written.
  */
 export const text: Command = function* (ctx) {
   const size = (ctx.vars.get('TEXTSIZE') as number | undefined) ?? 2.5
   ctx.message(`Current text style:  "Standard"  Text height:  ${formatNumber(size)}`)
+  const last = ctx.vars.get(LAST_LINE) as TextLine | undefined
   let option = 'Left'
-  let at = yield* getPoint('Specify start point of text', { keywords: ['Justify'], hidden: JUSTIFY })
+  let at = yield* getPoint('Specify start point of text', { keywords: ['Justify'], hidden: JUSTIFY, allowEmpty: last !== undefined })
+  if (at === null) {
+    // Enter: below the last line, set as it was; no height or rotation to ask.
+    if (last) yield* lines(ctx, last, last.height)
+    return
+  }
   if (at === 'Justify') {
     const r = yield { kind: 'keyword', prompt: 'Enter an option', keywords: JUSTIFY }
     if (r.kind !== 'keyword') return
@@ -78,12 +91,20 @@ export const text: Command = function* (ctx) {
     ctx.vars.set('TEXTROTATION', rotation)
   }
   const [halign, valign] = option === 'Align' ? [3, 0] : option === 'Fit' ? [5, 0] : PLACES[option]!
-  const span = Math.hypot(p1.x - p0.x, p1.y - p0.y)
+  yield* lines(ctx, { a: p0, b: p1, height, rotation, halign, valign }, null)
+}
+
+/**
+ * The lines typed, one per Enter until an empty one, set as `at` is: the first at its points, or below them when
+ * `above` is the height of a line there; each next one below the last.
+ */
+function* lines(ctx: CommandContext, at: TextLine, above: number | null): CommandGen {
+  const { height, rotation, halign, valign } = at
+  const span = Math.hypot(at.b.x - at.a.x, at.b.y - at.a.y)
   // Down the page: both points move together.
   const down = (p: Vec2, d: number): Vec2 => ({ x: p.x + Math.sin(rotation) * d, y: p.y - Math.cos(rotation) * d })
   // The points of the line above and its height; none above the first line, nor after a click.
-  let [a, b] = [p0, p1]
-  let above: number | null = null
+  let { a, b } = at
   for (;;) {
     const r: Input = yield { kind: 'text', prompt: 'Enter text', spaces: true, acceptPoint: true } satisfies Request
     if (r.kind === 'point') {
@@ -106,5 +127,6 @@ export const text: Command = function* (ctx) {
       type: 'text', layer: ctx.layer, value, x, y, x2, y2, height: h, rotation, widthFactor: 1, oblique: 0,
       halign, valign, backward: false, upsideDown: false,
     }))
+    ctx.vars.set(LAST_LINE, { a, b, height: h, rotation, halign, valign } satisfies TextLine)
   }
 }
