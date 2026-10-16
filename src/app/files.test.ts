@@ -87,7 +87,12 @@ function benchSetup(parse: Parse = parseHere) {
     saveAs: () => files!.saveAs(),
   }
   const t = commandBench(undefined, { files: host })
-  files = createFiles({ api: fake.api, doc: t.doc, parse, print: (l) => t.interp.print(l), replaced: () => t.selection.clear(), currentLayer: () => '0' })
+  // As the controller does when a drawing is put in place.
+  const replaced = (): void => {
+    t.selection.clear()
+    t.interp.newDrawing()
+  }
+  files = createFiles({ api: fake.api, doc: t.doc, parse, print: (l) => t.interp.print(l), replaced, currentLayer: () => '0' })
   const settle = () => new Promise((r) => setTimeout(r, 0))
   /** The entities of the file saved k-th, read back. */
   const savedSize = (k: number): number => readDxf(decodeDxf(fake.saved[k]!).text).doc.size
@@ -421,6 +426,27 @@ describe('commands while a file operation is under way', () => {
     expect(t.doc.size).toBe(0)
     expect(t.files.state.get()).toEqual({ name: 'Drawing2.dxf', dirty: false, busy: null })
     expect(t.fake.calls.at(-1)).toBe('forget')
+  })
+
+  it('after NEW or OPEN, @ starts from 0,0 in the drawing put in place, not from a point of the one before', async () => {
+    const held = heldParse()
+    const t = benchSetup(held.parse)
+    t.run('L⏎500,500⏎600,600⏎⏎')
+    t.run('NEW⏎N⏎')
+    await t.settle()
+    t.run('L⏎@10,0⏎@0,10⏎⏎')
+    expect(t.lines()).toEqual([[10, 0, 10, 10]])
+    t.fake.answers.opened = { token: 9, name: 'Plant.dxf', size: 0, bytes: latin1(PLANT) }
+    t.run('OPEN⏎N⏎')
+    await t.settle()
+    // A click on nothing while the file is read begins a window, in the drawing that goes.
+    t.click(-50, -50)
+    expect(t.interp.corner).toEqual({ x: -50, y: -50 })
+    held.release()
+    for (let k = 0; k < 10 && t.files.state.get().busy !== null; k++) await t.settle()
+    expect(t.interp.corner).toBeNull()
+    t.run('L⏎@3,4⏎@1,0⏎⏎')
+    expect(t.lines()).toEqual([[0, 0, 10, 0], [3, 4, 4, 4]])
   })
 
   it('a command already under way when a save begins goes on', async () => {

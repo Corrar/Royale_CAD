@@ -171,6 +171,11 @@ export interface Interpreter {
   /** A click. At a selection prompt or idle it picks, or opens and closes a window. */
   feedPoint(p: Vec2, shift?: boolean): void
   cancel(): void
+  /**
+   * Another drawing is in place (OPEN, NEW): LASTPOINT is 0,0 again and a window begun in the old one goes, as
+   * every drawing starts in AutoCAD.
+   */
+  newDrawing(): void
   onChange(fn: () => void): () => void
 }
 
@@ -629,6 +634,11 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
         finish()
         selection.clear()
       } else if (!corner) selection.clear()
+      corner = null
+      emit()
+    },
+    newDrawing() {
+      lastPoint = { x: 0, y: 0 }
       corner = null
       emit()
     },

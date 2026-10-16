@@ -189,6 +189,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
         print: (line) => interp.print(line),
         replaced: (currentLayer, extents) => {
           selection.clear()
+          interp.newDrawing()
           const i = currentLayer === null ? -1 : doc.layers.indexOf(currentLayer)
           interp.layer = i >= 0 ? i : 0
           frame(extents)
