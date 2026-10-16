@@ -37,6 +37,13 @@ describe('tokenize', () => {
     expect(pairs[99]).toEqual({ code: 1, value: '99' })
   })
 
+  it('gives where each pair starts in the text, CRLF and BOM included', () => {
+    const list = tokenizeList('\uFEFF  0\r\nLINE\r\n  8\r\n0\r\n  0\r\nEOF')
+    expect([0, 1, 2, 3].map((i) => list.offset(i))).toEqual([1, 12, 20, 28])
+    expect(list.text.slice(list.offset(1), list.offset(2))).toBe('  8\r\n0\r\n')
+    expect(tokenizeList('').offset(0)).toBe(0)
+  })
+
   it('stops at EOF; a byte order mark and a final newline are not content', () => {
     expect(tokenize('﻿0\nEOF\ntrailing junk')).toEqual([{ code: 0, value: 'EOF' }])
     expect(tokenize('999\nmade by hand')).toEqual([{ code: 999, value: 'made by hand' }])
@@ -76,6 +83,10 @@ describe('sections', () => {
       { name: 'ENTITIES', start: 8, end: 8 },
     ])
     expect(pairs.pair(3)).toEqual({ code: 9, value: '$ACADVER' })
+    // Text spans: pair 1 starts on line 3; the end is past the last line break.
+    const text = pairs.text
+    expect(text.slice(pairs.offset(1), pairs.offset(3))).toBe('0\nSECTION\n2\nHEADER\n')
+    expect(pairs.offset(pairs.length)).toBe(text.length)
     expect(pairs.is(2, 2, 'HEADER')).toBe(true)
     expect(pairs.is(2, 0, 'HEADER')).toBe(false)
   })

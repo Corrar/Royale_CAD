@@ -22,6 +22,9 @@ export const bboxIntersects = (a: BBox, b: BBox): boolean =>
 export const bboxContains = (outer: BBox, inner: BBox): boolean =>
   outer.minX <= inner.minX && inner.maxX <= outer.maxX && outer.minY <= inner.minY && inner.maxY <= outer.maxY
 
+/** The bbox of nothing, as emptyBBox gives: what an entity without geometry has. */
+export const bboxEmpty = (b: BBox): boolean => b.minX === Infinity && b.minY === Infinity && b.maxX === -Infinity && b.maxY === -Infinity
+
 export const bboxFinite = (b: BBox): boolean =>
   Number.isFinite(b.minX) && Number.isFinite(b.minY) && Number.isFinite(b.maxX) && Number.isFinite(b.maxY)
 

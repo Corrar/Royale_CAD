@@ -399,4 +399,28 @@ describe('docExtents', () => {
     })
     expect(docExtents(doc)).toEqual({ minX: 0, minY: -3, maxX: 23, maxY: 5 })
   })
+
+  it('leaves out what has no geometry: opaque entities alone have no extents', () => {
+    const doc = createDocument()
+    doc.transact('t', (tx) => void tx.add({ type: 'opaque', layer: 0, name: 'HATCH', raw: '  0\nHATCH\n' }))
+    expect(docExtents(doc)).toBeNull()
+    doc.transact('t', (tx) => void tx.add(L(0, 0, 1, 1)))
+    expect(docExtents(doc)).toEqual({ minX: 0, minY: 0, maxX: 1, maxY: 1 })
+  })
+})
+
+describe('clearHistory', () => {
+  it('leaves nothing to undo or redo, and is refused inside a group', () => {
+    const doc = createDocument()
+    doc.transact('a', (tx) => void tx.add(L(0, 0, 1, 1)))
+    doc.transact('b', (tx) => void tx.add(L(0, 0, 2, 2)))
+    doc.undo()
+    doc.clearHistory()
+    expect(doc.undo()).toBeUndefined()
+    expect(doc.redo()).toBeUndefined()
+    expect(doc.size).toBe(1)
+    doc.beginGroup('G')
+    expect(() => doc.clearHistory()).toThrow(/inside a transaction or a group/)
+    doc.endGroup()
+  })
 })

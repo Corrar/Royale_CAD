@@ -48,7 +48,26 @@ export interface Polyline extends Base {
   readonly closed: boolean
 }
 
-export type Entity = Line | Circle | Arc | Polyline
+/** A point object (DXF POINT): drawn as a dot, found by NOD. */
+export interface Point extends Base {
+  readonly type: 'point'
+  readonly x: number
+  readonly y: number
+}
+
+/**
+ * What the reader keeps without understanding it (HATCH, DIMENSION, paper space, 3D…): never drawn, indexed nor
+ * picked, and written back exactly as read. Its bbox is empty.
+ */
+export interface Opaque extends Base {
+  readonly type: 'opaque'
+  /** The DXF entity name, as read (HATCH, INSERT…). */
+  readonly name: string
+  /** Its DXF text, from its 0 line through its data and any entities that follow it (VERTEX, ATTRIB, SEQEND). */
+  readonly raw: string
+}
+
+export type Entity = Line | Circle | Arc | Polyline | Point | Opaque
 
 /** Object snap modes, as bits (AutoCAD's OSMODE uses its own values; these are ours). */
 export const SNAP = { END: 1, MID: 2, CEN: 4, INT: 8, QUA: 16, PER: 32, NEA: 64, NOD: 128 } as const

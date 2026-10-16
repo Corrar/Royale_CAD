@@ -1,6 +1,8 @@
 import { arcType } from './arc'
 import { circleType } from './circle'
 import { lineType } from './line'
+import { opaqueType } from './opaque'
+import { pointType } from './point'
 import { polylineType } from './polyline'
 import type { Entity, EntityType } from './types'
 
@@ -21,3 +23,5 @@ register(lineType)
 register(circleType)
 register(arcType)
 register(polylineType)
+register(pointType)
+register(opaqueType)

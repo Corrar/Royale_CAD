@@ -38,6 +38,21 @@ const brute = (doc: Document, b: BBox): number[] =>
 const sorted = (xs: number[]): number[] => [...xs].sort((p, q) => p - q)
 
 describe('createSpatialIndex', () => {
+  it('leaves out entities without geometry, even from an infinite query', () => {
+    const doc = createDocument()
+    doc.transact('load', (tx) => {
+      tx.add({ type: 'opaque', layer: 0, name: 'HATCH', raw: '' })
+      tx.add({ type: 'line', layer: 0, x0: 0, y0: 0, x1: 1, y1: 1 })
+    })
+    const index = createSpatialIndex(doc)
+    const all = { minX: -Infinity, minY: -Infinity, maxX: Infinity, maxY: Infinity }
+    expect(index.query(all)).toEqual([2])
+    doc.transact('more', (tx) => void tx.add({ type: 'opaque', layer: 0, name: 'DIMENSION', raw: '' }))
+    expect(index.query(all)).toEqual([2])
+    doc.transact('erase', (tx) => tx.remove(1))
+    expect(index.query(all)).toEqual([2])
+  })
+
   it('matches brute force on 10 000 random entities, before and after edits without a rebuild', () => {
     const rand = rng(7)
     const doc = createDocument()

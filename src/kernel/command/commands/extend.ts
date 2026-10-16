@@ -56,6 +56,7 @@ const MISSED = 'Object does not intersect an edge.'
 /** e with the end nearer to `at` taken to the nearest boundary, or the reason it cannot be. */
 function extended(ctx: CommandContext, e: Entity, at: Vec2, edges: Set<number> | null): Entity | string {
   const path = pathOf(e)
+  if (!path) return 'Cannot extend this object.'
   if (path.closed) return 'Cannot extend a closed object.'
   const atEnd = path.param(at) >= path.end / 2
   switch (e.type) {
@@ -77,6 +78,9 @@ function extended(ctx: CommandContext, e: Entity, at: Vec2, edges: Set<number> |
     }
     case 'circle':
       return 'Cannot extend a closed object.'
+    case 'point':
+    case 'opaque':
+      return 'Cannot extend this object.'
     case 'polyline': {
       // The end piece, straight along its direction or round its circle; the inner vertices stay.
       const n = e.pts.length >> 1

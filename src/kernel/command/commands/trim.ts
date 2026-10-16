@@ -46,7 +46,7 @@ export function picked(ctx: CommandContext, p: Vec2): Entity | null {
  * e's id. Null when no edge cuts that piece off. A closed object needs two cuts and opens between them.
  */
 function trimmed(e: Entity, at: Vec2, edges: Entity[]): Entity[] | null {
-  const path = pathOf(e)
+  const path = pathOf(e)!
   const cuts: number[] = []
   for (const edge of edges) for (const p of intersect(e, edge)) cuts.push(path.param(p))
   const uc = path.param(at)
@@ -88,6 +88,10 @@ export const trim: Command = function* (ctx) {
     if (typeof r === 'string') continue
     const e = picked(ctx, r)
     if (!e) continue
+    if (!pathOf(e)) {
+      ctx.message('Cannot trim this object.')
+      continue
+    }
     const left = trimmed(e, r, edgesNear(ctx, typeOf(e).bbox(e), edges, e.id))
     if (!left) {
       ctx.message('Object does not intersect a cutting edge.')

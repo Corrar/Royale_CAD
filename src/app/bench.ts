@@ -1,5 +1,6 @@
 import { createDocument, type Draft, type Tx } from '../kernel/document'
 import type { Entity } from '../kernel/entity/types'
+import type { Vec2 } from '../kernel/geom/vec'
 import { pick } from '../kernel/pick'
 import { createSpatialIndex } from '../kernel/spatial'
 import { fit, type ViewState } from '../kernel/view'
@@ -183,6 +184,23 @@ function g2Draft(rand: () => number): Draft {
   return { type: 'polyline', layer: 0, pts, bulges, closed: rand() < 0.5 }
 }
 
+/** Where the pick bench aims at e (for an arc, its circle's 0° point, which may miss it). */
+function onEntity(e: Entity): Vec2 {
+  switch (e.type) {
+    case 'line':
+      return { x: e.x0, y: e.y0 }
+    case 'polyline':
+      return { x: e.pts[0]!, y: e.pts[1]! }
+    case 'circle':
+    case 'arc':
+      return { x: e.cx + e.r, y: e.cy }
+    case 'point':
+      return { x: e.x, y: e.y }
+    case 'opaque':
+      throw new Error('the bench makes no opaque entities')
+  }
+}
+
 function shifted(e: Entity, d: number): Entity {
   switch (e.type) {
     case 'line':
@@ -192,6 +210,10 @@ function shifted(e: Entity, d: number): Entity {
       return { ...e, cx: e.cx + d }
     case 'polyline':
       return { ...e, pts: e.pts.map((v, i) => (i % 2 === 0 ? v + d : v)) }
+    case 'point':
+      return { ...e, x: e.x + d }
+    case 'opaque':
+      return e
   }
 }
 
@@ -236,7 +258,7 @@ export function runBenchG2(canvas: HTMLCanvasElement, n: number): void {
   let hits = 0
   for (let i = 0; i < PICKS; i++) {
     const e = doc.get(ids[Math.floor(rand() * ids.length)]!)!
-    const p = e.type === 'line' ? { x: e.x0, y: e.y0 } : e.type === 'polyline' ? { x: e.pts[0]!, y: e.pts[1]! } : { x: e.cx + e.r, y: e.cy }
+    const p = onEntity(e)
     let id: number | null = null
     picks.push(time(() => (id = pick(doc, index, { x: p.x + tol / 2, y: p.y }, tol))))
     if (id !== null) hits++

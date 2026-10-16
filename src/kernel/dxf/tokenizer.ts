@@ -17,6 +17,12 @@ export class DxfError extends Error {
  */
 export interface PairList {
   readonly length: number
+  /** The text the pairs index into. */
+  readonly text: string
+  /** Every group code, in order: for loops too hot for a call per pair. */
+  readonly codes: Int16Array
+  /** Where pair i begins in the text (its code line); offset(length) is past the last pair's line break. */
+  offset(i: number): number
   code(i: number): number
   /** The value as written: text can begin or end with spaces. */
   value(i: number): string
@@ -34,6 +40,7 @@ const SPACE = (c: number): boolean => c === 32 || c === 9
 export function tokenize(text: string): PairList {
   const n = text.length
   let pos = text.charCodeAt(0) === 0xfeff ? 1 : 0
+  const first = pos
   if (text.startsWith('AutoCAD Binary DXF', pos)) throw new DxfError(1, 'binary DXF is not supported')
   // About 12 characters per pair in real files; grown by half when short.
   let cap = Math.max(16, Math.ceil(n / 12))
@@ -74,6 +81,19 @@ export function tokenize(text: string): PairList {
   }
   const list: PairList = {
     length: count,
+    text,
+    codes: codes.subarray(0, count),
+    offset(i) {
+      if (i >= count) {
+        if (count === 0) return first
+        let e = ends[count - 1]!
+        if (text.charCodeAt(e) === 13) e++
+        if (text.charCodeAt(e) === 10) e++
+        return e
+      }
+      // The code line ends just before the value line; it starts after the line break before it.
+      return Math.max(text.lastIndexOf('\n', starts[i]! - 2) + 1, first)
+    },
     code: (i) => codes[i]!,
     value: (i) => text.slice(starts[i]!, ends[i]!),
     is: (i, code, word) => codes[i] === code && trimmedIs(text, starts[i]!, ends[i]!, word),

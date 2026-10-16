@@ -42,6 +42,9 @@ export function offsetOf(e: Entity, dist: Dist, p: Vec2): Entity | string {
       // shortcut: offsetting a polyline joins the offset pieces at each vertex (extending or rounding them) and
       // drops pieces that vanish; it waits for that join logic.
       return NO_POLYLINES
+    case 'point':
+    case 'opaque':
+      return 'Cannot offset that object.'
   }
 }
 

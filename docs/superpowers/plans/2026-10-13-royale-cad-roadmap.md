@@ -261,10 +261,13 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
   - Testa: CRLF e LF; espaços no código; arquivo truncado gera erro com número da linha.
   - Feito: `tokenize` devolve `PairList` em vez de `Pair[]`: códigos num `Int16Array` e valores como intervalos do texto, cortados só quando pedidos (`value(i)`; `is(i, code, word)` compara sem alocar; `pair(i)` dá o objeto). Com um objeto por par, 111 MB levavam 5,4 s e 1,36 GB de heap; assim, 0,6 s e ~90 MB de índice. `sections` devolve `{ name, start, end }` (intervalo de pares). Para no `0/EOF`; BOM ignorado; DXF binário recusado; `DxfError` com `line` (par i começa na linha 2i + 1).
 
-- [ ] **T31 · Reader**
+- [x] **T31 · Reader**
   - Arquivos: `src/kernel/dxf/reader.ts` + teste; `dxf.read` em `entity/*.ts`; `entity/opaque.ts`; tabela ACI já em `src/kernel/color.ts` (conferir 10–249 aqui)
   - Produz: `readDxf(pairs): Document`; `Opaque { type:'opaque'; raw: Pair[] }`; handles preservados.
   - Testa (fixtures escritas à mão): cada entidade suportada; bulge; extrusão `(0,0,-1)` espelha; `HATCH` vira `Opaque`.
+  - Feito: `readDxf(text)` devolve `{ doc, source, warnings }`: o `Document` não carrega dados do DXF; `source` guarda o texto, a quebra de linha, o header, os trechos de cada seção e, por id lido, a entidade original e o trecho de texto (o writer regrava sem mudança o que não foi editado, e `handleOf(id)` lê o handle de lá: cópias e peças novas não herdam handle). Entidades novas: `Point` (ponto, NOD, desenhado como ponto pelo segmento de comprimento zero) e `Opaque` com `raw: string` (o texto exato, VERTEX/ATTRIB/SEQEND incluídos) em vez de `Pair[]`, pela memória. Entidade sem geometria tem bbox vazia: o documento aceita, o índice, as extensões e a seleção a ignoram (ERASE ALL não apaga o que não se vê). Espaço papel, extrusão inclinada, POLYLINE 3D/malha e número inválido viram `Opaque` com aviso; ByBlock aparece como 7. `Document.clearHistory()`: a carga não é desfazível. Tabela LAYER: cor, desligado/congelado (oculto), travado, true color; layer sem entrada é criado. Conferido com arquivos do ezdxf (R12, R2000, R2018), inclusive a extrusão espelhada.
+  - ACI: duas tabelas circulam. A nossa (fórmula) bate com a do `dxf-parser` em 215 de 255 entradas (as outras diferem em 1 num canal: 152 × 153) e difere da do ezdxf em 197 (níveis 165/127/76/38 contra 204/153/127/76; a do ezdxf tem entradas estranhas, como 129, 139 e 149 iguais). Fica a nossa até conferir com AutoCAD ou ODA (pergunta aberta 3).
+  - Medido (1M linhas, ~110 MB, Node): leitura 4,8 s, dos quais tokenizer ~0,45 s, parse ~1,2 s, carga no documento ~1,3 s e o resto GC. Fica para o G3 (T34).
 
 - [ ] **T32 · Writer**
   - Arquivos: `src/kernel/dxf/{writer,template}.ts` + teste

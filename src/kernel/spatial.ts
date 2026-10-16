@@ -2,7 +2,7 @@ import type { Document } from './document'
 import { typeOf } from './entity/registry'
 import type { Entity } from './entity/types'
 import { hilbertFrame, hilbertKey, radixOrder, type HilbertFrame } from './geom/hilbert'
-import type { BBox } from './geom/vec'
+import { bboxEmpty, type BBox } from './geom/vec'
 
 export interface SpatialIndex {
   /**
@@ -213,7 +213,10 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
 
   const isStale = (id: number): boolean => (flags[id]! & STALE) !== 0
 
-  function put(e: Entity): void {
+  /** Caches e's bbox; false, leaving e out, when e has no geometry (an opaque entity). */
+  function put(e: Entity): boolean {
+    const b = typeOf(e).bbox(e)
+    if (bboxEmpty(b)) return false
     if (e.id >= flags.length) {
       const grown = Math.max(Math.ceil(1.5 * flags.length), e.id + 1)
       const c = new Float64Array(4 * grown)
@@ -223,7 +226,6 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
       f.set(flags)
       flags = f
     }
-    const b = typeOf(e).bbox(e)
     const o = 4 * e.id
     cache[o] = b.minX
     cache[o + 1] = b.minY
@@ -231,6 +233,7 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
     cache[o + 3] = b.maxY
     if (!(flags[e.id]! & LIVE)) liveCount++
     flags[e.id]! |= LIVE
+    return true
   }
 
   function markStale(id: number): void {
@@ -256,22 +259,19 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
       extra.clear()
     }
     for (const e of c.removed) {
-      if (flags[e.id]! & LIVE) liveCount--
+      if (!(flags[e.id]! & LIVE)) continue // never indexed
+      liveCount--
       flags[e.id]! &= ~LIVE
       if (bulk) continue
       markStale(e.id)
       extra.delete(e.id)
     }
     for (const [, e] of c.changed) {
-      put(e)
-      if (bulk) continue
+      if (!put(e) || bulk) continue
       markStale(e.id)
       extra.add(e.id)
     }
-    for (const e of c.added) {
-      put(e)
-      if (!bulk) extra.add(e.id)
-    }
+    for (const e of c.added) if (put(e) && !bulk) extra.add(e.id)
   })
 
   function rebuild(): void {

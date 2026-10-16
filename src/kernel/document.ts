@@ -1,7 +1,7 @@
 import { isColor, type Color } from './color'
 import { typeOf } from './entity/registry'
 import type { Entity } from './entity/types'
-import { bboxFinite, bboxUnion, type BBox } from './geom/vec'
+import { bboxEmpty, bboxFinite, bboxUnion, type BBox } from './geom/vec'
 
 /** An entity before the document gives it an id. */
 export type Draft<E extends Entity = Entity> = E extends Entity ? Omit<E, 'id'> : never
@@ -47,6 +47,8 @@ export interface Document {
   beginGroup(label: string): void
   endGroup(): void
   onChange(fn: (c: Change) => void): () => void
+  /** Forgets every undo and redo step: a drawing just read starts with nothing to undo. Not inside a group. */
+  clearHistory(): void
   readonly layers: LayerTable
 }
 
@@ -189,7 +191,8 @@ export function createDocument(): Document {
     if (e.color !== undefined && !isColor(e.color)) throw new Error(`invalid color ${e.color}`)
     const problem = t.validate?.(e)
     if (problem) throw new Error(problem)
-    if (!finite(e) || !bboxFinite(t.bbox(e))) throw new Error(`${e.type} has non-finite geometry`)
+    const b = t.bbox(e)
+    if (!finite(e) || !(bboxFinite(b) || bboxEmpty(b))) throw new Error(`${e.type} has non-finite geometry`)
   }
 
   function touch(id: number): void {
@@ -307,6 +310,11 @@ export function createDocument(): Document {
       deliver(c)
     },
     undo: () => move(undoStack, redoStack, 'undo'),
+    clearHistory() {
+      if (open || groupDepth > 0) throw new Error('clearHistory cannot run inside a transaction or a group')
+      undoStack.length = 0
+      redoStack.length = 0
+    },
     redo: () => move(redoStack, undoStack, 'redo'),
     beginGroup(label) {
       if (open) throw new Error('beginGroup cannot run inside a transaction')
@@ -351,11 +359,12 @@ export function createDocument(): Document {
   }
 }
 
-/** Union of every entity's bbox; null for an empty document. */
+/** Union of every entity's bbox; null when no entity has geometry. */
 export function docExtents(doc: Document): BBox | null {
   let box: BBox | null = null
   for (const e of doc.entities()) {
     const b = typeOf(e).bbox(e)
+    if (bboxEmpty(b)) continue
     box = box ? bboxUnion(box, b) : b
   }
   return box

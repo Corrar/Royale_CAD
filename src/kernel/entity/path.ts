@@ -162,7 +162,9 @@ function polylinePath(e: Polyline, tol: number): Path {
   }
 }
 
-export function pathOf(e: Entity): Path {
+/** The path of a curve; null for what has no length to walk (a point, an opaque entity). */
+export function pathOf(e: Entity): Path | null {
+  if (e.type === 'point' || e.type === 'opaque') return null
   const tol = lengthTol(e)
   switch (e.type) {
     case 'line':

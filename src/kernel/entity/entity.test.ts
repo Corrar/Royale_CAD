@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { TAU } from '../geom/tol'
 import { register, typeOf } from './registry'
-import type { Arc, Circle, Entity, Line, Polyline, PrimSink } from './types'
+import { SNAP, type Arc, type Circle, type Entity, type Line, type Opaque, type Point, type Polyline, type PrimSink } from './types'
 
 const deg = (d: number): number => (d * Math.PI) / 180
 
@@ -28,6 +28,25 @@ const round = (xs: readonly (string | number)[]): (string | number)[] =>
 describe('registry', () => {
   it('resolves every built-in type', () => {
     for (const e of [line, circle, arc, poly([0, 0, 1, 1], null)]) expect(typeOf(e).type).toBe(e.type)
+  })
+
+  it('point: a dot, found by NOD, moved by transforms', () => {
+    const p: Point = { type: 'point', id: 5, layer: 0, x: 3, y: 4 }
+    expect(typeOf(p).bbox(p)).toEqual({ minX: 3, minY: 4, maxX: 3, maxY: 4 })
+    expect(prims(p)).toEqual([['segment', 3, 4, 3, 4]])
+    expect(typeOf(p).distance(p, { x: 0, y: 0 })).toBe(5)
+    const found: number[][] = []
+    typeOf(p).snapPoints!(p, SNAP.NOD | SNAP.END, (x, y, mode) => found.push([x, y, mode]))
+    expect(found).toEqual([[3, 4, SNAP.NOD]])
+    expect(typeOf(p).transform!(p, { a: 1, b: 0, c: 0, d: 1, e: 1, f: 2 })).toEqual({ ...p, x: 4, y: 6 })
+  })
+
+  it('opaque: no geometry, never near anything', () => {
+    const o: Opaque = { type: 'opaque', id: 6, layer: 0, name: 'HATCH', raw: '  0\nHATCH\n' }
+    expect(typeOf(o).bbox(o)).toEqual({ minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity })
+    expect(prims(o)).toEqual([])
+    expect(typeOf(o).distance(o, { x: 0, y: 0 })).toBe(Infinity)
+    expect(typeOf(o).transform).toBeUndefined()
   })
 
   it('refuses a second registration of a type and unknown types', () => {

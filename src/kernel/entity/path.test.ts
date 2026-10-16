@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { arcSweep } from '../geom/curve'
-import { pathOf } from './path'
+import { pathOf as pathOrNull } from './path'
 import { typeOf } from './registry'
 import type { Arc, Circle, Entity, Line, Polyline } from './types'
 
+const pathOf = (e: Entity) => pathOrNull(e)!
 const r9 = (v: number): number => Math.round(v * 1e9) / 1e9 + 0
 const on = (e: Entity, x: number, y: number): boolean => typeOf(e).distance(e, { x, y }) < 1e-9
 
