@@ -49,6 +49,8 @@ export function offsetOf(e: Entity, dist: Dist, p: Vec2): Entity | string {
       // AutoCAD offsets an ellipse or a spline into a spline fitted to it: not yet.
       return 'Cannot offset that object.'
     case 'insert':
+    case 'text':
+    case 'mtext':
       return 'Cannot offset that object.'
   }
 }

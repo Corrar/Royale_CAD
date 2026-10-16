@@ -7,9 +7,10 @@ import { arcBBox } from '../kernel/geom/curve'
 import { hilbertOrder } from '../kernel/geom/hilbert'
 import { bboxContains, bboxIntersects, type BBox } from '../kernel/geom/vec'
 import type { ViewState } from '../kernel/view'
+import type { GlyphAtlas } from './glyphs'
 import {
-  ARC_STRIDE, MAX_ARC_RADIUS_PX, MAX_SEGMENT_PX, SEGMENT_STRIDE, STYLE_WORDS, arcSubdiv, writeArc, writeSegment, writeStyle,
-  type BatchId, type Draw, type RenderBackend,
+  ARC_STRIDE, GLYPH_STRIDE, MAX_ARC_RADIUS_PX, MAX_SEGMENT_PX, SEGMENT_STRIDE, STYLE_WORDS, arcSubdiv, writeArc, writeGlyph, writeSegment, writeStyle,
+  type BatchId, type BatchKind, type Draw, type RenderBackend,
 } from './backend'
 
 export interface SceneOptions {
@@ -19,6 +20,8 @@ export interface SceneOptions {
   highlightColor: number
   /** From this many entities a rebuild runs in slices (draws, build; default 20 000); below, all at once. */
   sliceFrom?: number
+  /** Gives each character its glyph index and holds the atlas to upload; without it the index is the code point. */
+  glyphs?: GlyphAtlas
 }
 
 export interface Scene {
@@ -46,8 +49,23 @@ export const HIDDEN_STYLE = 0
 export const HIGHLIGHT_STYLE = 1
 const FIRST_STYLE = 2
 
-type Kind = 'segment' | 'arc'
-const WORDS: Record<Kind, number> = { segment: SEGMENT_STRIDE / 4, arc: ARC_STRIDE / 4 }
+type Kind = BatchKind
+const WORDS: Record<Kind, number> = { segment: SEGMENT_STRIDE / 4, arc: ARC_STRIDE / 4, glyph: GLYPH_STRIDE / 4 }
+
+/** A glyph's reach from its baseline-left, in capital heights: past any letter's cell, so culling never cuts one. */
+const GLYPH_REACH = { x0: -0.6, x1: 2, y0: -0.8, y1: 1.8 }
+
+/** The box a glyph at (x, y) with axes u and v can cover. */
+function glyphBox(x: number, y: number, ux: number, uy: number, vx: number, vy: number): BBox {
+  const xs = [GLYPH_REACH.x0 * ux, GLYPH_REACH.x1 * ux]
+  const ys = [GLYPH_REACH.x0 * uy, GLYPH_REACH.x1 * uy]
+  const vxs = [GLYPH_REACH.y0 * vx, GLYPH_REACH.y1 * vx]
+  const vys = [GLYPH_REACH.y0 * vy, GLYPH_REACH.y1 * vy]
+  return {
+    minX: x + Math.min(...xs) + Math.min(...vxs), maxX: x + Math.max(...xs) + Math.max(...vxs),
+    minY: y + Math.min(...ys) + Math.min(...vys), maxY: y + Math.max(...ys) + Math.max(...vys),
+  }
+}
 const SLOTS = 2 ** 32 // handle = pool index · SLOTS + slot; exact in f64 up to 2^21 pools
 const OPEN_CAPACITY = 256
 const DIRTY_LIST = 64
@@ -231,6 +249,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     return id
   }
   const styleOf = (e: Entity): number => styleIn(styles, e.layer, e.color)
+  const glyphOf = (cp: number): number => opts.glyphs?.index(cp) ?? cp
   /** The style of an insert's primitive (PrimSink.look). */
   const lookOf = (layer: number, color: Color | undefined): number => styleIn(styles, layer, color)
 
@@ -253,6 +272,11 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   /** Chords in the free batch: the drawing's first, then the highlighted ones. */
   let freeMain = 0
   let freeCount = 0
+  // The letters of free entities (text in a free insert): their own batch, drawing first, then the highlight.
+  let freeGlyphBatch: { batch: BatchId; capacity: number; f32: Float32Array; u32: Uint32Array } | null = null
+  let letters: number[] = [] // x, y, ux, uy, vx, vy, glyph, style
+  let freeGlyphMain = 0
+  let freeGlyphCount = 0
 
   /**
    * Flattens the visible free curves near rect for the zoom band: chords within FREE_TOL_PX at the band's finest
@@ -281,12 +305,33 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         look(layer, color) {
           if (!highlighted) style = lookOf(layer, color)
         },
+        glyph(cp, x, y, ux, uy, vx, vy) {
+          letters.push(x, y, ux, uy, vx, vy, glyphOf(cp), style)
+        },
       }, region)
     }
+    letters = []
     for (const id of freeIds) flatten(doc.get(id)!, false)
     freeMain = n
+    freeGlyphMain = letters.length / 8
     for (const id of highlight) if (freeIds.has(id)) flatten(doc.get(id)!, true)
     freeCount = n
+    freeGlyphCount = letters.length / 8
+    if (freeGlyphCount > 0) {
+      if (!freeGlyphBatch || freeGlyphBatch.capacity < freeGlyphCount) {
+        if (freeGlyphBatch) backend.destroyBatch(freeGlyphBatch.batch)
+        let capacity = freeGlyphBatch?.capacity ?? OPEN_CAPACITY
+        while (capacity < freeGlyphCount) capacity *= 2
+        const buf = new ArrayBuffer(capacity * GLYPH_STRIDE)
+        freeGlyphBatch = { batch: backend.createBatch('glyph', capacity), capacity, f32: new Float32Array(buf), u32: new Uint32Array(buf) }
+      }
+      const g = freeGlyphBatch
+      for (let i = 0; i < freeGlyphCount; i++) {
+        const o = 8 * i
+        writeGlyph(g.f32, g.u32, i, letters[o]!, letters[o + 1]!, letters[o + 2]!, letters[o + 3]!, letters[o + 4]!, letters[o + 5]!, letters[o + 6]!, letters[o + 7]!)
+      }
+      backend.writeBatch(g.batch, 0, g.u32.subarray(0, freeGlyphCount * WORDS.glyph))
+    }
     if (n > 0 && (!freeBatch || freeBatch.capacity < n)) {
       if (freeBatch) backend.destroyBatch(freeBatch.batch)
       let capacity = freeBatch?.capacity ?? OPEN_CAPACITY
@@ -349,7 +394,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   }
 
   function openPool(kind: Kind, band: number): Pool {
-    const key = kind === 'segment' ? kind : `arc ${band}`
+    const key = kind === 'arc' ? `arc ${band}` : kind
     let p = open.get(key)
     if (!p) {
       p = createPool(kind, band, false, OPEN_CAPACITY)
@@ -408,6 +453,10 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       },
       arc(cx, cy, r, a0, sweep) {
         place('arc', bandOf(r), e.id, arcBBox(cx, cy, r, a0, sweep), r, (p, s) => writeArc(p.f32, p.u32, s, cx, cy, r, a0, sweep, style))
+      },
+      glyph(cp, x, y, ux, uy, vx, vy) {
+        const g = glyphOf(cp)
+        place('glyph', 0, e.id, glyphBox(x, y, ux, uy, vx, vy), 0, (p, s) => writeGlyph(p.f32, p.u32, s, x, y, ux, uy, vx, vy, g, style))
       },
     })
   }
@@ -513,6 +562,14 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         maxX = Math.max(x0, x1)
         maxY = Math.max(y0, y1)
         extent = Math.hypot(x1 - x0, y1 - y0)
+      } else if (kind === 'glyph') {
+        writeGlyph(p.f32, p.u32, slot, v[o]!, v[o + 1]!, v[o + 2]!, v[o + 3]!, v[o + 4]!, v[o + 5]!, v[o + 6]!, cols.style[i]!)
+        const b = glyphBox(v[o]!, v[o + 1]!, v[o + 2]!, v[o + 3]!, v[o + 4]!, v[o + 5]!)
+        minX = b.minX
+        minY = b.minY
+        maxX = b.maxX
+        maxY = b.maxY
+        extent = 0
       } else {
         const r = v[o + 2]!
         writeArc(p.f32, p.u32, slot, v[o]!, v[o + 1]!, r, v[o + 3]!, v[o + 4]!, cols.style[i]!)
@@ -548,6 +605,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   function* packAll(entities: Iterable<Entity>, styleFor: (layer: number, color: Color | undefined) => number, into: Pool[], sizeHint: number, hs: Handles | null): Generator<void, number> {
     const segs = new Columns(4, Math.max(16, sizeHint))
     const arcs = new Columns(5, 16)
+    const glyphs = new Columns(7, 16)
     let style = 0
     let owner = 0
     const sink: PrimSink = {
@@ -569,6 +627,10 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       look(layer, color) {
         style = styleFor(layer, color)
       },
+      glyph(cp, x, y, ux, uy, vx, vy) {
+        const o = 7 * glyphs.push(style, owner)
+        glyphs.v.set([x, y, ux, uy, vx, vy, glyphOf(cp)], o)
+      },
     }
     let k = 0
     for (const e of entities) {
@@ -579,6 +641,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       typeOf(e).primitives(e, 0, sink)
     }
     let packed = yield* pack('segment', 0, segs, null, into, hs)
+    packed += yield* pack('glyph', 0, glyphs, null, into, hs)
     const byBand = new Map<number, number[]>()
     for (let i = 0; i < arcs.n; i++) {
       const band = bandOf(arcs.v[5 * i + 2]!)
@@ -694,6 +757,8 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     const arcLimit = MAX_ARC_RADIUS_PX / 2 / ppu
     const ids = new Set<number>()
     for (const p of list) {
+      // A glyph is a few capital heights across: the shader's limits never reach it.
+      if (p.kind === 'glyph') continue
       const limit = p.kind === 'segment' ? segLimit : arcLimit
       const words = WORDS[p.kind]
       const f = p.f32
@@ -806,7 +871,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       const rect = { minX: view.cx - halfW, minY: view.cy - halfH, maxX: view.cx + halfW, maxY: view.cy + halfH }
       // Before the styles go up: flattening may add their rows.
       const band = Math.floor(Math.log2(view.scale * view.dpr))
-      if (freeIds.size === 0) freeMain = freeCount = 0
+      if (freeIds.size === 0) freeMain = freeCount = freeGlyphMain = freeGlyphCount = 0
       else if (!freeAt || freeAt.band !== band || !bboxContains(freeAt.region, rect)) rebuildFree(band, rect)
       if (stylesDirty) {
         backend.setStyleTable(styles.table.subarray(0, styles.count * STYLE_WORDS))
@@ -822,9 +887,14 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       emitDraws(pools, view, rect, out)
       if (clipBatch !== null && mainClipped > 0) out.push({ batch: clipBatch, first: 0, count: mainClipped })
       if (freeBatch && freeMain > 0) out.push({ batch: freeBatch.batch, first: 0, count: freeMain })
+      if (freeGlyphBatch && freeGlyphMain > 0) out.push({ batch: freeGlyphBatch.batch, first: 0, count: freeGlyphMain })
       emitDraws(hlPools, view, rect, out)
       if (clipBatch !== null && clipCount > mainClipped) out.push({ batch: clipBatch, first: mainClipped, count: clipCount - mainClipped })
       if (freeBatch && freeCount > freeMain) out.push({ batch: freeBatch.batch, first: freeMain, count: freeCount - freeMain })
+      if (freeGlyphBatch && freeGlyphCount > freeGlyphMain) out.push({ batch: freeGlyphBatch.batch, first: freeGlyphMain, count: freeGlyphCount - freeGlyphMain })
+      // Letters met in this frame are in the atlas now: up it goes before they are drawn.
+      const glyphUpload = opts.glyphs?.take()
+      if (glyphUpload) backend.setGlyphs(glyphUpload)
       return out
     },
 
@@ -853,10 +923,12 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       for (const p of [...pools, ...hlPools]) backend.destroyBatch(p.batch)
       if (clip) backend.destroyBatch(clip.batch)
       if (freeBatch) backend.destroyBatch(freeBatch.batch)
+      if (freeGlyphBatch) backend.destroyBatch(freeGlyphBatch.batch)
       pools = []
       hlPools = []
       clip = null
       freeBatch = null
+      freeGlyphBatch = null
     },
   }
 }

@@ -7,6 +7,7 @@ import { opaqueType } from './opaque'
 import { pointType } from './point'
 import { polylineType } from './polyline'
 import { splineType } from './spline'
+import { mtextType, textType } from './text'
 import type { Entity, EntityType } from './types'
 
 const types = new Map<string, EntityType<Entity>>()
@@ -31,3 +32,5 @@ register(opaqueType)
 register(ellipseType)
 register(splineType)
 register(insertType)
+register(textType)
+register(mtextType)

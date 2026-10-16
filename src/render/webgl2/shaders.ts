@@ -133,6 +133,50 @@ void main() {
 }
 `
 
+// Glyph: one instanced quad per character, its corners from the glyph table (bounds in capital heights, uv).
+// Only the origin needs the hi/lo split: the quad is a few capital heights across, f32 suffices.
+export const GLYPH_VERT = INSTANCED_HEAD + `
+layout(location = 0) in vec4 p; // xhi, xlo, yhi, ylo
+layout(location = 1) in vec4 axes; // one capital height along the baseline (xy) and up (zw), world units
+layout(location = 2) in uint styleId;
+layout(location = 3) in uint glyph;
+
+uniform highp sampler2D glyphTable; // 2 texels a glyph: bounds (l, b, r, t), uv (u0, v0, u1, v1)
+uniform int glyphsPerRow;
+
+out vec2 vUv;
+
+void main() {
+  float half_w;
+  if (!loadStyle(styleId, half_w)) { drop(); return; }
+  int g = int(glyph);
+  ivec2 at = ivec2((g % glyphsPerRow) * 2, g / glyphsPerRow);
+  vec4 bounds = texelFetch(glyphTable, at, 0);
+  vec4 uv = texelFetch(glyphTable, at + ivec2(1, 0), 0);
+  vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));
+  vec2 local = mix(bounds.xy, bounds.zw, corner);
+  vec2 pos = toEyePx(p) + (local.x * axes.xy + local.y * axes.zw) * pxPerUnit;
+  vUv = mix(uv.xy, uv.zw, corner);
+  gl_Position = vec4(pos / (0.5 * viewportPx), 0.0, 1.0);
+}
+`
+
+// The edge is where the distance field crosses 0.5; fwidth antialiases it over about a pixel at any size.
+export const GLYPH_FRAG = `#version 300 es
+precision highp float;
+in vec4 vColor;
+in vec2 vUv;
+uniform sampler2D atlas;
+out vec4 outColor;
+void main() {
+  float d = texture(atlas, vUv).r;
+  float w = max(fwidth(d) * 0.7, 1e-4);
+  float a = smoothstep(0.5 - w, 0.5 + w, d);
+  if (a <= 0.0) discard;
+  outColor = vec4(vColor.rgb, vColor.a * a);
+}
+`
+
 export const SEGMENT_FRAG =`#version 300 es
 precision highp float;
 in vec4 vColor;

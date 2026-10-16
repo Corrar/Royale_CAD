@@ -202,6 +202,8 @@ function onEntity(e: Entity): Vec2 {
     case 'ellipse':
     case 'spline':
     case 'insert':
+    case 'text':
+    case 'mtext':
       throw new Error(`the bench makes no ${e.type} entities`)
   }
 }
@@ -222,7 +224,10 @@ function shifted(e: Entity, d: number): Entity {
     case 'spline':
       return { ...e, ctrl: e.ctrl.map((v, i) => (i % 2 === 0 ? v + d : v)) }
     case 'insert':
+    case 'mtext':
       return { ...e, x: e.x + d }
+    case 'text':
+      return { ...e, x: e.x + d, x2: e.x2 + d }
     case 'opaque':
       return e
   }

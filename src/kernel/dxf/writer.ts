@@ -282,7 +282,7 @@ function oldPolyline(c: Ctx, e: Polyline, handle: string | null): void {
 
 const DXF_NAME: Readonly<Record<Entity['type'], string>> = {
   line: 'LINE', point: 'POINT', circle: 'CIRCLE', arc: 'ARC', polyline: 'LWPOLYLINE', opaque: '', ellipse: 'ELLIPSE', spline: 'SPLINE',
-  insert: 'INSERT',
+  insert: 'INSERT', text: 'TEXT', mtext: 'MTEXT',
 }
 
 /**

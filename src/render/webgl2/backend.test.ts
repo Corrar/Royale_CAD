@@ -189,15 +189,21 @@ describe('createWebGL2Backend', () => {
     t.backend.destroyBatch(b)
     const styles = new Uint32Array(2 * STYLE_WORDS).fill(3)
     t.backend.setStyleTable(styles)
+    const atlas = { width: 4, height: 2, data: Uint8Array.of(1, 2, 3, 4, 5, 6, 7, 8), table: new Float32Array(8).fill(0.5) }
+    t.backend.setGlyphs(atlas)
     let restored = 0
     const off = t.backend.onRestore(() => restored++)
     t.lose()
     t.clear()
     t.restore()
     expect(t.named('bufferData').map((call) => call.args[1])).toEqual([2 * SEGMENT_STRIDE, SEGMENT_STRIDE])
-    expect(t.named('createProgram')).toHaveLength(3) // grid, segment, arc
-    const uploads = t.named('texImage2D').map((call) => Array.from((call.args[8] as Uint32Array).subarray(0, styles.length)))
+    expect(t.named('createProgram')).toHaveLength(4) // grid, segment, arc, glyph
+    const images = t.named('texImage2D').map((call) => call.args[8])
+    const uploads = images.filter((d) => d instanceof Uint32Array).map((d) => Array.from((d as Uint32Array).subarray(0, styles.length)))
     expect(uploads).toEqual([Array.from(styles)]) // the style table survives
+    // So do the glyph atlas and its table.
+    expect(images.filter((d) => d instanceof Uint8Array)).toEqual([atlas.data])
+    expect(images.filter((d) => d instanceof Float32Array).map((d) => Array.from((d as Float32Array).subarray(0, 8)))).toEqual([Array.from(atlas.table)])
     expect(restored).toBe(1)
     expect(t.draws()).toEqual([]) // the owner draws the next frame, once it has rewritten its batches
     off()

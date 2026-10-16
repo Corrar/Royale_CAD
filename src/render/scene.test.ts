@@ -5,7 +5,7 @@ import { typeOf } from '../kernel/entity/registry'
 import { BY_BLOCK, type Block, type Ellipse, type Entity } from '../kernel/entity/types'
 import { segmentDistance } from '../kernel/geom/vec'
 import type { ViewState } from '../kernel/view'
-import { ARC_STRIDE, SEGMENT_STRIDE, STYLE_WORDS, arcSubdiv, type Draw, type RenderBackend } from './backend'
+import { ARC_STRIDE, GLYPH_STRIDE, SEGMENT_STRIDE, STYLE_WORDS, arcSubdiv, type Draw, type RenderBackend } from './backend'
 import { createScene } from './scene'
 
 const DRAW = 0xf2f4f5ff
@@ -13,9 +13,9 @@ const HIGHLIGHT = 0x67e8f9ff
 // Rebuilds all at once unless a test asks for slices.
 const OPTS = { drawColor: DRAW, highlightColor: HIGHLIGHT, sliceFrom: Infinity }
 
-type Kind = 'segment' | 'arc'
+type Kind = 'segment' | 'arc' | 'glyph'
 interface FakeBatch { kind: Kind; capacity: number; bytes: Uint8Array }
-const strideOf = (k: Kind): number => (k === 'segment' ? SEGMENT_STRIDE : ARC_STRIDE)
+const strideOf = (k: Kind): number => (k === 'segment' ? SEGMENT_STRIDE : k === 'arc' ? ARC_STRIDE : GLYPH_STRIDE)
 
 /** Keeps every batch's bytes like the GPU would, and logs the calls. */
 function fakeBackend() {
@@ -53,6 +53,9 @@ function fakeBackend() {
     frame() {},
     resize() {},
     setGrid() {},
+    setGlyphs() {
+      log.push('glyphs')
+    },
     onRestore(fn) {
       restoreListeners.add(fn)
       return () => restoreListeners.delete(fn)
@@ -79,7 +82,9 @@ function decode(b: FakeBatch, first = 0, count = b.capacity): Instance[] {
     out.push(
       b.kind === 'segment'
         ? { kind: 'segment', v: [hilo(0), hilo(2), hilo(4), hilo(6)], style: u32[w + 8]! }
-        : { kind: 'arc', v: [hilo(0), hilo(2), f32[w + 4]!, f32[w + 5]!, f32[w + 6]!], style: u32[w + 7]! },
+        : b.kind === 'arc'
+          ? { kind: 'arc', v: [hilo(0), hilo(2), f32[w + 4]!, f32[w + 5]!, f32[w + 6]!], style: u32[w + 7]! }
+          : { kind: 'glyph', v: [hilo(0), hilo(2), f32[w + 4]!, f32[w + 5]!, f32[w + 6]!, f32[w + 7]!, u32[w + 8]!], style: u32[w + 9]! },
     )
   }
   return out
@@ -569,6 +574,33 @@ describe('createScene', () => {
     const stretched = drawn(f, scene.draws(view(10, 0, 10)))
     expect(stretched.some((i) => i.kind === 'arc')).toBe(false)
     expect(stretched.filter((i) => rgba(i) === aci(5)).length).toBeGreaterThan(8)
+  })
+
+  it('text draws a glyph instance per letter from the atlas, highlighted on top, and inside a free insert too', () => {
+    const doc = createDocument()
+    const f = fakeBackend()
+    const indexed: number[] = []
+    let pending = false
+    const glyphs = {
+      index: (cp: number) => (indexed.includes(cp) || (indexed.push(cp), (pending = true)), indexed.indexOf(cp)),
+      take: () => (pending ? ((pending = false), { width: 1, height: 1, data: new Uint8Array(1), table: new Float32Array(8 * indexed.length) }) : null),
+    }
+    const scene = createScene(doc, f.backend, { ...OPTS, glyphs })
+    const text = { type: 'text', layer: 0, value: 'HI', x: 10, y: 20, x2: 10, y2: 20, height: 2, rotation: 0, widthFactor: 1, oblique: 0, halign: 0, valign: 0, backward: false, upsideDown: false } as const
+    let id = 0
+    doc.transact('t', (tx) => void (id = tx.add(text).id))
+    const v = view(10, 20, 10)
+    const is = drawn(f, scene.draws(v)).filter((i) => i.kind === 'glyph')
+    expect(is.map((i) => [i.v[0], i.v[1], i.v[2], i.v[5], i.v[6]])).toEqual([[10, 20, 2, 2, 0], [10 + 2 * 1.012, 20, 2, 2, 1]].map((g) => [g[0], g[1], g[2], g[3], g[4]]))
+    expect(f.log).toContain('glyphs')
+    scene.setHighlight([id])
+    const hl = drawn(f, scene.draws(v)).filter((i) => i.kind === 'glyph' && i.style === 1)
+    expect(hl).toHaveLength(2)
+    // A free insert (an ellipse makes it one) shows its text through the free layer.
+    const block = { name: 'B', x: 0, y: 0, entities: [text, { type: 'ellipse', layer: 0, cx: 0, cy: 0, mx: 1, my: 0, ratio: 0.5, t0: 0, t1: 0 }] } as unknown as Block
+    doc.transact('i', (tx) => void tx.add({ type: 'insert', layer: 0, block, x: 100, y: 0, sx: 1, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }))
+    const inside = drawn(f, scene.draws(view(110, 20, 10))).filter((i) => i.kind === 'glyph')
+    expect(inside.some((i) => i.v[0] === 110 && i.v[1] === 20)).toBe(true)
   })
 
   it('a highlighted primitive too big for f32 is re-emitted on top, in the highlight style', () => {

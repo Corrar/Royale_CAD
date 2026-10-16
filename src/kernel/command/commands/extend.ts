@@ -83,6 +83,8 @@ function extended(ctx: CommandContext, e: Entity, at: Vec2, edges: Set<number> |
     case 'ellipse':
     case 'spline':
     case 'insert':
+    case 'text':
+    case 'mtext':
       return 'Cannot extend this object.'
     case 'polyline': {
       // The end piece, straight along its direction or round its circle; the inner vertices stay.

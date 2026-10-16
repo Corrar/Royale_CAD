@@ -1,17 +1,18 @@
 import type { ViewState } from '../../kernel/view'
 import {
-  ARC_STRIDE, MAX_ARC_SUBDIV, SEGMENT_STRIDE, STYLE_WORDS, type BackendTheme, type BatchId, type Draw, type RenderBackend,
+  ARC_STRIDE, GLYPH_STRIDE, MAX_ARC_SUBDIV, SEGMENT_STRIDE, STYLE_WORDS, type BackendTheme, type BatchId, type BatchKind, type Draw, type RenderBackend,
 } from '../backend'
+import type { GlyphUpload } from '../glyphs'
 import { gridParams } from '../grid'
 import { splitDouble } from '../hilo'
-import { ARC_VERT, GRID_FRAG, GRID_VERT, SEGMENT_FRAG, SEGMENT_VERT } from './shaders'
+import { ARC_VERT, GLYPH_FRAG, GLYPH_VERT, GRID_FRAG, GRID_VERT, SEGMENT_FRAG, SEGMENT_VERT } from './shaders'
 
 export interface WebGL2Backend extends RenderBackend {
   /** Removes the canvas listeners and frees every GPU resource. The canvas context stays alive. */
   dispose(): void
 }
 
-type Kind = 'segment' | 'arc'
+type Kind = BatchKind
 
 interface Batch {
   kind: Kind
@@ -22,14 +23,20 @@ interface Batch {
 interface Pipeline {
   program: WebGLProgram | null
   vao: WebGLVertexArrayObject | null
-  u: Record<'eyeHi' | 'eyeLo' | 'pxPerUnit' | 'dpr' | 'viewportPx' | 'styles' | 'stylesPerRow' | 'subdiv', WebGLUniformLocation | null>
+  u: Record<
+    'eyeHi' | 'eyeLo' | 'pxPerUnit' | 'dpr' | 'viewportPx' | 'styles' | 'stylesPerRow' | 'subdiv' | 'glyphTable' | 'glyphsPerRow' | 'atlas',
+    WebGLUniformLocation | null
+  >
 }
 
-// Both kinds share the attribute slots (vec4, float vector, uint styleId); only size and stride differ.
-const LAYOUT: Record<Kind, { stride: number; shapeSize: number; vert: string }> = {
-  segment: { stride: SEGMENT_STRIDE, shapeSize: 4, vert: SEGMENT_VERT },
-  arc: { stride: ARC_STRIDE, shapeSize: 3, vert: ARC_VERT },
+// The kinds share the attribute slots (vec4, float vector, uint styleId last); glyphs add their index before it.
+const LAYOUT: Record<Kind, { stride: number; shapeSize: number; vert: string; frag: string }> = {
+  segment: { stride: SEGMENT_STRIDE, shapeSize: 4, vert: SEGMENT_VERT, frag: SEGMENT_FRAG },
+  arc: { stride: ARC_STRIDE, shapeSize: 3, vert: ARC_VERT, frag: SEGMENT_FRAG },
+  glyph: { stride: GLYPH_STRIDE, shapeSize: 4, vert: GLYPH_VERT, frag: GLYPH_FRAG },
 }
+/** Glyphs per row of the glyph table texture, two texels each. */
+const GLYPHS_PER_ROW = 1024
 
 export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendTheme): WebGL2Backend {
   const gl = canvas.getContext('webgl2', { alpha: false, antialias: true, depth: false, stencil: false })
@@ -52,6 +59,10 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
 
   const pipelines = {} as Record<Kind, Pipeline>
   let styleTex: WebGLTexture | null = null
+  // The glyph atlas and its table, kept to upload again after a lost context.
+  let glyphCopy: GlyphUpload | null = null
+  let atlasTex: WebGLTexture | null = null
+  let glyphTableTex: WebGLTexture | null = null
   let gridProgram: WebGLProgram | null = null
   let gridVao: WebGLVertexArrayObject | null = null
   let gu!: Record<
@@ -97,15 +108,40 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
   }
 
   function buildPipeline(kind: Kind): void {
-    const p = link(LAYOUT[kind].vert, SEGMENT_FRAG)
-    const names = ['eyeHi', 'eyeLo', 'pxPerUnit', 'dpr', 'viewportPx', 'styles', 'stylesPerRow', 'subdiv'] as const
+    const p = link(LAYOUT[kind].vert, LAYOUT[kind].frag)
+    const names = ['eyeHi', 'eyeLo', 'pxPerUnit', 'dpr', 'viewportPx', 'styles', 'stylesPerRow', 'subdiv', 'glyphTable', 'glyphsPerRow', 'atlas'] as const
     const vao = gl!.createVertexArray()
     pipelines[kind] = { program: p, vao, u: Object.fromEntries(names.map((n) => [n, gl!.getUniformLocation(p, n)])) as Pipeline['u'] }
     gl!.bindVertexArray(vao)
-    for (const loc of [0, 1, 2]) {
+    for (const loc of kind === 'glyph' ? [0, 1, 2, 3] : [0, 1, 2]) {
       gl!.enableVertexAttribArray(loc)
       gl!.vertexAttribDivisor(loc, 1)
     }
+  }
+
+  /** The atlas (R8, filtered: the distances interpolate) and the glyph table (RGBA32F, 2 texels a glyph). */
+  function uploadGlyphs(): void {
+    gl!.deleteTexture(atlasTex)
+    gl!.deleteTexture(glyphTableTex)
+    atlasTex = gl!.createTexture()
+    glyphTableTex = gl!.createTexture()
+    const g = glyphCopy ?? { width: 1, height: 1, data: new Uint8Array(1), table: new Float32Array(8) }
+    gl!.bindTexture(gl!.TEXTURE_2D, atlasTex)
+    gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_MIN_FILTER, gl!.LINEAR)
+    gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_MAG_FILTER, gl!.LINEAR)
+    gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_WRAP_S, gl!.CLAMP_TO_EDGE)
+    gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_WRAP_T, gl!.CLAMP_TO_EDGE)
+    gl!.pixelStorei(gl!.UNPACK_ALIGNMENT, 1)
+    gl!.texImage2D(gl!.TEXTURE_2D, 0, gl!.R8, g.width, g.height, 0, gl!.RED, gl!.UNSIGNED_BYTE, g.data)
+    gl!.pixelStorei(gl!.UNPACK_ALIGNMENT, 4)
+    const count = Math.max(1, g.table.length / 8)
+    const rows = Math.ceil(count / GLYPHS_PER_ROW)
+    const table = new Float32Array(rows * GLYPHS_PER_ROW * 8)
+    table.set(g.table)
+    gl!.bindTexture(gl!.TEXTURE_2D, glyphTableTex)
+    gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_MIN_FILTER, gl!.NEAREST)
+    gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_MAG_FILTER, gl!.NEAREST)
+    gl!.texImage2D(gl!.TEXTURE_2D, 0, gl!.RGBA32F, GLYPHS_PER_ROW * 2, rows, 0, gl!.RGBA, gl!.FLOAT, table)
   }
 
   function uploadStyles(): void {
@@ -160,6 +196,10 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
     gl!.blendFunc(gl!.SRC_ALPHA, gl!.ONE_MINUS_SRC_ALPHA)
     gl!.activeTexture(gl!.TEXTURE0)
     gl!.bindTexture(gl!.TEXTURE_2D, styleTex)
+    gl!.activeTexture(gl!.TEXTURE1)
+    gl!.bindTexture(gl!.TEXTURE_2D, atlasTex)
+    gl!.activeTexture(gl!.TEXTURE2)
+    gl!.bindTexture(gl!.TEXTURE_2D, glyphTableTex)
     splitDouble(view.cx, eye, 0)
     splitDouble(view.cy, eye, 2)
     let current: Kind | undefined
@@ -180,6 +220,11 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
         gl!.uniform1f(u.pxPerUnit, view.scale * view.dpr)
         gl!.uniform1f(u.dpr, view.dpr)
         gl!.uniform2f(u.viewportPx, canvas.width, canvas.height)
+        if (b.kind === 'glyph') {
+          gl!.uniform1i(u.atlas, 1)
+          gl!.uniform1i(u.glyphTable, 2)
+          gl!.uniform1i(u.glyphsPerRow, GLYPHS_PER_ROW)
+        }
       }
       gl!.bindBuffer(gl!.ARRAY_BUFFER, b.buffer)
       // No base instance in WebGL2: the first instance is a byte offset on every attribute.
@@ -187,6 +232,7 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
       gl!.vertexAttribPointer(0, 4, gl!.FLOAT, false, stride, o)
       gl!.vertexAttribPointer(1, shapeSize, gl!.FLOAT, false, stride, o + 16)
       gl!.vertexAttribIPointer(2, 1, gl!.UNSIGNED_INT, stride, o + stride - 4)
+      if (b.kind === 'glyph') gl!.vertexAttribIPointer(3, 1, gl!.UNSIGNED_INT, stride, o + 32)
       if (b.kind === 'arc') {
         gl!.uniform1i(u.subdiv, d.subdiv!)
         gl!.drawArraysInstanced(gl!.TRIANGLE_STRIP, 0, 2 * (d.subdiv! + 1), d.count)
@@ -209,7 +255,9 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
     buildGrid()
     buildPipeline('segment')
     buildPipeline('arc')
+    buildPipeline('glyph')
     uploadStyles()
+    uploadGlyphs()
     for (const b of batches.values()) allocBatch(b)
     for (const fn of [...restoreListeners]) fn()
   }
@@ -219,7 +267,9 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
   buildGrid()
   buildPipeline('segment')
   buildPipeline('arc')
+  buildPipeline('glyph')
   uploadStyles()
+  uploadGlyphs()
 
   return {
     createBatch(kind, capacity) {
@@ -279,6 +329,11 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
       gridVisible = visible
     },
 
+    setGlyphs(glyphs) {
+      glyphCopy = glyphs
+      uploadGlyphs()
+    },
+
     onRestore(fn) {
       const entry = (): void => fn()
       restoreListeners.add(entry)
@@ -292,6 +347,8 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
       for (const b of batches.values()) gl.deleteBuffer(b.buffer)
       batches.clear()
       gl.deleteTexture(styleTex)
+      gl.deleteTexture(atlasTex)
+      gl.deleteTexture(glyphTableTex)
       for (const p of Object.values(pipelines)) {
         gl.deleteVertexArray(p.vao)
         gl.deleteProgram(p.program)

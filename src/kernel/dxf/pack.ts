@@ -1,7 +1,7 @@
 import type { Draft } from '../document'
 import type { Block, BlockEntity } from '../entity/types'
 
-const KIND = { line: 0, circle: 1, arc: 2, point: 3, polyline: 4, opaque: 5, ellipse: 6, spline: 7, insert: 8 } as const
+const KIND = { line: 0, circle: 1, arc: 2, point: 3, polyline: 4, opaque: 5, ellipse: 6, spline: 7, insert: 8, text: 9, mtext: 10 } as const
 
 /**
  * Drafts as a few typed arrays, so a worker can hand a million of them over without the structured clone of a
@@ -19,13 +19,16 @@ export interface DraftPack {
    * closed, vertex count, the coordinates, then 1 and a bulge per vertex, or 0 · opaque its index in names/raws ·
    * ellipse cx cy mx my ratio t0 t1 · spline degree, closed, knot count, the knots, control point count, the
    * coordinates, then 1 and a weight per point, or 0 · insert its block's index in blocks, x y sx sy rotation cols
-   * rows dx dy.
+   * rows dx dy · text its value's index in texts, x y x2 y2 height rotation widthFactor oblique halign valign, then
+   * backward + 2·upsideDown · mtext its value's index, x y height width attachment rotation spacing.
    */
   readonly nums: Float64Array
   /** Draft k's numbers start at nums[at[k]]. */
   readonly at: Uint32Array
   readonly names: string[]
   readonly raws: string[]
+  /** The strings of texts. */
+  readonly texts: string[]
   /** The blocks inserts show: entities [from, to) of the pack are a block's. */
   readonly blocks: { name: string; x: number; y: number; from: number; to: number }[]
 }
@@ -54,6 +57,7 @@ export function packDrafts(drafts: readonly Draft[]): DraftPack {
   let len = 0
   const names: string[] = []
   const raws: string[] = []
+  const texts: string[] = []
   const need = (k: number): void => {
     if (len + k <= nums.length) return
     const grown = new Float64Array(Math.max(2 * nums.length, len + k))
@@ -123,6 +127,14 @@ export function packDrafts(drafts: readonly Draft[]): DraftPack {
       case 'insert':
         put(indexOf(d.block), d.x, d.y, d.sx, d.sy, d.rotation, d.cols, d.rows, d.dx, d.dy)
         break
+      case 'text':
+        put(texts.length, d.x, d.y, d.x2, d.y2, d.height, d.rotation, d.widthFactor, d.oblique, d.halign, d.valign, (d.backward ? 1 : 0) + (d.upsideDown ? 2 : 0))
+        texts.push(d.value)
+        break
+      case 'mtext':
+        put(texts.length, d.x, d.y, d.height, d.width, d.attachment, d.rotation, d.spacing)
+        texts.push(d.value)
+        break
       case 'spline': {
         const m = d.ctrl.length >> 1
         need(5 + d.knots.length + 3 * m)
@@ -155,7 +167,7 @@ export function packDrafts(drafts: readonly Draft[]): DraftPack {
   const m = all.length
   room(m)
   at[m] = len
-  return { n, kinds: kinds.slice(0, m), layers: layers.slice(0, m), colors: colors.slice(0, m), nums: nums.slice(0, len), at: at.slice(0, m + 1), names, raws, blocks }
+  return { n, kinds: kinds.slice(0, m), layers: layers.slice(0, m), colors: colors.slice(0, m), nums: nums.slice(0, len), at: at.slice(0, m + 1), names, raws, texts, blocks }
 }
 
 /** The buffers to transfer with a pack. */
@@ -220,6 +232,21 @@ export function unpackDrafts(p: DraftPack, from: number, to: number): Draft[] {
         d = {
           type: 'insert', layer, block: blockOf(p, v[o]!), x: v[o + 1]!, y: v[o + 2]!, sx: v[o + 3]!, sy: v[o + 4]!,
           rotation: v[o + 5]!, cols: v[o + 6]!, rows: v[o + 7]!, dx: v[o + 8]!, dy: v[o + 9]!,
+        }
+        break
+      case KIND.text: {
+        const flags = v[o + 11]!
+        d = {
+          type: 'text', layer, value: p.texts[v[o]!]!, x: v[o + 1]!, y: v[o + 2]!, x2: v[o + 3]!, y2: v[o + 4]!, height: v[o + 5]!,
+          rotation: v[o + 6]!, widthFactor: v[o + 7]!, oblique: v[o + 8]!, halign: v[o + 9]!, valign: v[o + 10]!,
+          backward: (flags & 1) !== 0, upsideDown: (flags & 2) !== 0,
+        }
+        break
+      }
+      case KIND.mtext:
+        d = {
+          type: 'mtext', layer, value: p.texts[v[o]!]!, x: v[o + 1]!, y: v[o + 2]!, height: v[o + 3]!, width: v[o + 4]!,
+          attachment: v[o + 5]!, rotation: v[o + 6]!, spacing: v[o + 7]!,
         }
         break
       default: {

@@ -99,6 +99,11 @@ function mapped(m: Affine, out: PrimSink, owner: Insert | BlockEntity, tol: numb
     look(layer, color) {
       out.look?.(layer === 0 ? owner.layer : layer, color === BY_BLOCK ? owner.color : color)
     },
+    glyph(cp, x, y, ux, uy, vx, vy) {
+      // Letters take the whole affine, stretch and slant included.
+      const p = applyAffine(m, x, y)
+      out.glyph?.(cp, p.x, p.y, m.a * ux + m.c * uy, m.b * ux + m.d * uy, m.a * vx + m.c * vy, m.b * vx + m.d * vy)
+    },
   }
 }
 

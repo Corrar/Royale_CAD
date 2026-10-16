@@ -1,11 +1,14 @@
 import type { ViewState } from '../kernel/view'
+import type { GlyphUpload } from './glyphs'
 import { splitDouble } from './hilo'
 
 export type BatchId = number
 // subdiv applies to the arc of each instance, so arcSubdiv(largest radius in px) is a safe upper bound.
 export interface Draw { batch: BatchId; first: number; count: number; subdiv?: number }
+export type BatchKind = 'segment' | 'arc' | 'glyph'
+
 export interface RenderBackend {
-  createBatch(kind: 'segment' | 'arc', capacity: number): BatchId
+  createBatch(kind: BatchKind, capacity: number): BatchId
   writeBatch(id: BatchId, first: number, instances: ArrayBufferView): void
   destroyBatch(id: BatchId): void
   setStyleTable(table: Uint32Array): void
@@ -13,6 +16,8 @@ export interface RenderBackend {
   resize(width: number, height: number, dpr: number): void
   /** Shows or hides the grid (F7); hidden, frames clear to the background. */
   setGrid(visible: boolean): void
+  /** The glyph atlas and table glyph instances index (render/glyphs.ts); replaces the previous ones. */
+  setGlyphs(glyphs: GlyphUpload): void
   /**
    * After a lost GPU context comes back, every live batch exists again with its capacity but zeroed content (the
    * style table survives). The listener must rewrite the batches and draw a new frame: the backend keeps no CPU
@@ -35,6 +40,7 @@ export const MAX_ARC_RADIUS_PX = 1e6
 
 export const SEGMENT_STRIDE = 36 // bytes per instance
 export const ARC_STRIDE = 32
+export const GLYPH_STRIDE = 40
 export const STYLE_WORDS = 2 // u32 words per style
 
 const SEGMENT_WORDS = SEGMENT_STRIDE / 4
@@ -67,6 +73,27 @@ export function writeArc(
   f32[w + 5] = a0
   f32[w + 6] = sweep
   u32[w + 7] = styleId
+}
+
+const GLYPH_WORDS = GLYPH_STRIDE / 4
+
+/**
+ * A character: its baseline-left at (x, y), (ux, uy) one capital height along the baseline and (vx, vy) one up,
+ * world units; glyph indexes the atlas table.
+ */
+export function writeGlyph(
+  f32: Float32Array, u32: Uint32Array, index: number,
+  x: number, y: number, ux: number, uy: number, vx: number, vy: number, glyph: number, styleId: number,
+): void {
+  const w = index * GLYPH_WORDS
+  splitDouble(x, f32, w)
+  splitDouble(y, f32, w + 2)
+  f32[w + 4] = ux
+  f32[w + 5] = uy
+  f32[w + 6] = vx
+  f32[w + 7] = vy
+  u32[w + 8] = glyph
+  u32[w + 9] = styleId
 }
 
 /** Subdivisions of a full circle that keep the chord sagitta within 0.25 px. */
