@@ -718,6 +718,9 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
       continue
     }
     const a = modelled ? attribs[k++]! : null
+    // A multiline one's MTEXT, after 101, follows the insert on its own; the line of text is patched or moved.
+    const cut = child.findIndex((g) => g[0] === 101)
+    const embedded = cut >= 0 ? movedMText(child.splice(cut), move) : []
     const flags = Number(child.find((g) => g[0] === 70)?.[1] ?? 0)
     const patchedChild = a && child.map((g): [number, string] => [g[0], g[1]])
     if (a && patchedChild && patchText(patchedChild, a, 74, c.f.modern) && patchedChild.some((g) => g[0] === 70) && patchedChild.some((g) => g[0] === 8)) {
@@ -734,6 +737,7 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
         if (n === layerAt) out.raw(colors.text())
       })
     } else for (const [code, v] of movedText(child, move)) out.str(code, v)
+    for (const [code, v] of embedded) out.str(code, v)
   }
   return out.text()
 }
@@ -856,6 +860,33 @@ function movedText(gs: [number, string][], m: Affine): [number, string][] {
     else if (at(40) >= 0) out.splice(at(40) + 1, 0, [50, v])
   }
   return out
+}
+
+/**
+ * An attribute's embedded MTEXT (101 on) moved by m: its insert (10), its direction (11, a vector), its height and
+ * widths (40, 41, 46) by the scale.
+ */
+function movedMText(gs: [number, string][], m: Affine): [number, string][] {
+  const at = (code: number): number => gs.findIndex((g) => g[0] === code)
+  const [x, y, dx, dy] = [10, 20, 11, 21].map(at) as [number, number, number, number]
+  if (x >= 0 && y >= 0) {
+    const p = applyAffine(m, Number(gs[x]![1]), Number(gs[y]![1]))
+    gs[x]![1] = real(p.x)
+    gs[y]![1] = real(p.y)
+  }
+  if (dx >= 0 && dy >= 0) {
+    const u = Number(gs[dx]![1])
+    const v = Number(gs[dy]![1])
+    const [ux, uy] = [m.a * u + m.c * v, m.b * u + m.d * v]
+    const n = Math.hypot(ux, uy)
+    if (n > 0) {
+      gs[dx]![1] = real(ux / n)
+      gs[dy]![1] = real(uy / n)
+    }
+  }
+  const k = Math.sqrt(Math.abs(affineDet(m)))
+  if (k !== 1) for (const g of gs) if (g[0] === 40 || g[0] === 41 || g[0] === 46) g[1] = real(Number(g[1]) * k)
+  return gs
 }
 
 /** Writes the document's entities; returns the spans of the file's records still there, as start, end pairs. */
