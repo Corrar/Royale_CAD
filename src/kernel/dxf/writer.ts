@@ -277,7 +277,7 @@ function vertexWidths(e: Polyline, k: number): [number, string][] {
 
 /** POLYLINE, its VERTEX records and the SEQEND, for files older than R14. */
 function oldPolyline(c: Ctx, e: Polyline, handle: string | null): void {
-  const { o, f } = c
+  const { o } = c
   head(c, 'POLYLINE', e, handle, 'AcDb2dPolyline')
   o.int(66, 1)
   o.real(10, 0)
@@ -286,30 +286,46 @@ function oldPolyline(c: Ctx, e: Polyline, handle: string | null): void {
   o.int(70, e.closed ? 1 : 0)
   if (e.startWidth) o.real(40, e.startWidth)
   if (e.endWidth) o.real(41, e.endWidth)
-  const child = (type: string): void => {
+  vertexRecords(c, o, e, handle, 1)
+}
+
+type Groups = [number, string][]
+
+/**
+ * A POLYLINE's VERTEX records and SEQEND, owned by the POLYLINE `owner`, x by s (±1, its OCS). Patched, the old
+ * records are passed: vertex k keeps the handle and height of old vertex k while they last; the SEQEND stays.
+ */
+function vertexRecords(c: Ctx, o: Emitter, e: Polyline, owner: string | null, s: number, old: Groups[] = [], seqend: Groups | null = null): void {
+  const { f } = c
+  const layer = layerName(c, e)
+  const value = (k: number, code: number): string | undefined => old[k]?.find((g) => g[0] === code)?.[1]
+  const child = (type: string, handle: string | undefined): void => {
     o.str(0, type)
-    if (f.handles) o.str(5, c.ids.take())
+    const h = handle ?? (f.handles ? c.ids.take() : undefined)
+    if (h) o.str(5, h)
     if (f.modern) {
-      if (handle) o.str(330, handle)
+      if (owner) o.str(330, owner)
       o.str(100, 'AcDbEntity')
     }
-    o.str(8, layerName(c, e))
+    o.str(8, layer)
   }
   for (let k = 0; k < e.pts.length >> 1; k++) {
-    child('VERTEX')
+    child('VERTEX', value(k, 5)?.trim())
     if (f.modern) {
       o.str(100, 'AcDbVertex')
       o.str(100, 'AcDb2dVertex')
     }
-    o.real(10, e.pts[2 * k]!)
+    o.real(10, s * e.pts[2 * k]!)
     o.real(20, e.pts[2 * k + 1]!)
-    o.real(30, 0)
+    o.str(30, value(k, 30) ?? real(0))
     for (const [code, v] of vertexWidths(e, k)) o.str(code, v)
     const b = e.bulges?.[k] ?? 0
-    if (b !== 0) o.real(42, b)
+    if (b !== 0) o.real(42, s * b)
     o.int(70, 0)
   }
-  child('SEQEND')
+  if (!seqend) return child('SEQEND', undefined)
+  o.str(0, 'SEQEND')
+  for (const [code, v] of seqend) o.str(code, code === 8 ? layer : v)
 }
 
 const DXF_NAME: Readonly<Record<Entity['type'], string>> = {
@@ -320,12 +336,14 @@ const DXF_NAME: Readonly<Record<Entity['type'], string>> = {
 /**
  * The record the file gave an edited entity, with its geometry, layer and color replaced: linetype, lineweight,
  * thickness, reactors and extended data survive the edit. Planar entities stay in the record's OCS. Null when the
- * record cannot take the new entity as is (another type, a POLYLINE, a missing group): it is then written fresh.
+ * record cannot take the new entity as is (another type, a missing group): it is then written fresh.
  */
 function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): string | null {
   const p = tokenize(text)
-  if (!p.is(0, 0, DXF_NAME[e.type]) || e.type === 'opaque') return null
-  const gs: [number, string][] = []
+  // A polyline read from a POLYLINE stays one, whatever the version.
+  const name = e.type === 'polyline' && p.is(0, 0, 'POLYLINE') ? 'POLYLINE' : DXF_NAME[e.type]
+  if (!p.is(0, 0, name) || e.type === 'opaque') return null
+  const gs: Groups = []
   for (let i = 1; i < p.length && p.code(i) !== 0; i++) gs.push([p.code(i), p.value(i)])
   const at = (code: number): number => gs.findIndex((g) => g[0] === code)
   const set = (code: number, v: string): boolean => {
@@ -414,6 +432,23 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
       break
     }
     case 'polyline': {
+      if (name === 'POLYLINE') {
+        // The head here, the vertices after it. A curve or spline fit no longer matches them: plain, as shown.
+        const setNumber = (code: number, v: number, text: string): void => {
+          const k = at(code)
+          if (k >= 0 && Number(gs[k]![1]) !== v) gs[k]![1] = text
+          if (k >= 0 || v === 0) return
+          // Missing, it goes after the groups AutoCAD puts before it: 66, 10, 20, 30, 39, 70, 40, 41.
+          const after = Math.max(...[66, 10, 20, 30, 39, 70, 40, 41].map(at))
+          if (after >= 0) gs.splice(after + 1, 0, [code, text])
+          else ok = false
+        }
+        const flags = (Number(gs[at(70)]?.[1] ?? 0) & ~(1 | 2 | 4)) | (e.closed ? 1 : 0)
+        setNumber(70, flags, String(flags))
+        setNumber(40, e.startWidth ?? 0, real(e.startWidth ?? 0))
+        setNumber(41, e.endWidth ?? 0, real(e.endWidth ?? 0))
+        break
+      }
       const VERTEX = new Set([10, 20, 40, 41, 42, 91])
       const first = gs.findIndex((g) => VERTEX.has(g[0]))
       if (first < 0) return null
@@ -441,11 +476,26 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
   const kept = gs.filter((g) => g[0] !== 62 && g[0] !== 420 && g[0] !== 430)
   const layerAt = kept.findIndex((g) => g[0] === 8)
   const out = emitter(nl)
-  out.str(0, DXF_NAME[e.type])
+  out.str(0, name)
   kept.forEach(([code, v], k) => {
     out.str(code, v)
     if (k === layerAt) out.raw(colors.text())
   })
+  if (name === 'POLYLINE') {
+    const old: Groups[] = []
+    let seqend: Groups | null = null
+    let i = 1
+    while (i < p.length && p.code(i) !== 0) i++
+    while (i < p.length) {
+      const vertex = p.is(i, 0, 'VERTEX')
+      const child: Groups = []
+      for (i++; i < p.length && p.code(i) !== 0; i++) child.push([p.code(i), p.value(i)])
+      if (vertex) old.push(child)
+      else seqend = child
+    }
+    vertexRecords(c, out, e as Polyline, gs.find((g) => g[0] === 5)?.[1].trim() ?? null, s, old, seqend)
+    return out.text()
+  }
   if (e.type !== 'insert') return out.text()
   // Its attributes (ATTRIB … SEQEND) follow it: moved as the edit moved the insert.
   const old = insertAffines(was as Insert)[0]!

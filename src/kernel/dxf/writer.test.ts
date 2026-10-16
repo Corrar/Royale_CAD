@@ -50,18 +50,24 @@ const r12 = (entities: G, handling = true): string =>
     0, 'SECTION', 2, 'ENTITIES', ...entities, 0, 'ENDSEC', 0, 'EOF',
   ])
 
-/** A dashed 2D POLYLINE as ezdxf writes it: default widths 0.2, one vertex with a start width of its own; R13 or R12. */
-function oldPolyline(modern: boolean): G {
+/**
+ * A dashed 2D POLYLINE as ezdxf writes it, moved by (dx, dy): default widths 0.2, one vertex with a start width of
+ * its own; R13 or R12.
+ */
+function oldPolyline(modern: boolean, dx = 0, dy = 0): G {
   const m = (...g: G): G => (modern ? g : [])
   const vertex = (handle: string, x: number, ...own: G): G => [
-    0, 'VERTEX', 5, handle, ...m(330, '2D', 100, 'AcDbEntity'), 8, '0', ...m(100, 'AcDbVertex', 100, 'AcDb2dVertex'), 10, x, 20, 0, 30, 0, ...own, 70, 0,
+    0, 'VERTEX', 5, handle, ...m(330, '2D', 100, 'AcDbEntity'), 8, '0', ...m(100, 'AcDbVertex', 100, 'AcDb2dVertex'), 10, real(x + dx), 20, real(dy), 30, '0.0', ...own, 70, 0,
   ]
   return [
-    0, 'POLYLINE', 5, '2D', ...m(330, '1F', 100, 'AcDbEntity'), 8, '0', 6, 'DASHED', ...m(100, 'AcDb2dPolyline'), 66, 1, 10, 0, 20, 0, 30, 0, 70, 0, 40, 0.2, 41, 0.2,
-    ...vertex('2F', 0), ...vertex('30', 10, 40, 2), ...vertex('31', 12),
+    0, 'POLYLINE', 5, '2D', ...m(330, '1F', 100, 'AcDbEntity'), 8, '0', 6, 'DASHED', ...m(100, 'AcDb2dPolyline'), 66, 1, 10, '0.0', 20, '0.0', 30, '0.0', 70, 0, 40, 0.2, 41, 0.2,
+    ...vertex('2F', 0), ...vertex('30', 10, 40, '2.0'), ...vertex('31', 12),
     0, 'SEQEND', 5, '2E', ...m(330, '2D', 100, 'AcDbEntity'), 8, '0',
   ]
 }
+
+/** g without its handles (group 5). */
+const noHandles = (g: G): G => g.filter((_, i) => !(i % 2 === 0 && g[i] === 5) && !(i % 2 === 1 && g[i - 1] === 5))
 
 /** Each vertex's start and end width, its own or the polyline's default. */
 const widthsOf = (p: Polyline): number[] =>
@@ -175,6 +181,43 @@ describe('writeDxf', () => {
       t.run('SCALE⏎ALL⏎⏎0,0⏎2⏎')
       expect(widthsOf(saved())).toEqual(widths.map((w) => 2 * w))
     }
+  })
+
+  it('an edited 2D POLYLINE is patched (R12 and R2000): its head as read, its VERTEX handles and SEQEND kept', () => {
+    for (const [text, modern] of [[r12(oldPolyline(false)), false], [file(oldPolyline(true)), true]] as const) {
+      const t = commandBench()
+      const d = drawingFrom(t.doc, parseDxf(text))
+      t.run('MOVE⏎ALL⏎⏎0,0⏎3,4⏎')
+      const out = writeDxf(t.doc, d.source)
+      // Linetype, widths, owner and handles as they were; only the vertices moved.
+      expect(out).toContain(lines(oldPolyline(modern, 3, 4)))
+      expect(readDxf(out).source.header.get('$HANDSEED')).toBe('100')
+    }
+    // Fewer or more vertices: the old handles while they last, new ones past them; the closed flag follows.
+    const d = readDxf(file(oldPolyline(true)))
+    const { widths: _w, ...poly } = [...d.doc.entities()][0] as Polyline
+    d.doc.transact('edit', (tx) => tx.replace({ ...poly, pts: Float64Array.of(0, 0, 10, 0, 10, 10, 0, 10), bulges: null, closed: true }))
+    const more = writeDxf(d.doc, d.source)
+    expect(handles(more).filter((h) => !['2', '10', '11', '1', '1F', 'C'].includes(h))).toEqual(['2D', '2F', '30', '31', '100', '2E'])
+    expect(more).toContain(lines([66, 1, 10, '0.0', 20, '0.0', 30, '0.0', 70, 1, 40, 0.2, 41, 0.2, 0, 'VERTEX']))
+    d.doc.transact('edit', (tx) => tx.replace({ ...poly, pts: Float64Array.of(0, 0, 10, 0), bulges: null }))
+    const fewer = writeDxf(d.doc, d.source)
+    expect(handles(fewer).filter((h) => !['2', '10', '11', '1', '1F', 'C'].includes(h))).toEqual(['2D', '2F', '30', '2E'])
+    same([...d.doc.entities()], [...readDxf(fewer).doc.entities()])
+    // An R12 file without handles gets none.
+    const t = commandBench()
+    const bare = drawingFrom(t.doc, parseDxf(r12(noHandles(oldPolyline(false)), false)))
+    t.run('MOVE⏎ALL⏎⏎0,0⏎3,4⏎')
+    expect(writeDxf(t.doc, bare.source)).toContain(lines(noHandles(oldPolyline(false, 3, 4))))
+    // Seen from -Z, its vertices and bulges stay in its OCS.
+    const m = commandBench()
+    const flipped = drawingFrom(m.doc, parseDxf(file(oldPolyline(true)).replace(lines([41, 0.2]), lines([41, 0.2, 210, 0, 220, 0, 230, -1]))))
+    m.doc.transact('bulge', (tx) => tx.replace({ ...([...m.doc.entities()][0] as Polyline), bulges: Float64Array.of(0.5, 0, 0) }))
+    m.run('MOVE⏎ALL⏎⏎0,0⏎3,4⏎')
+    const back = readDxf(writeDxf(m.doc, flipped.source))
+    const [want, got] = [[...m.doc.entities()][0], [...back.doc.entities()][0]] as [Polyline, Polyline]
+    expect([Array.from(got.pts), Array.from(got.bulges!, (b) => b + 0), widthsOf(got)]).toEqual([Array.from(want.pts), [0.5, 0, 0], widthsOf(want)])
+    expect(back.source.text).toContain(lines([10, '-3.0', 20, '4.0', 30, '0.0', 42, -0.5, 70, 0]))
   })
 
   it('read, edit, write, read: the same document; opaque text identical; extra groups and OCS survive the edit', () => {
