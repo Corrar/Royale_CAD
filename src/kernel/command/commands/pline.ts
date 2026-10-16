@@ -44,7 +44,8 @@ export const pline: Command = function* (ctx) {
   try {
     for (;;) {
       const last = pts[pts.length - 1]!
-      const closeable = pts.length >= 3 ? ['Close'] : []
+      // From the second point on, unlike LINE: closing one arc gives a circle (PL, A, a point, CL), as in AutoCAD.
+      const closeable = pts.length >= 2 ? ['Close'] : []
       const nextBulge = (q: Vec2): number => (arcs ? tangentBulge(direction(), last, q) : 0)
       const r: Vec2 | string | null = yield* getPoint(arcs ? 'Specify endpoint of arc' : 'Specify next point', {
         base: last,

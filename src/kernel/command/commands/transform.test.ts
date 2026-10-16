@@ -77,6 +77,36 @@ describe('MOVE, COPY, ROTATE, MIRROR, SCALE', () => {
     expect(t.lines()).toHaveLength(1)
   })
 
+  it('COPY with Enter at the first second point copies once by the base point taken as the displacement', () => {
+    const t = setup()
+    t.click(5, 0)
+    t.run('CO⏎5,5⏎')
+    expect(t.interp.prompt).toBe('Specify second point or <use first point as displacement>:')
+    t.run('⏎')
+    expect(t.lines()).toEqual([[0, 0, 10, 0], [5, 5, 15, 5]])
+    expect(t.interp.command).toBeNull()
+  })
+
+  it('MOVE and COPY take Enter or Displacement at the base point, then the displacement itself', () => {
+    const t = setup()
+    t.click(5, 0)
+    t.run('M⏎')
+    expect(t.interp.prompt).toBe('Specify base point or [Displacement] <Displacement>:')
+    t.run('⏎')
+    expect(t.interp.prompt).toBe('Specify displacement <0.0000, 0.0000>:')
+    t.run('3,4⏎')
+    expect(t.lines()).toEqual([[3, 4, 13, 4]])
+    t.click(8, 4)
+    t.run('M⏎⏎') // the last displacement is the default
+    expect(t.interp.prompt).toBe('Specify displacement <3.0000, 4.0000>:')
+    t.run('⏎')
+    expect(t.lines()).toEqual([[6, 8, 16, 8]])
+    t.click(11, 8)
+    t.run('CO⏎D⏎0,-8⏎')
+    expect(t.lines()).toEqual([[6, 8, 16, 8], [6, 0, 16, 0]])
+    expect(t.interp.command).toBeNull()
+  })
+
   it('ROTATE about a base point by an angle in degrees, or towards a picked point', () => {
     const t = setup()
     t.click(5, 0)
@@ -105,6 +135,20 @@ describe('MOVE, COPY, ROTATE, MIRROR, SCALE', () => {
     expect(t.circles()).toEqual([[10, 0, 1]])
     t.run('SC⏎ALL⏎⏎0,0⏎0⏎')
     expect(t.interp.history.at(-1)).toBe('Value must be positive and nonzero.')
+  })
+
+  it('ROTATE offers the last angle and SCALE the last factor (1 at first), as AutoCAD does', () => {
+    const t = setup()
+    t.run('RO⏎ALL⏎⏎0,0⏎90⏎')
+    t.run('RO⏎ALL⏎⏎0,0⏎')
+    expect(t.interp.prompt).toBe('Specify rotation angle <90>:')
+    t.run('⏎')
+    expect(t.lines()).toEqual([[0, 0, -10, 0]])
+    t.run('SC⏎ALL⏎⏎0,0⏎')
+    expect(t.interp.prompt).toBe('Specify scale factor <1.0000>:')
+    t.run('2⏎')
+    t.run('SC⏎ALL⏎⏎0,0⏎⏎')
+    expect(t.lines()).toEqual([[0, 0, -40, 0]])
   })
 
   it('skips entities on locked layers', () => {

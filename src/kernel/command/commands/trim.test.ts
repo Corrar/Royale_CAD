@@ -107,7 +107,8 @@ describe('TRIM', () => {
     const t = cross()
     t.run('L⏎20,20⏎30,20⏎⏎') // crosses nothing
     t.run('TR⏎⏎')
-    t.click(40, 40) // no object there
+    t.click(40, 40) // no object there: a window, which meets none
+    t.click(41, 41)
     t.click(25, 20)
     t.click(3, 4)
     t.run('U⏎')
@@ -143,6 +144,55 @@ describe('TRIM', () => {
     u.click(10, 0)
     u.run('⏎')
     expect(u.lines()).toEqual([[7, -5, 7, 5], [10, -5, 10, 5], [0, 0, 7, 0]])
+  })
+
+  it('Shift+click extends to the same edges instead (shift-select), and Undo takes it back', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎8,0⏎⏎')
+    t.run('L⏎4,-5⏎4,5⏎⏎')
+    t.run('L⏎10,-5⏎10,5⏎⏎')
+    t.run('TR⏎⏎')
+    expect(t.interp.prompt).toBe('Select object to trim or shift-select to extend or [Undo]:')
+    t.click(7, 0, true)
+    expect(t.lines()[0]).toEqual([0, 0, 10, 0])
+    t.run('U⏎')
+    expect(t.lines()[0]).toEqual([0, 0, 8, 0])
+    t.click(7, 0)
+    t.run('⏎')
+    expect(t.lines()[0]).toEqual([0, 0, 4, 0])
+  })
+
+  it('a pick on nothing opens a crossing window: every object it crosses is trimmed, in one step', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.run('L⏎0,2⏎10,2⏎⏎')
+    t.run('L⏎5,-5⏎5,5⏎⏎')
+    t.run('TR⏎⏎')
+    t.click(8, 3) // nothing there: the first corner
+    expect(t.interp.prompt).toBe('Specify opposite corner:')
+    t.click(7, -1)
+    expect(t.lines()).toEqual([[0, 0, 5, 0], [0, 2, 5, 2], [5, -5, 5, 5]])
+    t.run('U⏎')
+    expect(t.lines()).toEqual([[0, 0, 10, 0], [0, 2, 10, 2], [5, -5, 5, 5]])
+  })
+
+  it('a crossing window trims each object where its edge first meets it, clockwise from the first corner', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.run('L⏎5,-5⏎5,5⏎⏎')
+    t.run('TR⏎⏎')
+    t.click(6, 1) // from the top right: down its right side, then along the bottom
+    t.click(4, -1)
+    t.run('⏎')
+    expect(t.lines()).toEqual([[0, 0, 5, 0], [5, 0, 5, 5]])
+    const u = commandBench()
+    u.run('L⏎0,0⏎10,0⏎⏎')
+    u.run('L⏎5,-5⏎5,5⏎⏎')
+    u.run('TR⏎⏎')
+    u.click(4, -1) // from the bottom left, left to right, still crossing: up its left side, then along the top
+    u.click(6, 1)
+    u.run('⏎')
+    expect(u.lines()).toEqual([[5, 0, 10, 0], [5, -5, 5, 0]])
   })
 
   it('a cut at a vertex that the next vertex repeats keeps the piece before it', () => {
@@ -251,6 +301,34 @@ describe('EXTEND', () => {
     t.run('⏎')
     const [p] = polylines(t)
     expect(Array.from(p!.pts)).toEqual([-20, 0, -20, 0, 20, 0, 20, 0])
+  })
+
+  it('Shift+click trims at the same edges instead (shift-select)', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.run('L⏎6,-5⏎6,5⏎⏎')
+    t.run('L⏎12,-5⏎12,5⏎⏎')
+    t.run('EX⏎⏎')
+    expect(t.interp.prompt).toBe('Select object to extend or shift-select to trim or [Undo]:')
+    t.click(9, 0, true)
+    t.run('⏎')
+    expect(t.lines()[0]).toEqual([0, 0, 6, 0])
+  })
+
+  it('a pick on nothing opens a crossing window: every object it crosses is extended; with Shift, trimmed', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎4,0⏎⏎')
+    t.run('L⏎0,2⏎4,2⏎⏎')
+    t.run('L⏎10,-5⏎10,5⏎⏎')
+    t.run('EX⏎⏎')
+    t.click(3, 3) // nothing there: the first corner
+    expect(t.interp.prompt).toBe('Specify opposite corner:')
+    t.click(3.5, -1)
+    expect(t.lines()).toEqual([[0, 0, 10, 0], [0, 2, 10, 2], [10, -5, 10, 5]])
+    t.click(12, 1)
+    t.click(8, -1, true) // met first along the bottom, the boundary loses its piece below the lower line
+    t.run('⏎')
+    expect(t.lines()).toEqual([[0, 0, 10, 0], [0, 2, 10, 2], [10, 0, 10, 5]])
   })
 
   it('with no boundary in the way nothing changes', () => {

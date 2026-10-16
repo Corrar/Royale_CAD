@@ -272,6 +272,18 @@ describe('object snap and ORTHO', () => {
     expect(t.lines()).toEqual([[0, 0, 10, 0], [10, 0, 10, 7]])
   })
 
+  it('a typed distance runs along the rubber band, to the snap shown when there is one, as in AutoCAD', () => {
+    const t = commandBench()
+    t.run('L⏎10,2⏎20,2⏎⏎')
+    t.interp.ortho = true
+    t.run('L⏎0,0⏎')
+    t.interp.cursor = { x: 10.3, y: 2.2 } // the END marker shows: the rubber band and a click go to (10,2)
+    expect(t.interp.tracked?.p).toEqual({ x: 10, y: 2 })
+    t.run('5⏎⏎')
+    const k = 5 / Math.hypot(10, 2) // the typed length, not the snap point
+    expect(t.lines()[1]).toEqual([0, 0, 10 * k, 2 * k].map((v) => Math.round(v * 1e9) / 1e9))
+  })
+
   it('OSNAP wins over ORTHO, and both toggles notify', () => {
     const t = commandBench()
     t.run('C⏎5,5⏎1⏎')
@@ -327,6 +339,20 @@ describe('AutoCAD parity (M3 review)', () => {
     t.run('L⏎0,0⏎10,0⏎⏎')
     t.run('⏎⏎@0,5⏎⏎') // Enter repeats LINE, Enter again continues from (10,0)
     expect(t.lines()).toEqual([[0, 0, 10, 0], [10, 0, 10, 5]])
+  })
+
+  it('Enter at the first point after an arc goes on from its end, tangent to it, for a length', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.run('A⏎20,0⏎25,5⏎30,0⏎') // clockwise: it ends at (30,0) heading down
+    t.run('L⏎⏎')
+    expect(t.interp.prompt).toBe('Length of line:')
+    t.run('5⏎@5,0⏎⏎')
+    expect(t.lines()).toEqual([[0, 0, 10, 0], [30, 0, 30, -5], [30, -5, 35, -5]])
+    const u = commandBench()
+    u.run('A⏎C⏎0,0⏎5,0⏎0,5⏎') // counter-clockwise: it ends at (0,5) heading left
+    u.run('L⏎⏎2⏎⏎')
+    expect(u.lines()).toEqual([[0, 5, -2, 5]])
   })
 
   it('ZOOM takes .5x and 0.5x; its prompt has one "or"', () => {

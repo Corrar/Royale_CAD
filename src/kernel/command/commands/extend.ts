@@ -5,8 +5,8 @@ import { bulgeToArc } from '../../geom/curve'
 import { intersect } from '../../geom/intersect'
 import { TAU, normAngle } from '../../geom/tol'
 import type { Vec2 } from '../../geom/vec'
-import { getPoint, type Command, type CommandContext } from '../runtime'
-import { edgeSet, edgesNear, picked } from './trim'
+import type { Command, CommandContext } from '../runtime'
+import { edgePicks, edgeSet, edgesNear, trimAt } from './trim'
 
 /** How far from q along the unit direction dir the nearest boundary lies (beyond tol); null when none does. */
 function rayHit(ctx: CommandContext, q: Vec2, dir: Vec2, edges: Set<number> | null, self: number, tol: number): number | null {
@@ -133,29 +133,14 @@ function extended(ctx: CommandContext, e: Entity, at: Vec2, edges: Set<number> |
   }
 }
 
+/** EXTEND's edit, for the shift-select of TRIM too. */
+export function extendAt(ctx: CommandContext, e: Entity, at: Vec2, edges: Set<number> | null): Entity[] | string {
+  const out = extended(ctx, e, at, edges)
+  return typeof out === 'string' ? out : [out]
+}
+
 /** EXTEND: each pick takes the nearer end of an object to the nearest boundary, until Enter. */
 export const extend: Command = function* (ctx) {
   const edges = yield* edgeSet(ctx, 'boundary edges')
-  let extensions = 0
-  for (;;) {
-    const r = yield* getPoint('Select object to extend', { pick: true, allowEmpty: true, keywords: ['Undo'] })
-    if (r === null) return
-    if (r === 'Undo') {
-      if (extensions > 0) {
-        ctx.doc.undo()
-        extensions--
-      } else ctx.message('Nothing to undo.')
-      continue
-    }
-    if (typeof r === 'string') continue
-    const e = picked(ctx, r)
-    if (!e) continue
-    const out = extended(ctx, e, r, edges)
-    if (typeof out === 'string') {
-      ctx.message(out)
-      continue
-    }
-    ctx.doc.transact('EXTEND', (tx) => tx.replace(out))
-    extensions++
-  }
+  yield* edgePicks(ctx, edges, 'EXTEND', 'Select object to extend or shift-select to trim', extendAt, trimAt)
 }
