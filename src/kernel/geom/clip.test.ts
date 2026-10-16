@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { arcSpansInBox, clipSegment } from './clip'
+import { arcSpansInBox, clipSegment, triangleTouchesBox } from './clip'
 import { TAU, normAngle } from './tol'
 
 const BOX = { minX: 0, minY: 0, maxX: 10, maxY: 5 }
@@ -97,5 +97,20 @@ describe('arcSpansInBox', () => {
       const x = 5 + r * Math.cos(a + t)
       expect(x === 0 || x === 10 || Math.abs(x) < 1e-6 || Math.abs(x - 10) < 1e-6).toBe(true)
     }
+  })
+})
+
+describe('triangleTouchesBox', () => {
+  it('a corner inside, an edge across, or the box inside the triangle', () => {
+    expect(triangleTouchesBox(BOX, 5, 2, 20, 2, 20, 30)).toBe(true) // a corner inside
+    expect(triangleTouchesBox(BOX, -5, 2, 15, 2, 5, -10)).toBe(true) // an edge across, no corner inside
+    expect(triangleTouchesBox(BOX, -100, -100, 100, -100, 0, 100)).toBe(true) // the box inside it
+    expect(triangleTouchesBox(BOX, 10, 5, 20, 5, 20, 15)).toBe(true) // touching at a corner
+  })
+
+  it('apart: beside the box, or around a corner without reaching it', () => {
+    expect(triangleTouchesBox(BOX, 11, 0, 20, 0, 20, 5)).toBe(false)
+    expect(triangleTouchesBox(BOX, 9, 7, 12, 7, 12, 4)).toBe(false) // its box overlaps, the triangle misses
+    expect(triangleTouchesBox(BOX, 12, 6, 12, 6, 12, 6)).toBe(false) // a point
   })
 })

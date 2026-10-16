@@ -5,7 +5,7 @@ import { splitDouble } from './hilo'
 export type BatchId = number
 // subdiv applies to the arc of each instance, so arcSubdiv(largest radius in px) is a safe upper bound.
 export interface Draw { batch: BatchId; first: number; count: number; subdiv?: number }
-export type BatchKind = 'segment' | 'arc' | 'glyph'
+export type BatchKind = 'segment' | 'arc' | 'glyph' | 'tri'
 
 export interface RenderBackend {
   createBatch(kind: BatchKind, capacity: number): BatchId
@@ -41,6 +41,7 @@ export const MAX_ARC_RADIUS_PX = 1e6
 export const SEGMENT_STRIDE = 36 // bytes per instance
 export const ARC_STRIDE = 32
 export const GLYPH_STRIDE = 40
+export const TRI_STRIDE = 52
 export const STYLE_WORDS = 2 // u32 words per style
 
 const SEGMENT_WORDS = SEGMENT_STRIDE / 4
@@ -94,6 +95,23 @@ export function writeGlyph(
   f32[w + 7] = vy
   u32[w + 8] = glyph
   u32[w + 9] = styleId
+}
+
+const TRI_WORDS = TRI_STRIDE / 4
+
+/** A filled triangle: its corners as hi/lo pairs, like a segment's ends. */
+export function writeTri(
+  f32: Float32Array, u32: Uint32Array, index: number,
+  x0: number, y0: number, x1: number, y1: number, x2: number, y2: number, styleId: number,
+): void {
+  const w = index * TRI_WORDS
+  splitDouble(x0, f32, w)
+  splitDouble(y0, f32, w + 2)
+  splitDouble(x1, f32, w + 4)
+  splitDouble(y1, f32, w + 6)
+  splitDouble(x2, f32, w + 8)
+  splitDouble(y2, f32, w + 10)
+  u32[w + 12] = styleId
 }
 
 /** Subdivisions of a full circle that keep the chord sagitta within 0.25 px. */

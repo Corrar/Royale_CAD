@@ -37,6 +37,17 @@ export function segmentDistance(px: number, py: number, x0: number, y0: number, 
   return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy))
 }
 
+/** Distance from (px, py) to the filled triangle (x0, y0)-(x1, y1)-(x2, y2), either way round: 0 inside or on it. */
+export function triangleDistance(px: number, py: number, x0: number, y0: number, x1: number, y1: number, x2: number, y2: number): number {
+  const a = (x1 - x0) * (py - y0) - (y1 - y0) * (px - x0)
+  const b = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1)
+  const c = (x0 - x2) * (py - y2) - (y0 - y2) * (px - x2)
+  // On the same side of every edge; a flat triangle has no inside, only its edges.
+  const flat = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0) === 0
+  if (!flat && ((a >= 0 && b >= 0 && c >= 0) || (a <= 0 && b <= 0 && c <= 0))) return 0
+  return Math.min(segmentDistance(px, py, x0, y0, x1, y1), segmentDistance(px, py, x1, y1, x2, y2), segmentDistance(px, py, x2, y2, x0, y0))
+}
+
 /** x' = a·x + c·y + e, y' = b·x + d·y + f. */
 export interface Affine { a: number; b: number; c: number; d: number; e: number; f: number }
 

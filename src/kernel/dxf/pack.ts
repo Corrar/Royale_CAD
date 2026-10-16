@@ -1,7 +1,7 @@
 import type { Draft } from '../document'
 import type { Attrib, Block, BlockEntity, Text } from '../entity/types'
 
-const KIND = { line: 0, circle: 1, arc: 2, point: 3, polyline: 4, opaque: 5, ellipse: 6, spline: 7, insert: 8, text: 9, mtext: 10 } as const
+const KIND = { line: 0, circle: 1, arc: 2, point: 3, polyline: 4, opaque: 5, ellipse: 6, spline: 7, insert: 8, text: 9, mtext: 10, solid: 11 } as const
 
 /**
  * Drafts as a few typed arrays, so a worker can hand a million of them over without the structured clone of a
@@ -23,7 +23,7 @@ export interface DraftPack {
    * rows dx dy, its attribute count, then for each its tag's index in texts, layer, color + 1 and the numbers of a
    * text, hidden adding 4 to its flags · text its value's index in texts, x y x2 y2 height rotation widthFactor
    * oblique halign valign, then backward + 2·upsideDown · mtext its value's index, x y height width attachment
-   * rotation spacing.
+   * rotation spacing · solid x0 y0 x1 y1 x2 y2 x3 y3.
    */
   readonly nums: Float64Array
   /** Draft k's numbers start at nums[at[k]]. */
@@ -152,6 +152,9 @@ export function packDrafts(drafts: readonly Draft[]): DraftPack {
       case 'mtext':
         put(texts.length, d.x, d.y, d.height, d.width, d.attachment, d.rotation, d.spacing)
         texts.push(d.value)
+        break
+      case 'solid':
+        put(d.x0, d.y0, d.x1, d.y1, d.x2, d.y2, d.x3, d.y3)
         break
       case 'spline': {
         const m = d.ctrl.length >> 1
@@ -291,6 +294,9 @@ export function unpackDrafts(p: DraftPack, from: number, to: number): Draft[] {
           type: 'mtext', layer, value: p.texts[v[o]!]!, x: v[o + 1]!, y: v[o + 2]!, height: v[o + 3]!, width: v[o + 4]!,
           attachment: v[o + 5]!, rotation: v[o + 6]!, spacing: v[o + 7]!,
         }
+        break
+      case KIND.solid:
+        d = { type: 'solid', layer, x0: v[o]!, y0: v[o + 1]!, x1: v[o + 2]!, y1: v[o + 3]!, x2: v[o + 4]!, y2: v[o + 5]!, x3: v[o + 6]!, y3: v[o + 7]! }
         break
       default: {
         const i = v[o]!

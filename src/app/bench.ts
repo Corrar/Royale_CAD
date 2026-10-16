@@ -204,6 +204,7 @@ function onEntity(e: Entity): Vec2 {
     case 'insert':
     case 'text':
     case 'mtext':
+    case 'solid':
       throw new Error(`the bench makes no ${e.type} entities`)
   }
 }
@@ -228,6 +229,8 @@ function shifted(e: Entity, d: number): Entity {
       return { ...e, x: e.x + d }
     case 'text':
       return { ...e, x: e.x + d, x2: e.x2 + d }
+    case 'solid':
+      return { ...e, x0: e.x0 + d, x1: e.x1 + d, x2: e.x2 + d, x3: e.x3 + d }
     case 'opaque':
       return e
   }

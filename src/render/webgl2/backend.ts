@@ -1,11 +1,11 @@
 import type { ViewState } from '../../kernel/view'
 import {
-  ARC_STRIDE, GLYPH_STRIDE, MAX_ARC_SUBDIV, SEGMENT_STRIDE, STYLE_WORDS, type BackendTheme, type BatchId, type BatchKind, type Draw, type RenderBackend,
+  ARC_STRIDE, GLYPH_STRIDE, MAX_ARC_SUBDIV, SEGMENT_STRIDE, STYLE_WORDS, TRI_STRIDE, type BackendTheme, type BatchId, type BatchKind, type Draw, type RenderBackend,
 } from '../backend'
 import type { GlyphUpload } from '../glyphs'
 import { gridParams } from '../grid'
 import { splitDouble } from '../hilo'
-import { ARC_VERT, GLYPH_FRAG, GLYPH_VERT, GRID_FRAG, GRID_VERT, SEGMENT_FRAG, SEGMENT_VERT } from './shaders'
+import { ARC_VERT, GLYPH_FRAG, GLYPH_VERT, GRID_FRAG, GRID_VERT, SEGMENT_FRAG, SEGMENT_VERT, TRI_VERT } from './shaders'
 
 export interface WebGL2Backend extends RenderBackend {
   /** Removes the canvas listeners and frees every GPU resource. The canvas context stays alive. */
@@ -29,11 +29,13 @@ interface Pipeline {
   >
 }
 
-// The kinds share the attribute slots (vec4, float vector, uint styleId last); glyphs add their index before it.
+// The kinds share the attribute slots (vec4, float vector, uint styleId last); glyphs add their index before it,
+// tris their third corner.
 const LAYOUT: Record<Kind, { stride: number; shapeSize: number; vert: string; frag: string }> = {
   segment: { stride: SEGMENT_STRIDE, shapeSize: 4, vert: SEGMENT_VERT, frag: SEGMENT_FRAG },
   arc: { stride: ARC_STRIDE, shapeSize: 3, vert: ARC_VERT, frag: SEGMENT_FRAG },
   glyph: { stride: GLYPH_STRIDE, shapeSize: 4, vert: GLYPH_VERT, frag: GLYPH_FRAG },
+  tri: { stride: TRI_STRIDE, shapeSize: 4, vert: TRI_VERT, frag: SEGMENT_FRAG },
 }
 /** Glyphs per row of the glyph table texture, two texels each. */
 const GLYPHS_PER_ROW = 1024
@@ -113,7 +115,7 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
     const vao = gl!.createVertexArray()
     pipelines[kind] = { program: p, vao, u: Object.fromEntries(names.map((n) => [n, gl!.getUniformLocation(p, n)])) as Pipeline['u'] }
     gl!.bindVertexArray(vao)
-    for (const loc of kind === 'glyph' ? [0, 1, 2, 3] : [0, 1, 2]) {
+    for (const loc of kind === 'glyph' || kind === 'tri' ? [0, 1, 2, 3] : [0, 1, 2]) {
       gl!.enableVertexAttribArray(loc)
       gl!.vertexAttribDivisor(loc, 1)
     }
@@ -233,9 +235,12 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
       gl!.vertexAttribPointer(1, shapeSize, gl!.FLOAT, false, stride, o + 16)
       gl!.vertexAttribIPointer(2, 1, gl!.UNSIGNED_INT, stride, o + stride - 4)
       if (b.kind === 'glyph') gl!.vertexAttribIPointer(3, 1, gl!.UNSIGNED_INT, stride, o + 32)
+      if (b.kind === 'tri') gl!.vertexAttribPointer(3, 4, gl!.FLOAT, false, stride, o + 32)
       if (b.kind === 'arc') {
         gl!.uniform1i(u.subdiv, d.subdiv!)
         gl!.drawArraysInstanced(gl!.TRIANGLE_STRIP, 0, 2 * (d.subdiv! + 1), d.count)
+      } else if (b.kind === 'tri') {
+        gl!.drawArraysInstanced(gl!.TRIANGLES, 0, 3, d.count)
       } else {
         gl!.drawArraysInstanced(gl!.TRIANGLE_STRIP, 0, 4, d.count)
       }
@@ -256,6 +261,7 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
     buildPipeline('segment')
     buildPipeline('arc')
     buildPipeline('glyph')
+    buildPipeline('tri')
     uploadStyles()
     uploadGlyphs()
     for (const b of batches.values()) allocBatch(b)
@@ -268,6 +274,7 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
   buildPipeline('segment')
   buildPipeline('arc')
   buildPipeline('glyph')
+  buildPipeline('tri')
   uploadStyles()
   uploadGlyphs()
 

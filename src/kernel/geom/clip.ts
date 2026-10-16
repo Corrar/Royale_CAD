@@ -1,6 +1,6 @@
 import { onArc } from './curve'
 import { EPS, TAU, normAngle } from './tol'
-import type { BBox } from './vec'
+import { triangleDistance, type BBox } from './vec'
 
 /** Liang–Barsky: the part of the segment inside the closed box b, in the segment's direction, or null. */
 export function clipSegment(b: BBox, x0: number, y0: number, x1: number, y1: number): [number, number, number, number] | null {
@@ -22,6 +22,13 @@ export function clipSegment(b: BBox, x0: number, y0: number, x1: number, y1: num
     t1 === 1 ? x1 : x0 + t1 * dx,
     t1 === 1 ? y1 : y0 + t1 * dy,
   ]
+}
+
+/** Whether the filled triangle reaches into the closed box b: a corner or an edge does, or the box lies inside it. */
+export function triangleTouchesBox(b: BBox, x0: number, y0: number, x1: number, y1: number, x2: number, y2: number): boolean {
+  if (clipSegment(b, x0, y0, x1, y1) || clipSegment(b, x1, y1, x2, y2) || clipSegment(b, x2, y2, x0, y0)) return true
+  // No edge reaches in: the box is wholly inside the triangle, or apart. One of its corners tells which.
+  return triangleDistance(b.minX, b.minY, x0, y0, x1, y1, x2, y2) === 0
 }
 
 /**

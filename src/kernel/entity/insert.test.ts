@@ -172,6 +172,23 @@ describe('insert', () => {
     expect(flipped.attribs![2]!.hidden).toBe(true)
   })
 
+  it('a filled triangle of the block lands through the affine, stretch included; picked on its fill', () => {
+    const S: Block = { name: 'S', x: 0, y: 0, entities: [{ type: 'solid', layer: 0, x0: 0, y0: 0, x1: 2, y1: 0, x2: 0, y2: 1, x3: 0, y3: 1 }] }
+    for (const e of [insert(S, { x: 10, y: 5, rotation: deg(90) }), insert(S, { x: 10, y: 5, sx: 3, sy: 0.5 })]) {
+      const m = { a: Math.cos(e.rotation) * e.sx, b: Math.sin(e.rotation) * e.sx, c: -Math.sin(e.rotation) * e.sy, d: Math.cos(e.rotation) * e.sy, e: 10, f: 5 }
+      const tris: number[][] = []
+      typeOf(e).primitives(e, 0, { segment() {}, arc() {}, tri: (...c) => tris.push(c.map(r6)) })
+      const want = [[0, 0], [2, 0], [0, 1]].flatMap(([x, y]) => {
+        const p = applyAffine(m, x!, y!)
+        return [r6(p.x), r6(p.y)]
+      })
+      expect(tris).toEqual([want])
+      // Inside the triangle, a third of the way from each corner.
+      const c = { x: (want[0]! + want[2]! + want[4]!) / 3, y: (want[1]! + want[3]! + want[5]!) / 3 }
+      expect(typeOf(e).distance(e, c)).toBeCloseTo(0, 9)
+    }
+  })
+
   it('validate: non-zero scales and a grid of whole copies', () => {
     expect(typeOf(insert(A)).validate!(insert(A))).toBeUndefined()
     expect(typeOf(insert(A)).validate!(insert(A, { sx: 0 }))).toMatch(/scale/)

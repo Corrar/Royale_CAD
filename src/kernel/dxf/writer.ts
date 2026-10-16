@@ -209,6 +209,14 @@ function fresh(c: Ctx, e: Entity, handle: string | null): void {
     }
     case 'text':
       return freshText(c, e, handle)
+    case 'solid':
+      head(c, 'SOLID', e, handle, 'AcDbTrace')
+      for (const [k, x, y] of [[0, e.x0, e.y0], [1, e.x1, e.y1], [2, e.x2, e.y2], [3, e.x3, e.y3]] as const) {
+        o.real(10 + k, x)
+        o.real(20 + k, y)
+        o.real(30 + k, 0)
+      }
+      return
     case 'mtext': {
       if (!f.modern) {
         // R12 has no MTEXT: a TEXT for each line, where the line shows.
@@ -457,7 +465,7 @@ function vertexRecords(c: Ctx, o: Emitter, e: Polyline, owner: string | null, s:
 
 const DXF_NAME: Readonly<Record<Entity['type'], string>> = {
   line: 'LINE', point: 'POINT', circle: 'CIRCLE', arc: 'ARC', polyline: 'LWPOLYLINE', opaque: '', ellipse: 'ELLIPSE', spline: 'SPLINE',
-  insert: 'INSERT', text: 'TEXT', mtext: 'MTEXT',
+  insert: 'INSERT', text: 'TEXT', mtext: 'MTEXT', solid: 'SOLID',
 }
 
 /**
@@ -572,6 +580,22 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
     }
     case 'text':
       ok = patchText(gs, e, 73, c.f.modern) && ok
+      break
+    case 'solid':
+      put(10, s * e.x0)
+      put(20, e.y0)
+      put(11, s * e.x1)
+      put(21, e.y1)
+      put(12, s * e.x2)
+      put(22, e.y2)
+      if (at(13) >= 0) {
+        put(13, s * e.x3)
+        put(23, e.y3)
+      } else if (e.x3 !== e.x2 || e.y3 !== e.y2) {
+        // Left out as the third corner, the fourth is one of its own now: after the third, at its height.
+        const k = Math.max(at(22), at(32))
+        gs.splice(k + 1, 0, [13, real(s * e.x3)], [23, real(e.y3)], [33, gs[at(32)]?.[1] ?? real(0)])
+      }
       break
     case 'mtext':
       put(10, e.x)

@@ -487,6 +487,21 @@ function parser(pairs: PairList) {
     }
   }
 
+  /** SOLID: four corners in its OCS; without 13/23 the fourth is the third (a triangle). */
+  const solid = (a: number, b: number): Parsed => {
+    const v = [0, 0, 0, 0, 0, 0, NaN, NaN] // x0 y0 x1 y1 x2 y2 x3 y3
+    for (let i = a + 1; i < b; i++) {
+      const c = codes[i]!
+      if (c >= 10 && c <= 13) v[2 * (c - 10)] = num(i)
+      else if (c >= 20 && c <= 23) v[2 * (c - 20) + 1] = num(i)
+      else common(c, i)
+    }
+    if (Number.isNaN(v[6])) v[6] = v[4]!
+    if (Number.isNaN(v[7])) v[7] = v[5]!
+    const s = ocsSign(head)
+    return { type: 'solid', x0: s * v[0]!, y0: v[1]!, x1: s * v[2]!, y1: v[3]!, x2: s * v[4]!, y2: v[5]!, x3: s * v[6]!, y3: v[7]! }
+  }
+
   /** Text is read seen from +Z only: from -Z it reads mirrored, which a text cannot say yet. */
   const upright = (): void => {
     if (ocsSign(head) === -1) throw new Unsupported('mirrored text (extrusion (0, 0, -1)) is not supported')
@@ -648,6 +663,8 @@ function parser(pairs: PairList) {
         return text(a, own)
       case 'MTEXT':
         return mtext(a, own)
+      case 'SOLID':
+        return solid(a, own)
     }
     return null
   }

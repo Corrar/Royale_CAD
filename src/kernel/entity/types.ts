@@ -200,7 +200,23 @@ export interface MText extends Base {
   readonly spacing: number
 }
 
-export type Entity = Line | Circle | Arc | Polyline | Point | Opaque | Ellipse | Spline | Insert | Text | MText
+/**
+ * A filled triangle or quad (DXF SOLID): the four corners in the file's order, which fills the quad 1-2-4-3 (the
+ * third and fourth corners swap against the outline). A triangle repeats corner 3 as corner 4.
+ */
+export interface Solid extends Base {
+  readonly type: 'solid'
+  readonly x0: number
+  readonly y0: number
+  readonly x1: number
+  readonly y1: number
+  readonly x2: number
+  readonly y2: number
+  readonly x3: number
+  readonly y3: number
+}
+
+export type Entity = Line | Circle | Arc | Polyline | Point | Opaque | Ellipse | Spline | Insert | Text | MText | Solid
 
 /** Object snap modes, as bits (AutoCAD's OSMODE uses its own values; these are ours). */
 export const SNAP = { END: 1, MID: 2, CEN: 4, INT: 8, QUA: 16, PER: 32, NEA: 64, NOD: 128, INS: 256 } as const
@@ -220,6 +236,8 @@ export interface PrimSink {
    * in text/font.ts.
    */
   glyph?(cp: number, x: number, y: number, ux: number, uy: number, vx: number, vy: number): void
+  /** A filled triangle, in world coordinates. */
+  tri?(x0: number, y0: number, x1: number, y1: number, x2: number, y2: number): void
 }
 
 export interface EntityType<E extends Entity> {

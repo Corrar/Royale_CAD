@@ -161,6 +161,22 @@ void main() {
 }
 `
 
+// Tri: one instanced triangle per filled triangle, its corner picked by gl_VertexID. The corners take the hi/lo
+// subtraction like a segment's ends; a fill has no stroke, so the style's width goes unused.
+export const TRI_VERT = INSTANCED_HEAD + `
+layout(location = 0) in vec4 p0; // x0hi, x0lo, y0hi, y0lo
+layout(location = 1) in vec4 p1;
+layout(location = 2) in uint styleId;
+layout(location = 3) in vec4 p2;
+
+void main() {
+  float half_w;
+  if (!loadStyle(styleId, half_w)) { drop(); return; }
+  vec4 p = gl_VertexID == 0 ? p0 : gl_VertexID == 1 ? p1 : p2;
+  gl_Position = vec4(toEyePx(p) / (0.5 * viewportPx), 0.0, 1.0);
+}
+`
+
 // The edge is where the distance field crosses 0.5; fwidth antialiases it over about a pixel at any size. Small
 // text has strokes thinner than a pixel, which one sample per pixel would miss: four more samples, at the corners of
 // a box half a pixel wide, are averaged in.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
-import { BY_BLOCK, type Arc, type Circle, type Ellipse, type Entity, type Insert, type Line, type MText, type Opaque, type Point, type Polyline, type Spline, type Text } from '../entity/types'
+import { BY_BLOCK, type Arc, type Circle, type Ellipse, type Entity, type Insert, type Line, type MText, type Opaque, type Point, type Polyline, type Solid, type Spline, type Text } from '../entity/types'
 import { createDocument } from '../document'
 import { arcSweep } from '../geom/curve'
 import { drawingFrom, loader, parseDxf, readDxf } from './reader'
@@ -147,6 +147,30 @@ describe('readDxf', () => {
     expect(s.type).toBe('line')
     expect(i.block.entities.map((e) => e.type)).toEqual(['line'])
     expect(d.warnings).toEqual(['2 invisible entities kept as is (not drawn).', '1 entity in blocks not drawn.'])
+  })
+
+  it('SOLID: four corners in DXF order, 13 defaulting to 12; (0, 0, -1) mirrors them; tilted, and TRACE, stay as is', () => {
+    const tilted: G = [0, 'SOLID', 8, '0', 10, 0, 20, 0, 11, 1, 21, 0, 12, 0, 22, 1, 13, 1, 23, 1, 210, 0, 220, 1, 230, 0]
+    const trace: G = [0, 'TRACE', 8, '0', 10, 0, 20, 0, 11, 1, 21, 0, 12, 0, 22, 1, 13, 1, 23, 1]
+    const blocks: G = [0, 'BLOCK', 8, '0', 2, 'ARROW', 70, 0, 10, 0, 20, 0, 0, 'SOLID', 8, '0', 62, 0, 10, 0, 20, 0, 11, -1, 21, 0.25, 12, -1, 22, -0.25, 0, 'ENDBLK']
+    const d = readDxf(lines([
+      0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC',
+      0, 'SECTION', 2, 'ENTITIES',
+      0, 'SOLID', 5, '50', 8, 'Fill', 62, 1, 10, 0, 20, 0, 30, 0, 11, 10, 21, 0, 31, 0, 12, 0, 22, 5, 32, 0, 13, 10, 23, 5, 33, 0,
+      0, 'SOLID', 8, '0', 10, 1, 20, 2, 11, 3, 21, 2, 12, 2, 22, 4,
+      0, 'SOLID', 8, '0', 10, 1, 20, 2, 11, 3, 21, 2, 12, 2, 22, 4, 13, 5, 23, 6, 210, 0, 220, 0, 230, -1,
+      ...tilted, ...trace,
+      0, 'INSERT', 8, '0', 62, 5, 2, 'ARROW', 10, 7, 20, 7,
+      0, 'ENDSEC', 0, 'EOF',
+    ]))
+    const [quad, tri, mirrored, t, tr, ins] = all(d) as [Solid, Solid, Solid, Opaque, Opaque, Insert]
+    expect(quad).toEqual({ type: 'solid', id: 1, layer: d.doc.layers.indexOf('Fill'), color: 1, x0: 0, y0: 0, x1: 10, y1: 0, x2: 0, y2: 5, x3: 10, y3: 5 })
+    expect(tri).toMatchObject({ x0: 1, y0: 2, x1: 3, y1: 2, x2: 2, y2: 4, x3: 2, y3: 4 })
+    expect(mirrored).toMatchObject({ x0: -1, y0: 2, x1: -3, y1: 2, x2: -2, y2: 4, x3: -5, y3: 6 })
+    expect(t).toMatchObject({ type: 'opaque', name: 'SOLID', raw: lines(tilted) })
+    expect(tr).toMatchObject({ type: 'opaque', name: 'TRACE', raw: lines(trace) })
+    expect(ins.block.entities).toEqual([{ type: 'solid', layer: 0, color: BY_BLOCK, x0: 0, y0: 0, x1: -1, y1: 0.25, x2: -1, y2: -0.25, x3: -1, y3: -0.25 }])
+    expect(d.warnings).toEqual([expect.stringMatching(/SOLID kept as is: extrusion \(0, 1, 0\)/), '1 TRACE kept as is (not drawn).'])
   })
 
   it('ELLIPSE: in WCS; an extrusion of (0, 0, -1) runs it the other way; 0 to 2π is the whole ellipse', () => {

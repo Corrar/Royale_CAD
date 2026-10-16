@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { typeOf } from '../entity/registry'
-import type { Arc, Circle, Entity, Line, Polyline } from '../entity/types'
+import type { Arc, Block, Circle, Entity, Insert, Line, Polyline, Solid } from '../entity/types'
 import { intersect } from './intersect'
 import type { Vec2 } from './vec'
 
@@ -10,6 +10,8 @@ const circle = (cx: number, cy: number, r: number): Circle => ({ type: 'circle',
 const arc = (cx: number, cy: number, r: number, a0: number, a1: number): Arc => ({ type: 'arc', id: id++, layer: 0, cx, cy, r, a0, a1 })
 const poly = (pts: number[], bulges: number[] | null, closed = false): Polyline =>
   ({ type: 'polyline', id: id++, layer: 0, pts: new Float64Array(pts), bulges: bulges && new Float64Array(bulges), closed })
+
+const solid = (...c: number[]): Solid => ({ type: 'solid', id: id++, layer: 0, x0: c[0]!, y0: c[1]!, x1: c[2]!, y1: c[3]!, x2: c[4]!, y2: c[5]!, x3: c[6]!, y3: c[7]! })
 
 const sorted = (ps: Vec2[]): number[][] => ps.map((p) => [p.x, p.y].map((v) => Math.round(v * 1e9) / 1e9 + 0)).sort((a, b) => a[0]! - b[0]! || a[1]! - b[1]!)
 
@@ -62,6 +64,19 @@ describe('intersect', () => {
     // A bulged piece is an arc.
     const bump = poly([-5, 0, 5, 0], [-1, 0])
     expect(sorted(intersect(bump, line(0, -10, 0, 10)))).toEqual([[0, 5]])
+  })
+
+  it('a solid meets on the edges of its fill, not on the diagonal that splits it', () => {
+    const square = solid(0, 0, 10, 0, 0, 10, 10, 10)
+    expect(sorted(intersect(square, line(-5, 3, 15, 3)))).toEqual([[0, 3], [10, 3]])
+    expect(sorted(intersect(line(4, -5, 4, 5), solid(0, 0, 8, 0, 4, 4, 4, 4)))).toEqual([[4, 0], [4, 4]])
+    // Two solids of a block side by side: their common edge is inside the fill too.
+    const B: Block = {
+      name: 'B', x: 0, y: 0,
+      entities: [{ type: 'solid', layer: 0, x0: 0, y0: 0, x1: 5, y1: 0, x2: 0, y2: 5, x3: 5, y3: 5 }, { type: 'solid', layer: 0, x0: 5, y0: 0, x1: 10, y1: 0, x2: 5, y2: 5, x3: 10, y3: 5 }],
+    }
+    const pair: Insert = { type: 'insert', id: id++, layer: 0, block: B, x: 0, y: 0, sx: 1, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }
+    expect(sorted(intersect(pair, line(-1, 2, 11, 2)))).toEqual([[0, 2], [10, 2]])
   })
 
   it('stays exact at UTM magnitudes', () => {
