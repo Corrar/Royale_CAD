@@ -121,7 +121,10 @@ function mtextPlan(m: MTextProps): { frame: TextFrame; lines: { text: string; x:
   const row = Math.floor((m.attachment - 1) / 3)
   const lines = texts.map((text, i) => ({ text, x: ((w - widths[i]!) * col) / 2, y: -1 - i * gap }))
   const frame = frameAt(m.x, m.y, (col * w) / 2, (-row * toLast) / 2, m.rotation, m.height, 1, 0)
-  return { frame, lines, box: { x0: 0, y0: -toLast - DESCENT, x1: w, y1: 0 } }
+  // A word wider than the width keeps its line and runs out of the width: the box takes it in.
+  const x0 = Math.min(0, ...lines.map((l) => l.x))
+  const x1 = Math.max(w, ...lines.map((l, i) => l.x + widths[i]!))
+  return { frame, lines, box: { x0, y0: -toLast - DESCENT, x1, y1: 0 } }
 }
 
 /**

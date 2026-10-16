@@ -78,6 +78,16 @@ describe('layoutMText', () => {
     expect([...new Set(two.glyphs.map((g) => g.y))]).toEqual([-1, -1 - 10 / 3])
   })
 
+  it('a word wider than the width keeps its line and runs out of the box: the box takes it in', () => {
+    const w = widthOf('HHHHHH')
+    for (const [attachment, x0, x1] of [[1, 0, w], [2, 1 - w / 2, 1 + w / 2], [3, 2 - w, 2]] as const) {
+      const l = layoutMText(mtext({ value: 'HHHHHH HH', width: 2, attachment }))
+      expect([...new Set(l.glyphs.map((g) => g.y))]).toHaveLength(2)
+      expect(l.box.x0).toBeCloseTo(x0, 12)
+      expect(l.box.x1).toBeCloseTo(x1, 12)
+    }
+  })
+
   it('a tab (^I) goes to the next stop, every 4 heights from where the line starts; control characters draw nothing', () => {
     const list = layoutMText(mtext({ value: '\\pxi-3,l3,t3;1.^IALL\\P10.^IALL' }))
     expect(list.glyphs.map((g) => String.fromCodePoint(g.cp)).join('')).toBe('1.ALL10.ALL')
