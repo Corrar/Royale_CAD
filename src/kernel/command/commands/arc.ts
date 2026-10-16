@@ -9,7 +9,10 @@ const isPoint = (v: unknown): v is Vec2 => typeof v === 'object' && v !== null
 /** The entity for an arc with a signed sweep: Arc runs counter-clockwise from a0 to a1. */
 export function arcEntity(ctx: CommandContext, g: ArcGeom): Omit<Arc, 'id'> {
   const start = g.sweep >= 0 ? g.a0 : g.a0 + g.sweep
-  return { type: 'arc', layer: ctx.layer, cx: g.cx, cy: g.cy, r: g.r, a0: normAngle(start), a1: normAngle(start + Math.abs(g.sweep)) }
+  const a0 = normAngle(start)
+  // A full turn ends where it starts: equal angles. start + 2π, normalized, can land a hair past a0, a sliver.
+  const a1 = Math.abs(g.sweep) >= TAU ? a0 : normAngle(start + Math.abs(g.sweep))
+  return { type: 'arc', layer: ctx.layer, cx: g.cx, cy: g.cy, r: g.r, a0, a1 }
 }
 
 /** ARC through three points (AutoCAD's default), or by Center, start and end, counter-clockwise. */

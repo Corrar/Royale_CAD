@@ -112,7 +112,8 @@ function extended(ctx: CommandContext, e: Entity, at: Vec2, edges: Set<number> |
         const sign = a.sweep >= 0 ? 1 : -1
         const turn = atEnd ? sign : (-sign as 1 | -1)
         const from = atEnd ? a.a0 + a.sweep : a.a0
-        const d = circleHit(ctx, { x: a.cx, y: a.cy }, a.r, from, turn, TAU - Math.abs(a.sweep), edges, e.id, path.slack(i))
+        // The path's slack is a fraction of the piece; circleHit wants an angle.
+        const d = circleHit(ctx, { x: a.cx, y: a.cy }, a.r, from, turn, TAU - Math.abs(a.sweep), edges, e.id, path.slack(i) * Math.abs(a.sweep))
         if (d === null) return MISSED
         const end = from + turn * d
         moveEnd(a.cx + a.r * Math.cos(end), a.cy + a.r * Math.sin(end))

@@ -207,6 +207,27 @@ describe('EXTEND', () => {
     expect(on(q!, 10 + 5 * Math.cos(2), -5 + 5 * Math.sin(2))).toBe(true)
   })
 
+  it('a flat arc end piece of a polyline reaches a boundary just past its end, the nearer of two', () => {
+    const t = commandBench()
+    // The end piece turns by 0.001 rad on a circle of radius 1000; its tolerance is a length, not that fraction of it.
+    t.doc.transact('PL', (tx) => {
+      tx.add({ type: 'polyline', layer: 0, pts: Float64Array.of(-999, 0, 0, 0, 1, 0), bulges: Float64Array.of(0, Math.tan(0.001 / 4), 0), closed: false })
+    })
+    t.run('L⏎1.005,-1⏎1.005,1⏎⏎')
+    t.run('L⏎1.02,-1⏎1.02,1⏎⏎')
+    t.run('EX⏎⏎')
+    t.click(0.9, 0.0001)
+    t.run('⏎')
+    expect(t.interp.history).not.toContain('Object does not intersect an edge.')
+    const [p] = polylines(t)
+    // Round the same circle, centre (0.5, cy), to x = 1.005.
+    const r = 0.5 / Math.sin(0.0005)
+    const cy = r * Math.cos(0.0005)
+    expect(p!.pts[4]).toBeCloseTo(1.005, 9)
+    expect(Math.hypot(p!.pts[4]! - 0.5, p!.pts[5]! - cy)).toBeCloseTo(r, 9)
+    expect(on(p!, 0.5, cy - r)).toBe(true)
+  })
+
   it('takes the end of a polyline nearer the click along it, whatever the vertex count', () => {
     const t = commandBench()
     t.run('PL⏎0,0⏎100,0⏎100,1⏎100,2⏎100,3⏎⏎')

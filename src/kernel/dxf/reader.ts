@@ -3,7 +3,7 @@ import { createDocument, type Document, type Draft, type Layer } from '../docume
 import { typeOf } from '../entity/registry'
 import { BY_BLOCK, type Attrib, type Block, type BlockEntity, type Entity, type Insert, type Text } from '../entity/types'
 import { nurbsProblem } from '../geom/curve'
-import { TAU, normAngle } from '../geom/tol'
+import { TAU, eq, normAngle } from '../geom/tol'
 import { bboxEmpty, bboxFinite } from '../geom/vec'
 import { entryEnd, findTable, layerEntry } from './tables'
 import { sections, tokenize, type PairList } from './tokenizer'
@@ -284,7 +284,11 @@ function parser(pairs: PairList) {
     // Mirrored, the run from a0 to a1 turns the other way: counter-clockwise it goes from 180° − a1 to 180° − a0.
     const b0 = s === 1 ? a0 * DEG : Math.PI - a1 * DEG
     const b1 = s === 1 ? a1 * DEG : Math.PI - a0 * DEG
-    return { type: 'arc', cx: s * cx, cy, r, a0: normAngle(b0), a1: normAngle(b1) }
+    // An end whole turns past the start (30° to 390°) is a full circle, as ezdxf reads it: equal angles. Turned into
+    // radians one by one, the two would land an ulp or two apart, a sliver.
+    const turns = Math.round((a1 - a0) / 360)
+    const full = turns !== 0 && eq(a1 - a0, 360 * turns)
+    return { type: 'arc', cx: s * cx, cy, r, a0: normAngle(b0), a1: normAngle(full ? b0 : b1) }
   }
 
   /**

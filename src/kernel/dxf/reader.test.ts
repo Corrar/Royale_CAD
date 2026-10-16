@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
 import { BY_BLOCK, type Arc, type Circle, type Ellipse, type Entity, type Insert, type Line, type MText, type Opaque, type Point, type Polyline, type Spline, type Text } from '../entity/types'
 import { createDocument } from '../document'
+import { arcSweep } from '../geom/curve'
 import { drawingFrom, loader, parseDxf, readDxf } from './reader'
 
 type G = (string | number)[]
@@ -105,6 +106,18 @@ describe('readDxf', () => {
     expect([Array.from(p.pts), Array.from(p.bulges!)]).toEqual([[-1, 0, -3, 0], [-0.5, -0]])
     expect(tilted).toMatchObject({ type: 'opaque', name: 'CIRCLE' })
     expect(d.warnings).toEqual(['line 85: CIRCLE kept as is: extrusion (1, 0, 0) is not supported.'])
+  })
+
+  it('an ARC whose end is whole turns past its start is a full circle (as ezdxf reads it), mirrored too', () => {
+    const arc = (a0: number, a1: number, ...more: G): G => [0, 'ARC', 8, '0', 10, 0, 20, 0, 40, 1, 50, a0, 51, a1, ...more]
+    const d = readDxf(file([
+      ...arc(30, 390), ...arc(-150, 210), ...arc(60, 420), ...arc(-149.7, 210.3), ...arc(30, 750),
+      ...arc(30, 390, 210, 0, 220, 0, 230, -1),
+    ]))
+    const arcs = all(d) as Arc[]
+    expect(arcs).toHaveLength(6)
+    // Turned into radians one by one, the two ends would land an ulp or two apart: a sliver, not a circle.
+    for (const a of arcs) expect(arcSweep(a.a0, a.a1)).toBe(2 * Math.PI)
   })
 
   it('keeps what it does not understand as is, with its exact text: HATCH, INSERT and its attributes, paper space', () => {
