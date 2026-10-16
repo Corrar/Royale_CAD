@@ -145,6 +145,22 @@ describe('TRIM', () => {
     expect(u.lines()).toEqual([[7, -5, 7, 5], [10, -5, 10, 5], [0, 0, 7, 0]])
   })
 
+  it('Shift+click extends to the same edges instead (shift-select), and Undo takes it back', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎8,0⏎⏎')
+    t.run('L⏎4,-5⏎4,5⏎⏎')
+    t.run('L⏎10,-5⏎10,5⏎⏎')
+    t.run('TR⏎⏎')
+    expect(t.interp.prompt).toBe('Select object to trim or shift-select to extend or [Undo]:')
+    t.click(7, 0, true)
+    expect(t.lines()[0]).toEqual([0, 0, 10, 0])
+    t.run('U⏎')
+    expect(t.lines()[0]).toEqual([0, 0, 8, 0])
+    t.click(7, 0)
+    t.run('⏎')
+    expect(t.lines()[0]).toEqual([0, 0, 4, 0])
+  })
+
   it('a cut at a vertex that the next vertex repeats keeps the piece before it', () => {
     const t = commandBench()
     t.run('PL⏎0,0⏎10,0⏎10,0⏎10,10⏎⏎')
@@ -230,6 +246,18 @@ describe('EXTEND', () => {
     t.run('⏎')
     const [p] = polylines(t)
     expect(Array.from(p!.pts)).toEqual([-20, 0, -20, 0, 20, 0, 20, 0])
+  })
+
+  it('Shift+click trims at the same edges instead (shift-select)', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.run('L⏎6,-5⏎6,5⏎⏎')
+    t.run('L⏎12,-5⏎12,5⏎⏎')
+    t.run('EX⏎⏎')
+    expect(t.interp.prompt).toBe('Select object to extend or shift-select to trim or [Undo]:')
+    t.click(9, 0, true)
+    t.run('⏎')
+    expect(t.lines()[0]).toEqual([0, 0, 6, 0])
   })
 
   it('with no boundary in the way nothing changes', () => {

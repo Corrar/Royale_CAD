@@ -67,7 +67,8 @@ export interface TextRequest extends Ask {
 export type Request = PointRequest | NumberRequest | KeywordRequest | SelectionRequest | TextRequest
 
 export type Input =
-  | { kind: 'point'; p: Vec2 }
+  /** shift: clicked with Shift held (TRIM's and EXTEND's shift-select). */
+  | { kind: 'point'; p: Vec2; shift?: boolean }
   | { kind: 'number'; value: number }
   | { kind: 'keyword'; word: string }
   | { kind: 'empty' }
@@ -529,7 +530,7 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     if (!gen || request?.kind === 'selection') return selectAt(raw, shift)
     const r = request!
     const p = resolve(raw).p
-    if (r.kind === 'point') return answer({ kind: 'point', p }, '')
+    if (r.kind === 'point') return answer({ kind: 'point', p, shift }, '')
     if (r.kind === 'number' && r.base) return answerNumber(r, measure(r, p), '')
     refuse('', r.kind === 'number' ? 'Requires a number.' : r.kind === 'text' ? 'Requires a name.' : 'Invalid option keyword.')
   }

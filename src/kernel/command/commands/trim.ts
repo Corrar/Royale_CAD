@@ -4,7 +4,9 @@ import { typeOf } from '../../entity/registry'
 import type { Entity } from '../../entity/types'
 import { intersect } from '../../geom/intersect'
 import type { BBox, Vec2 } from '../../geom/vec'
-import { getPoint, getSelection, type Command, type CommandContext, type Input, type Request } from '../runtime'
+import { getSelection, type Command, type CommandContext, type Input, type Request } from '../runtime'
+// extend.ts imports this module back: safe, as only functions cross, called once both have loaded.
+import { extendAt } from './extend'
 
 /**
  * The cutting edges (TRIM) or boundaries (EXTEND): the pre-selection or what is selected at the prompt; Enter
@@ -77,33 +79,40 @@ function trimmed(e: Entity, at: Vec2, edges: Entity[]): Entity[] | null {
   return head || tail ? out : null
 }
 
-/** TRIM: each pick removes the piece of an object between the cutting edges on either side, until Enter. */
-export const trim: Command = function* (ctx) {
-  const edges = yield* edgeSet(ctx, 'cutting edges')
-  let trims = 0
+/** What a pick at `at` does to e: the entities that take its place (the first keeps e's id), or why there are none. */
+type EdgeEdit = (ctx: CommandContext, e: Entity, at: Vec2, edges: Set<number> | null) => Entity[] | string
+
+/** TRIM's edit: e without the piece around `at` between the cutting edges on either side. */
+export function trimAt(ctx: CommandContext, e: Entity, at: Vec2, edges: Set<number> | null): Entity[] | string {
+  if (!pathOf(e)) return 'Cannot trim this object.'
+  return trimmed(e, at, edgesNear(ctx, typeOf(e).bbox(e), edges, e.id)) ?? 'Object does not intersect a cutting edge.'
+}
+
+/**
+ * The picks of TRIM and EXTEND, until Enter: each one edits the object under it, or with Shift does the other
+ * command's edit against the same edges (AutoCAD's shift-select). Undo takes back the last one.
+ */
+export function* edgePicks(ctx: CommandContext, edges: Set<number> | null, label: string, prompt: string, edit: EdgeEdit, shifted: EdgeEdit): Generator<Request, void, Input> {
+  let edits = 0
   for (;;) {
-    const r = yield* getPoint('Select object to trim', { pick: true, allowEmpty: true, keywords: ['Undo'] })
-    if (r === null) return
-    if (r === 'Undo') {
-      if (trims > 0) {
+    const r = yield { kind: 'point', prompt, pick: true, allowEmpty: true, keywords: ['Undo'] }
+    if (r.kind === 'empty') return
+    if (r.kind === 'keyword') {
+      if (edits > 0) {
         ctx.doc.undo()
-        trims--
+        edits--
       } else ctx.message('Nothing to undo.')
       continue
     }
-    if (typeof r === 'string') continue
-    const e = picked(ctx, r)
+    if (r.kind !== 'point') continue
+    const e = picked(ctx, r.p)
     if (!e) continue
-    if (!pathOf(e)) {
-      ctx.message('Cannot trim this object.')
+    const left = (r.shift ? shifted : edit)(ctx, e, r.p, edges)
+    if (typeof left === 'string') {
+      ctx.message(left)
       continue
     }
-    const left = trimmed(e, r, edgesNear(ctx, typeOf(e).bbox(e), edges, e.id))
-    if (!left) {
-      ctx.message('Object does not intersect a cutting edge.')
-      continue
-    }
-    ctx.doc.transact('TRIM', (tx) => {
+    ctx.doc.transact(label, (tx) => {
       tx.replace(left[0]!)
       for (const piece of left.slice(1)) {
         const { id: _id, ...draft } = piece
@@ -112,6 +121,12 @@ export const trim: Command = function* (ctx) {
         if (edges?.has(e.id)) edges.add(added.id)
       }
     })
-    trims++
+    edits++
   }
+}
+
+/** TRIM: each pick removes the piece of an object between the cutting edges on either side, until Enter. */
+export const trim: Command = function* (ctx) {
+  const edges = yield* edgeSet(ctx, 'cutting edges')
+  yield* edgePicks(ctx, edges, 'TRIM', 'Select object to trim or shift-select to extend', trimAt, extendAt)
 }
