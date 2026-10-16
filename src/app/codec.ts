@@ -37,7 +37,10 @@ export interface Decoded {
   text: string
   /** What the file is in, and is written back in: the header's (a byte order mark only changes how it is read). */
   encoding: string
-  /** Set when the code page is unknown and the text was read as windows-1252. */
+  /**
+   * Set when the code page is unknown and the text was read as windows-1252, when a file from AC1021 on was not
+   * UTF-8, or when some bytes were not valid in the encoding (a save cannot give them back).
+   */
   warning: string | null
 }
 
@@ -52,9 +55,33 @@ export function decodeDxf(bytes: Uint8Array): Decoded {
   const codepage = headerValue(head, '$DWGCODEPAGE')
   const known = encodingOf(headerValue(head, '$ACADVER'), codepage)
   const encoding = known ?? DEFAULT_ENCODING
-  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return { text: new TextDecoder('utf-8').decode(bytes), encoding, warning: null }
-  const warning = known ? null : `Code page ${codepage} is not supported: the text was read as ${DEFAULT_ENCODING}.`
-  return { text: new TextDecoder(encoding).decode(bytes), encoding, warning }
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return read(bytes, 'utf-8', encoding, null)
+  if (encoding === 'utf-8') {
+    const text = strict(bytes, 'utf-8')
+    if (text !== null) return { text, encoding, warning: null }
+    // A writer that kept the code page in a file from AC1021 on: read in it, and saved in it, its bytes come back
+    // as they were (U+FFFD in their place would change even what was never touched).
+    const page = (codepage !== null && CODEPAGES[codepage.toUpperCase()]) || DEFAULT_ENCODING
+    return read(bytes, page, page, `The file is not valid UTF-8, as files from AutoCAD 2007 on are: it was read, and is saved, as ${page}.`)
+  }
+  return read(bytes, encoding, encoding, known ? null : `Code page ${codepage} is not supported: the text was read as ${DEFAULT_ENCODING}.`)
+}
+
+/** The text of bytes in an encoding, or null when some are not valid in it. */
+function strict(bytes: Uint8Array, encoding: string): string | null {
+  try {
+    return new TextDecoder(encoding, { fatal: true }).decode(bytes)
+  } catch {
+    return null
+  }
+}
+
+/** Bytes read in `from`, written back in `encoding`; bytes not valid in `from` are read as U+FFFD, and said. */
+function read(bytes: Uint8Array, from: string, encoding: string, warning: string | null): Decoded {
+  const text = strict(bytes, from)
+  if (text !== null) return { text, encoding, warning }
+  const lost = `Some bytes are not valid ${from}: they were read as �, which a save writes in their place.`
+  return { text: new TextDecoder(from).decode(bytes), encoding, warning: warning === null ? lost : `${warning} ${lost}` }
 }
 
 /** Per encoding: each character it can write, and its bytes. Built once, by decoding every byte and byte pair. */

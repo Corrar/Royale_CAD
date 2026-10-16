@@ -57,6 +57,29 @@ describe('decodeDxf and encodeDxf', () => {
     expect(new TextDecoder().decode(encodeDxf('a日b', 'windows-1252'))).toBe('a\\U+65E5b')
   })
 
+  it('a file from AC1021 on that is not UTF-8 (a writer that kept the code page) reads in its code page, and saves back the same', () => {
+    const bytes = cp1252(dxf('AC1027', 'ANSI_1252', 'Ação'))
+    const d = decodeDxf(bytes)
+    expect(d.text).toContain('\r\nAção\r\n')
+    expect(d.encoding).toBe('windows-1252')
+    expect(d.warning).toBe('The file is not valid UTF-8, as files from AutoCAD 2007 on are: it was read, and is saved, as windows-1252.')
+    expect(encodeDxf(d.text, d.encoding)).toEqual(bytes)
+    // No code page named: windows-1252, which takes every byte.
+    expect(decodeDxf(cp1252(dxf('AC1032', null, 'é')))).toMatchObject({ encoding: 'windows-1252' })
+  })
+
+  it('bytes that are not valid in a double-byte code page are said: a save cannot give them back', () => {
+    const text = dxf('AC1015', 'ANSI_932', '日本')
+    const ok = encodeDxf(text, 'shift_jis')
+    const at = ok.indexOf(0x93) // the lead byte of 日, with a trail byte no lead byte takes
+    const bytes = new Uint8Array(ok)
+    bytes[at + 1] = 0x7f
+    const d = decodeDxf(bytes)
+    expect(d.encoding).toBe('shift_jis')
+    expect(d.warning).toBe('Some bytes are not valid shift_jis: they were read as �, which a save writes in their place.')
+    expect(decodeDxf(ok).warning).toBeNull()
+  })
+
   it('an unknown code page reads as windows-1252, with a warning', () => {
     const d = decodeDxf(cp1252(dxf('AC1015', 'DOS437', 'é')))
     expect(d.encoding).toBe('windows-1252')
