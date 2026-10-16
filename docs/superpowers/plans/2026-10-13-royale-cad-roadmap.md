@@ -297,10 +297,11 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
 
 ## M7 — Curvas e blocos
 
-- [ ] **T35 · Bézier e NURBS**
+- [x] **T35 · Bézier e NURBS**
   - Arquivos: `src/kernel/geom/curve.ts` + teste
   - Produz: `bezierEval`, `bezierSplit`, `bezierFlatten(ctrl, tol)`, `nurbsEval`, `nurbsFlatten(spline, tol)`.
   - Testa: erro do achatamento ≤ `tol` por amostragem; círculo NURBS racional mantém o raio.
+  - Feito: pontos de controle em pares x, y (como a polilinha). `Nurbs { degree, knots, ctrl, weights | null }`, `nurbsDomain`, `nurbsProblem` (mensagem ou null: grau, contagens, nós decrescentes, peso ≤ 0, domínio vazio; o leitor do T36 usa para virar `Opaque` com aviso). `nurbsEval` por de Boor nos pontos ponderados. O achatamento insere cada nó do domínio (Boehm) até a multiplicidade igualar o grau, recorta as peças de Bézier racionais e divide cada uma ao meio até todos os pontos de controle ficarem a ≤ `tol` da corda (segmento, não reta): com pesos positivos a curva fica no fecho convexo deles, então dentro de `tol` da corda. Vale para nós presos e soltos (B-spline uniforme). Os vértices caem na curva; as pontas saem exatas.
 
 - [ ] **T36 · ELLIPSE e SPLINE**
   - Arquivos: `entity/{ellipse,spline}.ts` + testes
