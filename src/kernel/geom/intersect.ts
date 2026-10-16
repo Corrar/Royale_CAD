@@ -1,18 +1,26 @@
 import { typeOf } from '../entity/registry'
 import type { Entity } from '../entity/types'
-import { onArc } from './curve'
+import { arcBBox, onArc } from './curve'
 import { EPS, TAU } from './tol'
-import type { Vec2 } from './vec'
+import { bboxIntersects, type BBox, type Vec2 } from './vec'
 
 /** A primitive in local coordinates: a segment, or a circle with the sweep that bounds it (an arc). */
 type Prim = { kind: 'seg'; x0: number; y0: number; x1: number; y1: number } | { kind: 'arc'; cx: number; cy: number; r: number; a0: number; sweep: number }
 
-function primsOf(e: Entity, ox: number, oy: number): Prim[] {
+/** The primitives of e, moved by (−ox, −oy); with near, only those whose box reaches it. */
+function primsOf(e: Entity, ox: number, oy: number, near: BBox | undefined): Prim[] {
   const out: Prim[] = []
+  const reaches = (b: BBox): boolean => !near || bboxIntersects(b, near)
   typeOf(e).primitives(e, 0, {
-    segment: (x0, y0, x1, y1) => out.push({ kind: 'seg', x0: x0 - ox, y0: y0 - oy, x1: x1 - ox, y1: y1 - oy }),
-    arc: (cx, cy, r, a0, sweep) => out.push({ kind: 'arc', cx: cx - ox, cy: cy - oy, r, a0, sweep }),
-  })
+    segment(x0, y0, x1, y1) {
+      if (reaches({ minX: Math.min(x0, x1), minY: Math.min(y0, y1), maxX: Math.max(x0, x1), maxY: Math.max(y0, y1) })) {
+        out.push({ kind: 'seg', x0: x0 - ox, y0: y0 - oy, x1: x1 - ox, y1: y1 - oy })
+      }
+    },
+    arc(cx, cy, r, a0, sweep) {
+      if (reaches(arcBBox(cx, cy, r, a0, sweep))) out.push({ kind: 'arc', cx: cx - ox, cy: cy - oy, r, a0, sweep })
+    },
+  }, near)
   return out
 }
 
@@ -93,12 +101,16 @@ function arcArc(a: Extract<Prim, { kind: 'arc' }>, b: Extract<Prim, { kind: 'arc
  * coincident arcs) have no isolated point and give none. Computed relative to a local origin, so UTM-sized
  * coordinates keep their small digits.
  */
-export function intersect(a: Entity, b: Entity): Vec2[] {
+/**
+ * The points where a and b cross or touch. With near, only those the pieces reaching the box can make: the
+ * pieces of two long polylines are paired only where it matters (an aperture, say).
+ */
+export function intersect(a: Entity, b: Entity, near?: BBox): Vec2[] {
   const box = typeOf(a).bbox(a)
   const ox = box.minX
   const oy = box.minY
-  const pa = primsOf(a, ox, oy)
-  const pb = primsOf(b, ox, oy)
+  const pa = primsOf(a, ox, oy, near)
+  const pb = primsOf(b, ox, oy, near)
   const found: Vec2[] = []
   for (const p of pa) {
     for (const q of pb) {

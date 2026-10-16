@@ -232,6 +232,15 @@ describe('object snap and ORTHO', () => {
     expect(t.interp.tracked).toEqual({ p: { x: 5, y: 0 }, snap: { p: { x: 5, y: 0 }, mode: 2, id: 1 } })
   })
 
+  it('a number prompt that takes no point (UNDO count) shows no snap', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.interp.osnap = true
+    t.run('UNDO⏎')
+    t.interp.cursor = { x: 0.2, y: 0.1 }
+    expect(t.interp.tracked).toEqual({ p: { x: 0.2, y: 0.1 }, snap: null })
+  })
+
   it('PER drops the perpendicular from the base point of the request', () => {
     const t = commandBench(BUILTIN_COMMANDS, { snapModes: SNAP.PER })
     t.run('L⏎0,0⏎10,0⏎⏎')

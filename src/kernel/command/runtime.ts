@@ -340,7 +340,8 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
    */
   function resolve(raw: Vec2): { p: Vec2; snap: SnapHit | null } {
     const r = request
-    if (!r || (r.kind !== 'point' && r.kind !== 'number') || (r.kind === 'point' && r.pick)) return { p: raw, snap: null }
+    // A number without a base takes no point (UNDO's count): nothing to snap.
+    if (!r || (r.kind !== 'point' && r.kind !== 'number') || (r.kind === 'point' && r.pick) || (r.kind === 'number' && !r.base)) return { p: raw, snap: null }
     const hit = osnap ? (host.snap?.(raw, r.base) ?? null) : null
     if (hit) return { p: hit.p, snap: hit }
     const base = r.base

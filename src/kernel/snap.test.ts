@@ -135,6 +135,55 @@ describe('snap', () => {
     expect([hit.p.x, hit.p.y, hit.mode, hit.id]).toEqual([0, 15, SNAP.PER, ids[1]])
   })
 
+  it('INT near two long polylines looks only at the pieces in reach: fast, and right', () => {
+    const n = 5000
+    const wave = (dy: number): Draft => {
+      const pts = new Float64Array(2 * n)
+      for (let k = 0; k < n; k++) {
+        pts[2 * k] = k * 0.1 - 250
+        pts[2 * k + 1] = dy + (k % 2 === 0 ? 0 : 0.01)
+      }
+      return { type: 'polyline', layer: 0, pts, bulges: null, closed: false }
+    }
+    // A third, steep polyline crosses the two near the cursor.
+    const cross: Draft = { type: 'polyline', layer: 0, pts: Float64Array.of(0.03, -5, 0.03, 5), bulges: null, closed: false }
+    const { doc, index } = setup([wave(0), wave(0.5), cross])
+    const t0 = performance.now()
+    const hit = snap(doc, index, { x: 0.05, y: 0.02 }, VIEW, SNAP.INT, 10)
+    expect(performance.now() - t0).toBeLessThan(200)
+    expect(hit).toMatchObject({ mode: SNAP.INT })
+    expect(hit!.p.x).toBeCloseTo(0.03, 9)
+  })
+
+  it('PER: no zero-length perpendicular when the base lies on the object', () => {
+    const { doc, index } = setup([line(0, 0, 10, 0)])
+    expect(snap(doc, index, { x: 3, y: 0.05 }, VIEW, SNAP.PER, 10, { x: 0, y: 0 })).toBeNull()
+    expect(snap(doc, index, { x: 3, y: 0.05 }, VIEW, SNAP.PER, 10, { x: 4, y: 0 })).toBeNull()
+    expect(snap(doc, index, { x: 3, y: 0.05 }, VIEW, SNAP.PER, 10, { x: 4, y: 2 })).toMatchObject({ p: { x: 4, y: 0 }, mode: SNAP.PER })
+  })
+
+  it('PER and CEN on a polyline answer for the piece under the cursor only', () => {
+    // A rectangle: the foot on the left side is nearer the cursor than the one on the bottom it is over.
+    const rect: Draft = { type: 'polyline', layer: 0, pts: Float64Array.of(0, 0, 10, 0, 10, 10, 0, 10), bulges: null, closed: true }
+    const a = setup([rect])
+    expect(snap(a.doc, a.index, { x: 1.6, y: 0.05 }, VIEW, SNAP.PER, 10, { x: 5, y: 1 })).toMatchObject({ p: { x: 5, y: 0 }, mode: SNAP.PER })
+    // A rounded rectangle: over a straight side, no fillet's centre.
+    const t = Math.tan(Math.PI / 8)
+    const rounded: Draft = {
+      type: 'polyline', layer: 0, closed: true,
+      pts: Float64Array.of(1, 0, 19, 0, 20, 1, 20, 9, 19, 10, 1, 10, 0, 9, 0, 1),
+      bulges: Float64Array.of(0, t, 0, t, 0, t, 0, t),
+    }
+    const b = setup([rounded])
+    expect(snap(b.doc, b.index, { x: 6, y: 0.1 }, VIEW, SNAP.CEN, 10)).toBeNull()
+    expect(snap(b.doc, b.index, { x: 19.75, y: 0.3 }, VIEW, SNAP.CEN, 10)).toMatchObject({ p: { x: 19, y: 1 }, mode: SNAP.CEN })
+  })
+
+  it('NEA on a single-vertex polyline is the vertex', () => {
+    const { doc, index } = setup([{ type: 'polyline', layer: 0, pts: Float64Array.of(1, 1), bulges: null, closed: false }])
+    expect(snap(doc, index, { x: 1.3, y: 1.2 }, VIEW, SNAP.NEA, 10)).toMatchObject({ p: { x: 1, y: 1 }, mode: SNAP.NEA })
+  })
+
   it('INS: the insertion point of a block reference, ranked after QUA', () => {
     const block = { name: 'B', x: 0, y: 0, entities: [{ type: 'line', layer: 0, x0: 0, y0: 0, x1: 1, y1: 0 }] } as const
     const { doc, index, ids } = setup([{ type: 'insert', layer: 0, block, x: 2, y: 3, sx: 1, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }])
