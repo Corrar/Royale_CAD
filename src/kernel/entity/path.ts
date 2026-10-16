@@ -164,7 +164,8 @@ function polylinePath(e: Polyline, tol: number): Path {
 
 /** The path of a curve; null for what has no length to walk (a point, an opaque entity). */
 export function pathOf(e: Entity): Path | null {
-  if (e.type === 'point' || e.type === 'opaque') return null
+  // Ellipses and splines wait for TRIM and EXTEND support of their own.
+  if (e.type === 'point' || e.type === 'opaque' || e.type === 'ellipse' || e.type === 'spline') return null
   const tol = lengthTol(e)
   switch (e.type) {
     case 'line':

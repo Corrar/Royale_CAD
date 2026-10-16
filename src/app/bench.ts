@@ -199,7 +199,9 @@ function onEntity(e: Entity): Vec2 {
     case 'point':
       return { x: e.x, y: e.y }
     case 'opaque':
-      throw new Error('the bench makes no opaque entities')
+    case 'ellipse':
+    case 'spline':
+      throw new Error(`the bench makes no ${e.type} entities`)
   }
 }
 
@@ -214,6 +216,10 @@ function shifted(e: Entity, d: number): Entity {
       return { ...e, pts: e.pts.map((v, i) => (i % 2 === 0 ? v + d : v)) }
     case 'point':
       return { ...e, x: e.x + d }
+    case 'ellipse':
+      return { ...e, cx: e.cx + d }
+    case 'spline':
+      return { ...e, ctrl: e.ctrl.map((v, i) => (i % 2 === 0 ? v + d : v)) }
     case 'opaque':
       return e
   }

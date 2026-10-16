@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
 import { createDocument } from '../document'
-import type { Arc, Circle, Entity, Line, Polyline } from '../entity/types'
+import type { Arc, Circle, Ellipse, Entity, Line, Polyline, Spline } from '../entity/types'
 import { readDxf } from './reader'
 import { tokenize } from './tokenizer'
 import { nearestAci, real, writeDxf } from './writer'
@@ -131,6 +131,55 @@ describe('writeDxf', () => {
     const out = writeDxf(d.doc, d.source)
     expect(out).toContain(lines([2, 'Walls', 70, 0, 62, -1]))
     expect(handles(out).filter((h) => h === '100')).toHaveLength(1)
+  })
+
+  it('ELLIPSE and SPLINE: edits are patched in place (handle, linetype, a mirrored frame kept), new ones written fresh', () => {
+    const ELLIPSE: G = [0, 'ELLIPSE', 5, '30', 330, '1F', 100, 'AcDbEntity', 8, '0', 6, 'DASHED', 100, 'AcDbEllipse', 10, 10, 20, 20, 30, 0, 11, 6, 21, 8, 31, 0, 210, 0, 220, 0, 230, -1, 40, 0.5, 41, 0.5, 42, 4]
+    const knots = [0, 0, 0, 0, 1, 1, 1, 1].flatMap((k) => [40, k])
+    const ctrl = [[0, 0], [1, 2], [3, 2], [4, 0]].flatMap(([x, y]) => [10, x!, 20, y!, 30, 0])
+    const SPLINE: G = [0, 'SPLINE', 5, '31', 330, '1F', 100, 'AcDbEntity', 8, 'Walls', 6, 'DASHED', 100, 'AcDbSpline', 210, 0, 220, 0, 230, 1, 70, 8, 71, 3, 72, 8, 73, 4, 74, 2, 42, 1e-10, 43, 1e-10, 44, 1e-10, 12, 1, 22, 0, 32, 0, 13, 1, 23, 0, 33, 0, ...knots, ...ctrl, 11, 0, 21, 0, 31, 0, 11, 4, 21, 0, 31, 0, 1001, 'ROYALE', 1000, 'kept']
+    const d = readDxf(file([...ELLIPSE, ...SPLINE]))
+    const [el, sp] = [...d.doc.entities()] as [Ellipse, Spline]
+    d.doc.transact('edit', (tx) => {
+      tx.replace({ ...el, cx: 15, t1: el.t1 - 0.25 })
+      tx.replace({ ...sp, ctrl: sp.ctrl.map((v, i) => (i % 2 === 0 ? v + 5 : v)), weights: Float64Array.of(1, 2, 2, 1) })
+      tx.add({ type: 'ellipse', layer: 0, cx: 1, cy: 2, mx: 0, my: 3, ratio: 0.25, t0: 0, t1: 0 })
+      tx.add({ type: 'spline', layer: 0, degree: 2, closed: false, knots: Float64Array.of(0, 0, 0, 1, 1, 1), ctrl: Float64Array.of(0, 0, 1, 1, 2, 0), weights: null })
+    })
+    const out = writeDxf(d.doc, d.source)
+    const back = readDxf(out)
+    expect(back.warnings).toEqual([])
+    const got = [...back.doc.entities()]
+    const want = [...d.doc.entities()]
+    const angles = ({ id: _id, t0, t1, ...rest }: Ellipse) => [rest, Math.round(t0 * 1e12), Math.round(t1 * 1e12)]
+    expect(angles(got[0] as Ellipse)).toEqual(angles(want[0] as Ellipse))
+    expect(angles(got[2] as Ellipse)).toEqual(angles(want[2] as Ellipse))
+    expect((got[2] as Ellipse).t0).toBe((got[2] as Ellipse).t1)
+    same([want[1]!, want[3]!], [got[1]!, got[3]!])
+    const text = (id: number): string => back.source.text.slice(back.source.loaded(id)!.start, back.source.loaded(id)!.end)
+    expect(back.source.handleOf(1)).toBe('30')
+    expect(text(1)).toContain(lines([6, 'DASHED']))
+    expect(text(1)).toContain(lines([230, -1]))
+    expect(back.source.handleOf(2)).toBe('31')
+    expect(text(2)).toContain(lines([1001, 'ROYALE', 1000, 'kept']))
+    // The fit points and tangents no longer match the control points: gone, and said so.
+    expect(text(2)).not.toContain(lines([11, '0.0']))
+    expect(text(2)).not.toContain(lines([12, '1.0']))
+    expect(text(2)).toContain(lines([74, 0]))
+  })
+
+  it('an R12 file has no ELLIPSE nor SPLINE: they go as polylines close to them', () => {
+    const text = lines([0, 'SECTION', 2, 'ENTITIES', 0, 'ENDSEC', 0, 'EOF'], '\n')
+    const d = readDxf(text)
+    d.doc.transact('add', (tx) => {
+      tx.add({ type: 'ellipse', layer: 0, cx: 0, cy: 0, mx: 10, my: 0, ratio: 0.5, t0: 0, t1: 0 })
+      tx.add({ type: 'spline', layer: 0, degree: 2, closed: false, knots: Float64Array.of(0, 0, 0, 1, 1, 1), ctrl: Float64Array.of(0, 0, 1, 1, 2, 0), weights: null })
+    })
+    const back = readDxf(writeDxf(d.doc, d.source))
+    const [e, s] = [...back.doc.entities()] as [Polyline, Polyline]
+    expect([e.type, e.closed, s.type, s.closed]).toEqual(['polyline', true, 'polyline', false])
+    for (let i = 0; i < e.pts.length; i += 2) expect(Math.hypot(e.pts[i]! / 10, e.pts[i + 1]! / 5)).toBeCloseTo(1, 9)
+    expect([s.pts[0], s.pts[1], s.pts.at(-2), s.pts.at(-1)]).toEqual([0, 0, 2, 0])
   })
 
   it('an R12 file gets R12 records: no subclass markers, POLYLINE with VERTEX and SEQEND', () => {

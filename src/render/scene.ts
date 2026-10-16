@@ -5,7 +5,7 @@ import type { Entity, PrimSink } from '../kernel/entity/types'
 import { arcSpansInBox, clipSegment } from '../kernel/geom/clip'
 import { arcBBox } from '../kernel/geom/curve'
 import { hilbertOrder } from '../kernel/geom/hilbert'
-import type { BBox } from '../kernel/geom/vec'
+import { bboxContains, bboxIntersects, type BBox } from '../kernel/geom/vec'
 import type { ViewState } from '../kernel/view'
 import {
   ARC_STRIDE, MAX_ARC_RADIUS_PX, MAX_SEGMENT_PX, SEGMENT_STRIDE, STYLE_WORDS, arcSubdiv, writeArc, writeSegment, writeStyle,
@@ -58,6 +58,8 @@ const OPEN_MIN = 65536
 const SLICE_FROM = 20_000
 /** The time a slice of rebuild may take in one draws(), ms. */
 const BUILD_SLICE_MS = 8
+/** The chordal error of free curves (ellipses, splines) at the finest zoom of a zoom band, device px. */
+const FREE_TOL_PX = 0.25
 /** Entities gathered, or slots packed, between looks at the clock. */
 const GATHER_STEP = 2048
 const PACK_STEP = 8192
@@ -235,7 +237,65 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       for (let id = FIRST_STYLE; id < st.count; id++) if (st.layer[id] === index) writeRow(st, id)
     }
     if (highlight.size > 0) hlDirty = true // hidden layers drop out of the highlight
+    freeAt = null // hidden free curves are not flattened
   })
+
+  // --- free curves (ellipses, splines): flattened on the CPU for the zoom band, near the view only -------------
+  const isFree = (e: Entity): boolean => typeOf(e).free === true
+  const freeIds = new Set<number>()
+  for (const e of doc.entities()) if (isFree(e)) freeIds.add(e.id)
+  /** The zoom band and the region the free batch was flattened for; null when it must be flattened again. */
+  let freeAt: { band: number; region: BBox } | null = null
+  let freeBatch: { batch: BatchId; capacity: number; f32: Float32Array; u32: Uint32Array } | null = null
+  let chords = new Float64Array(5 * 64) // x0, y0, x1, y1, style
+  /** Chords in the free batch: the drawing's first, then the highlighted ones. */
+  let freeMain = 0
+  let freeCount = 0
+
+  /**
+   * Flattens the visible free curves near rect for the zoom band: chords within FREE_TOL_PX at the band's finest
+   * zoom, over a region three views wide, so a pan within it needs nothing new.
+   */
+  function rebuildFree(band: number, rect: BBox): void {
+    const tol = FREE_TOL_PX / 2 ** (band + 1)
+    const w = rect.maxX - rect.minX
+    const h = rect.maxY - rect.minY
+    const region = { minX: rect.minX - w, minY: rect.minY - h, maxX: rect.maxX + w, maxY: rect.maxY + h }
+    let n = 0
+    const flatten = (e: Entity, style: number): void => {
+      if (!doc.layers.get(e.layer)!.visible || !bboxIntersects(typeOf(e).bbox(e), region)) return
+      typeOf(e).primitives(e, tol, {
+        segment(x0, y0, x1, y1) {
+          if (5 * n === chords.length) {
+            const grown = new Float64Array(2 * chords.length)
+            grown.set(chords)
+            chords = grown
+          }
+          chords.set([x0, y0, x1, y1, style], 5 * n++)
+        },
+        arc() {},
+      }, region)
+    }
+    for (const id of freeIds) flatten(doc.get(id)!, styleOf(doc.get(id)!))
+    freeMain = n
+    for (const id of highlight) if (freeIds.has(id)) flatten(doc.get(id)!, HIGHLIGHT_STYLE)
+    freeCount = n
+    if (n > 0 && (!freeBatch || freeBatch.capacity < n)) {
+      if (freeBatch) backend.destroyBatch(freeBatch.batch)
+      let capacity = freeBatch?.capacity ?? OPEN_CAPACITY
+      while (capacity < n) capacity *= 2
+      const buf = new ArrayBuffer(capacity * SEGMENT_STRIDE)
+      freeBatch = { batch: backend.createBatch('segment', capacity), capacity, f32: new Float32Array(buf), u32: new Uint32Array(buf) }
+    }
+    if (n > 0) {
+      for (let i = 0; i < n; i++) {
+        const o = 5 * i
+        writeSegment(freeBatch!.f32, freeBatch!.u32, i, chords[o]!, chords[o + 1]!, chords[o + 2]!, chords[o + 3]!, chords[o + 4]!)
+      }
+      backend.writeBatch(freeBatch!.batch, 0, freeBatch!.u32.subarray(0, n * WORDS.segment))
+    }
+    freeAt = { band, region }
+  }
 
   // --- pools --------------------------------------------------------------------------------------------------
   function createPool(kind: Kind, band: number, packed: boolean, capacity: number, into = pools): Pool {
@@ -329,6 +389,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   }
 
   function addEntity(e: Entity): void {
+    if (isFree(e)) return // the free batch draws it
     const style = styleOf(e)
     typeOf(e).primitives(e, 0, {
       segment(x0, y0, x1, y1) {
@@ -370,6 +431,13 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
 
   function onChange(c: Change): void {
     changed = true
+    for (const e of c.removed) if (freeIds.delete(e.id)) freeAt = null
+    for (const [prev, next] of c.changed) {
+      if (freeIds.delete(prev.id)) freeAt = null
+      if (isFree(next)) freeIds.add(next.id)
+    }
+    for (const e of c.added) if (isFree(e)) freeIds.add(e.id)
+    if (c.changed.some(([, e]) => isFree(e)) || c.added.some(isFree)) freeAt = null
     if (highlight.size > 0 && !hlDirty) {
       const touches = (e: Entity): boolean => highlight.has(e.id)
       hlDirty = c.added.some(touches) || c.removed.some(touches) || c.changed.some(([, e]) => touches(e))
@@ -391,6 +459,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   const offDoc = doc.onChange(onChange)
   // The GPU came back empty: upload everything again with the next draws().
   const offRestore = backend.onRestore(() => {
+    freeAt = null
     for (const p of [...pools, ...hlPools]) if (p.count > 0) markDirty(p, 0, p.count)
     stylesDirty = true
   })
@@ -491,6 +560,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     let k = 0
     for (const e of entities) {
       if (++k % GATHER_STEP === 0) yield
+      if (isFree(e)) continue // the free batch draws it
       style = styleFor(e)
       owner = e.id
       typeOf(e).primitives(e, 0, sink)
@@ -518,6 +588,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
 
   /** Puts a generation in place of the current pools. */
   function install(g: Generation): void {
+    freeAt = null // its style rows are the old generation's
     for (const p of pools) backend.destroyBatch(p.batch)
     pools = g.pools
     handles = g.handles
@@ -712,26 +783,32 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       if (hlDirty) rebuildHighlight()
       for (const p of pools) flush(p)
       for (const p of hlPools) flush(p)
-      if (stylesDirty) {
-        backend.setStyleTable(styles.table.subarray(0, styles.count * STYLE_WORDS))
-        stylesDirty = false
-      }
       // The stroke reaches half its width past the geometry; one more px covers antialiasing.
       const margin = (Math.max(LINE_WIDTH_PX, HIGHLIGHT_WIDTH_PX) / 2 + 1) / view.scale
       const halfW = view.width / 2 / view.scale + margin
       const halfH = view.height / 2 / view.scale + margin
       const rect = { minX: view.cx - halfW, minY: view.cy - halfH, maxX: view.cx + halfW, maxY: view.cy + halfH }
+      // Before the styles go up: flattening may add their rows.
+      const band = Math.floor(Math.log2(view.scale * view.dpr))
+      if (freeIds.size === 0) freeMain = freeCount = 0
+      else if (!freeAt || freeAt.band !== band || !bboxContains(freeAt.region, rect)) rebuildFree(band, rect)
+      if (stylesDirty) {
+        backend.setStyleTable(styles.table.subarray(0, styles.count * STYLE_WORDS))
+        stylesDirty = false
+      }
       clipCount = 0
       collectClipped(pools, view, rect, styleOf)
       const mainClipped = clipCount
       collectClipped(hlPools, view, rect, () => HIGHLIGHT_STYLE)
       const clipBatch = uploadClipped()
-      // Order: the drawing, its clipped primitives, then the highlight on top with its own.
+      // Order: the drawing, its clipped primitives and free curves, then the highlight on top with its own.
       const out: Draw[] = []
       emitDraws(pools, view, rect, out)
       if (clipBatch !== null && mainClipped > 0) out.push({ batch: clipBatch, first: 0, count: mainClipped })
+      if (freeBatch && freeMain > 0) out.push({ batch: freeBatch.batch, first: 0, count: freeMain })
       emitDraws(hlPools, view, rect, out)
       if (clipBatch !== null && clipCount > mainClipped) out.push({ batch: clipBatch, first: mainClipped, count: clipCount - mainClipped })
+      if (freeBatch && freeCount > freeMain) out.push({ batch: freeBatch.batch, first: freeMain, count: freeCount - freeMain })
       return out
     },
 
@@ -747,6 +824,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     setHighlight(ids) {
       highlight = new Set(ids)
       hlDirty = true
+      freeAt = null
     },
 
     dispose() {
@@ -758,9 +836,11 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       abortBuild()
       for (const p of [...pools, ...hlPools]) backend.destroyBatch(p.batch)
       if (clip) backend.destroyBatch(clip.batch)
+      if (freeBatch) backend.destroyBatch(freeBatch.batch)
       pools = []
       hlPools = []
       clip = null
+      freeBatch = null
     },
   }
 }

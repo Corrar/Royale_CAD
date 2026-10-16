@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { arcBBox, arcDistance, arcSweep, bezierEval, bezierFlatten, bezierSplit, bulgeToArc, nurbsEval, nurbsFlatten, nurbsProblem, onArc, type Nurbs } from './curve'
+import { arcBBox, arcDistance, arcSweep, bezierEval, bezierFlatten, bezierSplit, bulgeToArc, ellipsePieces, flattenPieces, nurbsEval, piecesNearest, nurbsFlatten, nurbsPieces, nurbsProblem, onArc, type Nurbs } from './curve'
 import { TAU, eq, normAngle } from './tol'
 import { segmentDistance } from './vec'
 
@@ -250,5 +250,75 @@ describe('NURBS', () => {
   it('nurbsFlatten: degree 1 is its control polygon', () => {
     const s: Nurbs = { degree: 1, knots: [0, 0, 1, 2, 3, 3], ctrl: [0, 0, 1, 1, 2, 0, 3, 1], weights: null }
     expect(nurbsFlatten(s, 0.01)).toEqual(new Float64Array([0, 0, 1, 1, 2, 0, 3, 1]))
+  })
+})
+
+describe('pieces and chords', () => {
+  const chordsOf = (pieces: Float64Array[], tol: number, clip: Parameters<typeof flattenPieces>[2] = null): number[][] => {
+    const out: number[][] = []
+    flattenPieces(pieces, tol, clip, (x0, y0, x1, y1) => out.push([x0, y0, x1, y1]))
+    return out
+  }
+
+  it('flattenPieces: the chords of the whole curve join end to end, as nurbsFlatten has them', () => {
+    const chords = chordsOf(nurbsPieces(CIRCLE), 1e-3)
+    const pts = nurbsFlatten(CIRCLE, 1e-3)
+    expect(chords).toHaveLength(pts.length / 2 - 1)
+    chords.forEach((c, k) => expect(c).toEqual([pts[2 * k], pts[2 * k + 1], pts[2 * k + 2], pts[2 * k + 3]]))
+  })
+
+  it('flattenPieces: with a clip, only the parts that can reach it, at the same tolerance', () => {
+    const clip = { minX: 0.9, minY: -0.1, maxX: 1.1, maxY: 0.1 }
+    const all = chordsOf(nurbsPieces(CIRCLE), 1e-6)
+    const near = chordsOf(nurbsPieces(CIRCLE), 1e-6, clip)
+    expect(near.length).toBeGreaterThan(0)
+    expect(near.length).toBeLessThan(all.length / 4)
+    // Every chord that touches the clip is still there.
+    const touches = (c: number[]): boolean => Math.max(c[0]!, c[2]!) >= clip.minX && Math.min(c[1]!, c[3]!) <= clip.maxY && Math.max(c[1]!, c[3]!) >= clip.minY
+    for (const c of all.filter(touches)) expect(near).toContainEqual(c)
+  })
+
+  it('ellipsePieces: every chord end on the ellipse, chords within tol, from the start to the end of the sweep', () => {
+    const [cx, cy, mx, my, ratio] = [7_400_000, 9_100_000, 30, 40, 0.4]
+    const len = Math.hypot(mx, my)
+    const at = (t: number): [number, number] => [cx + mx * Math.cos(t) - ratio * my * Math.sin(t), cy + my * Math.cos(t) + ratio * mx * Math.sin(t)]
+    for (const [t0, sweep] of [[0.3, 2.5], [5, -4], [0, 2 * Math.PI]] as const) {
+      const tol = 1e-4
+      const chords = chordsOf(ellipsePieces(cx, cy, mx, my, ratio, t0, sweep), tol)
+      for (const c of chords) {
+        for (const [x, y] of [[c[0]!, c[1]!], [c[2]!, c[3]!]]) {
+          const u = ((x - cx) * mx + (y - cy) * my) / (len * len)
+          const v = (-(x - cx) * my + (y - cy) * mx) / (ratio * len * len)
+          expect(u * u + v * v).toBeCloseTo(1, 9)
+        }
+      }
+      const [sx, sy] = at(t0)
+      const [ex, ey] = at(t0 + sweep)
+      expect(Math.hypot(chords[0]![0]! - sx, chords[0]![1]! - sy)).toBeLessThan(1e-6)
+      expect(Math.hypot(chords.at(-1)![2]! - ex, chords.at(-1)![3]! - ey)).toBeLessThan(1e-6)
+      for (let k = 0; k <= 500; k++) {
+        const [x, y] = at(t0 + (sweep * k) / 500)
+        const d = Math.min(...chords.map((c) => segmentDistance(x, y, c[0]!, c[1]!, c[2]!, c[3]!)))
+        expect(d).toBeLessThanOrEqual(tol * (1 + 1e-6))
+      }
+    }
+  })
+})
+
+describe('piecesNearest', () => {
+  it('finds the nearest point of a curve to far better than a coarse flattening, near and far, at any scale', () => {
+    // A circle of radius 1e6 around (7.4e6, 9.1e6): the exact answer is known.
+    const [cx, cy, R] = [7_400_000, 9_100_000, 1e6]
+    const pieces = ellipsePieces(cx, cy, R, 0, 1, 0.2, 5)
+    const near = R + 0.001
+    for (const [x, y] of [[cx + near * Math.cos(1), cy + near * Math.sin(1)], [cx, cy + 3 * R], [cx + 0.5 * R, cy + 0.5 * R], [cx + R * Math.cos(3), cy + R * Math.sin(3) - 0.25]]) {
+      const n = piecesNearest(pieces, x!, y!, R)
+      const d = Math.abs(Math.hypot(x! - cx, y! - cy) - R)
+      expect(Math.abs(n.d - d)).toBeLessThanOrEqual(1e-6 * Math.max(d, 1))
+      expect(Math.abs(Math.hypot(n.x - cx, n.y - cy) - R)).toBeLessThanOrEqual(1e-6 * Math.max(d, 1))
+    }
+    // Past the end of the arc, the end is nearest.
+    const end = piecesNearest(pieces, cx + R * 1.1, cy - 0.01, R)
+    expect(Math.hypot(end.x - (cx + R * Math.cos(0.2)), end.y - (cy + R * Math.sin(0.2)))).toBeLessThan(1e-3)
   })
 })

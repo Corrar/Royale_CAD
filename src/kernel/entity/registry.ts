@@ -1,9 +1,11 @@
 import { arcType } from './arc'
 import { circleType } from './circle'
+import { ellipseType } from './ellipse'
 import { lineType } from './line'
 import { opaqueType } from './opaque'
 import { pointType } from './point'
 import { polylineType } from './polyline'
+import { splineType } from './spline'
 import type { Entity, EntityType } from './types'
 
 const types = new Map<string, EntityType<Entity>>()
@@ -25,3 +27,5 @@ register(arcType)
 register(polylineType)
 register(pointType)
 register(opaqueType)
+register(ellipseType)
+register(splineType)

@@ -1,7 +1,8 @@
 import { TRUE_COLOR, aciRgb, type Color } from '../color'
 import { docExtents, type Document, type Layer } from '../document'
-import type { Entity, Polyline } from '../entity/types'
-import { normAngle } from '../geom/tol'
+import { typeOf } from '../entity/registry'
+import type { Ellipse, Entity, Polyline, Spline } from '../entity/types'
+import { TAU, normAngle } from '../geom/tol'
 import type { DxfSource } from './reader'
 import { entryEnd, findTable, groupValue, layerEntry, type TableRange } from './tables'
 import { FIRST_FREE_HANDLE, H, writeTemplate } from './template'
@@ -152,7 +153,63 @@ function fresh(c: Ctx, e: Entity, handle: string | null): void {
       return f.lw ? lwpolyline(c, e, handle) : oldPolyline(c, e, handle)
     case 'opaque':
       o.raw(e.raw)
+      return
+    case 'ellipse':
+      if (!f.modern) return oldPolyline(c, asPolyline(e), handle)
+      head(c, 'ELLIPSE', e, handle, 'AcDbEllipse')
+      o.real(10, e.cx)
+      o.real(20, e.cy)
+      o.real(30, 0)
+      o.real(11, e.mx)
+      o.real(21, e.my)
+      o.real(31, 0)
+      o.real(40, e.ratio)
+      o.real(41, e.t0)
+      o.real(42, ellipseEnd(e))
+      return
+    case 'spline':
+      if (!f.modern) return oldPolyline(c, asPolyline(e), handle)
+      head(c, 'SPLINE', e, handle, 'AcDbSpline')
+      o.real(210, 0)
+      o.real(220, 0)
+      o.real(230, 1)
+      // Planar, and closed or rational as the curve is.
+      o.int(70, 8 | (e.closed ? 1 : 0) | (e.weights ? 4 : 0))
+      o.int(71, e.degree)
+      o.int(72, e.knots.length)
+      o.int(73, e.ctrl.length >> 1)
+      o.int(74, 0)
+      for (const g of splineGroups(e, 0)) o.str(g[0], g[1])
   }
+}
+
+/** The ELLIPSE end parameter: a whole ellipse ends a turn after it starts. */
+const ellipseEnd = (e: Ellipse): number => (e.t0 === e.t1 ? e.t0 + TAU : e.t1)
+
+/** Knots, weights and control points (at height z) as SPLINE groups. */
+function splineGroups(e: Spline, z: number): [number, string][] {
+  const gs: [number, string][] = []
+  for (const k of e.knots) gs.push([40, real(k)])
+  if (e.weights) for (const w of e.weights) gs.push([41, real(w)])
+  for (let i = 0; i < e.ctrl.length; i += 2) gs.push([10, real(e.ctrl[i]!)], [20, real(e.ctrl[i + 1]!)], [30, real(z)])
+  return gs
+}
+
+/** A curve R12 cannot hold, as a polyline within a hundred-thousandth of its size (AutoCAD's R12 export does as much). */
+function asPolyline(e: Ellipse | Spline): Polyline {
+  const b = typeOf(e).bbox(e)
+  const pts: number[] = []
+  typeOf(e).primitives(e, 1e-5 * Math.hypot(b.maxX - b.minX, b.maxY - b.minY), {
+    segment(x0, y0, x1, y1) {
+      if (pts.length === 0) pts.push(x0, y0)
+      pts.push(x1, y1)
+    },
+    arc() {},
+  })
+  const closed = e.type === 'ellipse' ? e.t0 === e.t1 : e.closed
+  // Closed, the last point is the first again.
+  if (closed && pts.length > 2) pts.length -= 2
+  return { type: 'polyline', id: e.id, layer: e.layer, color: e.color, pts: new Float64Array(pts), bulges: null, closed } as Polyline
 }
 
 function lwpolyline(c: Ctx, e: Polyline, handle: string | null): void {
@@ -202,7 +259,9 @@ function oldPolyline(c: Ctx, e: Polyline, handle: string | null): void {
   child('SEQEND')
 }
 
-const DXF_NAME: Readonly<Record<Entity['type'], string>> = { line: 'LINE', point: 'POINT', circle: 'CIRCLE', arc: 'ARC', polyline: 'LWPOLYLINE', opaque: '' }
+const DXF_NAME: Readonly<Record<Entity['type'], string>> = {
+  line: 'LINE', point: 'POINT', circle: 'CIRCLE', arc: 'ARC', polyline: 'LWPOLYLINE', opaque: '', ellipse: 'ELLIPSE', spline: 'SPLINE',
+}
 
 /**
  * The record the file gave an edited entity, with its geometry, layer and color replaced: linetype, lineweight,
@@ -246,6 +305,37 @@ function patched(c: Ctx, e: Entity, text: string, nl: string): string | null {
         put(51, s === 1 ? deg(e.a1) : deg(Math.PI - e.a0))
       }
       break
+    case 'ellipse':
+      // Centre and axis are in WCS; seen from -Z the parameter runs the other way.
+      put(10, e.cx)
+      put(20, e.cy)
+      put(11, e.mx)
+      put(21, e.my)
+      put(40, e.ratio)
+      if (e.t0 === e.t1) {
+        put(41, s === 1 ? e.t0 : normAngle(-e.t0))
+        put(42, (s === 1 ? e.t0 : normAngle(-e.t0)) + TAU)
+      } else {
+        put(41, s === 1 ? e.t0 : normAngle(-e.t1))
+        put(42, s === 1 ? e.t1 : normAngle(-e.t0))
+      }
+      break
+    case 'spline': {
+      // New knots, weights and control points where the old ones were; fit data and tangents no longer match.
+      const GEOMETRY = new Set([40, 41, 10, 20, 30, 11, 21, 31, 12, 22, 32, 13, 23, 33])
+      const first = gs.findIndex((g) => GEOMETRY.has(g[0]))
+      if (first < 0) return null
+      const z = Number(gs.find((g) => g[0] === 30)?.[1] ?? 0)
+      const rest = gs.filter((g) => !GEOMETRY.has(g[0]))
+      const before = gs.slice(0, first).filter((g) => !GEOMETRY.has(g[0])).length
+      gs.splice(0, gs.length, ...rest.slice(0, before), ...splineGroups(e, Number.isFinite(z) ? z : 0), ...rest.slice(before))
+      ok = set(71, String(e.degree)) && set(72, String(e.knots.length)) && set(73, String(e.ctrl.length >> 1)) && ok
+      if (at(74) >= 0) set(74, '0')
+      const flags = Number(gs[at(70)]?.[1] ?? 0)
+      if (at(70) >= 0) set(70, String((flags & ~(1 | 4)) | (e.closed ? 1 : 0) | (e.weights ? 4 : 0)))
+      else ok = false
+      break
+    }
     case 'polyline': {
       const VERTEX = new Set([10, 20, 40, 41, 42, 91])
       const first = gs.findIndex((g) => VERTEX.has(g[0]))

@@ -51,6 +51,9 @@ function feet(e: Entity, b: Vec2, out: (x: number, y: number) => void): void {
 
 /** The point of e nearest p. */
 function nearest(e: Entity, p: Vec2): Vec2 {
+  // A free curve knows its own, exact at any zoom; its primitives are only close to it.
+  const own = typeOf(e).nearest
+  if (own) return own(e, p)
   let best: Vec2 = p
   let bestD = Infinity
   const take = (x: number, y: number): void => {

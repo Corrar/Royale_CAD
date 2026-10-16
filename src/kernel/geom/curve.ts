@@ -140,26 +140,53 @@ export function bezierSplit(ctrl: ArrayLike<number>, t: number): [Float64Array, 
   return splitAt(Float64Array.from(ctrl), 2, t)
 }
 
+/** Receives a chord of a flattened curve. */
+export type ChordSink = (x0: number, y0: number, x1: number, y1: number) => void
+
 /**
- * Flattens a rational Bézier piece given as (wx, wy, w) triples, pushing its points after the first. Flat when
- * every control point is within tol of the chord: with positive weights the curve lies in their convex hull, so it
- * is within tol of the chord too.
+ * Flattens a rational Bézier piece given as (wx, wy, w) triples into chords. Flat when every control point is
+ * within tol of the chord: with positive weights the curve lies in their convex hull, so it is within tol of the
+ * chord too. A part whose control points all lie outside clip is left out, for the same reason.
  */
-function flattenPiece(p: Float64Array, tol: number, out: number[], depth: number): void {
+function chordsOf(p: Float64Array, tol: number, clip: BBox | null, out: ChordSink, depth: number): void {
   const n = p.length / 3
+  if (clip) {
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (let i = 0; i < n; i++) {
+      const x = p[3 * i]! / p[3 * i + 2]!
+      const y = p[3 * i + 1]! / p[3 * i + 2]!
+      minX = Math.min(minX, x)
+      minY = Math.min(minY, y)
+      maxX = Math.max(maxX, x)
+      maxY = Math.max(maxY, y)
+    }
+    if (maxX < clip.minX || minX > clip.maxX || maxY < clip.minY || minY > clip.maxY) return
+  }
   const x0 = p[0]! / p[2]!
   const y0 = p[1]! / p[2]!
   const x1 = p[3 * n - 3]! / p[3 * n - 1]!
   const y1 = p[3 * n - 2]! / p[3 * n - 1]!
   let flat = true
   for (let i = 1; i < n - 1 && flat; i++) flat = segmentDistance(p[3 * i]! / p[3 * i + 2]!, p[3 * i + 1]! / p[3 * i + 2]!, x0, y0, x1, y1) <= tol
-  if (flat || depth >= MAX_DEPTH) {
-    out.push(x1, y1)
-    return
-  }
+  if (flat || depth >= MAX_DEPTH) return out(x0, y0, x1, y1)
   const [a, b] = splitAt(p, 3, 0.5)
-  flattenPiece(a, tol, out, depth + 1)
-  flattenPiece(b, tol, out, depth + 1)
+  chordsOf(a, tol, clip, out, depth + 1)
+  chordsOf(b, tol, clip, out, depth + 1)
+}
+
+/** Pushes the chords' far ends: a polyline after its first point. */
+const pushEnds = (out: number[]): ChordSink => (_x0, _y0, x1, y1) => void out.push(x1, y1)
+
+/**
+ * The chords of rational Bézier pieces ((wx, wy, w) triples, in order along a curve) flattened to tol > 0, their
+ * ends on the curve. With a clip, only the parts that can reach it.
+ */
+export function flattenPieces(pieces: readonly Float64Array[], tol: number, clip: BBox | null, out: ChordSink): void {
+  checkTol(tol)
+  for (const p of pieces) chordsOf(p, tol, clip, out, 0)
 }
 
 function checkTol(tol: number): void {
@@ -173,7 +200,7 @@ export function bezierFlatten(ctrl: ArrayLike<number>, tol: number): Float64Arra
   const p = new Float64Array(3 * n)
   for (let i = 0; i < n; i++) p.set([ctrl[2 * i]!, ctrl[2 * i + 1]!, 1], 3 * i)
   const out = [ctrl[0]!, ctrl[1]!]
-  flattenPiece(p, tol, out, 0)
+  chordsOf(p, tol, null, pushEnds(out), 0)
   return Float64Array.from(out)
 }
 
@@ -263,7 +290,8 @@ export function nurbsEval(s: Nurbs, u: number): Vec2 {
  * The curve as rational Bézier pieces of (wx, wy, w) triples, in order over the domain. Every knot of the domain
  * is inserted (Boehm) until it appears degree times: each non-empty span then has a Bézier piece of its own.
  */
-function bezierPieces(s: Nurbs): Float64Array[] {
+export function nurbsPieces(s: Nurbs): Float64Array[] {
+  checkNurbs(s)
   const p = s.degree
   const U = Array.from(s.knots)
   let pw = homogeneous(s)
@@ -294,11 +322,65 @@ function bezierPieces(s: Nurbs): Float64Array[] {
 
 /** A polyline (x, y pairs, ends included) within tol of the curve over its whole domain, its points on the curve. */
 export function nurbsFlatten(s: Nurbs, tol: number): Float64Array {
-  checkNurbs(s)
   checkTol(tol)
-  const pieces = bezierPieces(s)
+  const pieces = nurbsPieces(s)
   const first = pieces[0]!
   const out = [first[0]! / first[2]!, first[1]! / first[2]!]
-  for (const piece of pieces) flattenPiece(piece, tol, out, 0)
+  flattenPieces(pieces, tol, null, pushEnds(out))
   return Float64Array.from(out)
+}
+
+/**
+ * The elliptical arc c + M cos t + ratio·J(M) sin t (J turns 90° counter-clockwise), t from t0 turning by sweep
+ * (signed), as rational quadratic Bézier pieces of at most 90° each: exact, the image of circular arcs.
+ */
+export function ellipsePieces(cx: number, cy: number, mx: number, my: number, ratio: number, t0: number, sweep: number): Float64Array[] {
+  const n = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 2) - 1e-9))
+  const h = sweep / n / 2
+  const w = Math.cos(h)
+  // (u, v) on the unit circle to the plane.
+  const ax = (u: number, v: number): number => cx + mx * u - ratio * my * v
+  const ay = (u: number, v: number): number => cy + my * u + ratio * mx * v
+  const pieces: Float64Array[] = []
+  for (let k = 0; k < n; k++) {
+    const a = t0 + 2 * h * k
+    const b = a + 2 * h
+    const m = a + h
+    const [u0, v0] = [Math.cos(a), Math.sin(a)]
+    const [u1, v1] = [Math.cos(m) / w, Math.sin(m) / w]
+    const [u2, v2] = [Math.cos(b), Math.sin(b)]
+    pieces.push(Float64Array.of(ax(u0, v0), ay(u0, v0), 1, w * ax(u1, v1), w * ay(u1, v1), w, ax(u2, v2), ay(u2, v2), 1))
+  }
+  return pieces
+}
+
+/**
+ * The point of a curve given as rational Bézier pieces nearest (x, y), and its distance; size is the curve's scale.
+ * A coarse flattening bounds the distance, then only the parts within that bound are flattened again, finer each
+ * round: the answer is good to a millionth of the distance (or 1e-12 of size) at any zoom.
+ */
+export function piecesNearest(pieces: readonly Float64Array[], x: number, y: number, size: number): Vec2 & { d: number } {
+  let best = { x, y, d: Infinity }
+  const take: ChordSink = (x0, y0, x1, y1) => {
+    const dx = x1 - x0
+    const dy = y1 - y0
+    const len2 = dx * dx + dy * dy
+    const t = len2 > 0 ? Math.min(1, Math.max(0, ((x - x0) * dx + (y - y0) * dy) / len2)) : 0
+    const px = x0 + t * dx
+    const py = y0 + t * dy
+    const d = Math.hypot(px - x, py - y)
+    if (d < best.d) best = { x: px, y: py, d }
+  }
+  let tol = 1e-3 * size
+  let clip: BBox | null = null
+  for (;;) {
+    best = { x, y, d: Infinity }
+    for (const p of pieces) chordsOf(p, tol, clip, take, 0)
+    const want = Math.max(best.d * 1e-6, size * 1e-12)
+    if (tol <= want) return best
+    // Every chord point is within tol of the curve: the nearest point is within d + tol.
+    const reach = best.d + tol
+    clip = { minX: x - reach, minY: y - reach, maxX: x + reach, maxY: y + reach }
+    tol = Math.max(want, tol * 1e-3)
+  }
 }

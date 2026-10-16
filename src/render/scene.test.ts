@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { trueColor } from '../kernel/color'
 import { createDocument, type Document, type Draft } from '../kernel/document'
 import { typeOf } from '../kernel/entity/registry'
-import type { Entity } from '../kernel/entity/types'
+import type { Ellipse, Entity } from '../kernel/entity/types'
+import { segmentDistance } from '../kernel/geom/vec'
 import type { ViewState } from '../kernel/view'
 import { ARC_STRIDE, SEGMENT_STRIDE, STYLE_WORDS, arcSubdiv, type Draw, type RenderBackend } from './backend'
 import { createScene } from './scene'
@@ -465,6 +466,79 @@ describe('createScene', () => {
     expect(drawn(f, scene.draws(v)).filter((i) => i.style === 1).map((i) => i.kind)).toEqual(['segment'])
     doc.layers.update(0, { visible: false })
     expect(drawn(f, scene.draws(v)).filter((i) => i.style === 1)).toEqual([])
+  })
+
+  describe('free curves (ellipse, spline)', () => {
+    const ELLIPSE = { type: 'ellipse', layer: 0, cx: 0, cy: 0, mx: 1000, my: 0, ratio: 0.5, t0: 0, t1: 0 } as const
+    /** How far (x, y) lies from the drawn segments. */
+    const fromDrawn = (is: Instance[], x: number, y: number): number => Math.min(...is.map((i) => segmentDistance(x, y, i.v[0]!, i.v[1]!, i.v[2]!, i.v[3]!)))
+
+    it('are chords within 0.25 px at the zoom, of the part near the view only', () => {
+      const { doc, f, scene } = setup()
+      doc.transact('draw', (tx) => void tx.add(ELLIPSE))
+      for (const v of [view(1000, 0, 10), view(0, 0, 0.3), view(-1000, 0, 1000)]) {
+        const is = drawn(f, scene.draws(v))
+        expect(is.length).toBeGreaterThan(0)
+        expect(is.every((i) => i.kind === 'segment')).toBe(true)
+        // Every chord end on the ellipse (f32 hi/lo: to ~1e-9 relative).
+        for (const i of is) for (const [x, y] of [[i.v[0]!, i.v[1]!], [i.v[2]!, i.v[3]!]]) expect(Math.hypot(x! / 1000, y! / 500)).toBeCloseTo(1, 7)
+        // The visible part of the curve is within a quarter pixel of them.
+        const halfW = 400 / v.scale
+        for (let k = 0; k <= 2000; k++) {
+          const t = (2 * Math.PI * k) / 2000
+          const x = 1000 * Math.cos(t)
+          const y = 500 * Math.sin(t)
+          if (Math.abs(x - v.cx) > halfW || Math.abs(y - v.cy) > 300 / v.scale) continue
+          expect(fromDrawn(is, x, y) * v.scale).toBeLessThanOrEqual(0.25 + 1e-6)
+        }
+        // Zoomed in, only what is near the view.
+        if (v.scale >= 10) expect(Math.max(...is.map((i) => Math.abs(i.v[0]! - v.cx)))).toBeLessThan(4 * halfW)
+      }
+    })
+
+    it('panning within the flattened region reuses it; leaving it or another zoom band flattens again', () => {
+      const { doc, f, scene } = setup()
+      doc.transact('draw', (tx) => void tx.add(ELLIPSE))
+      scene.draws(view(1000, 0, 10))
+      const writes = (): number => f.log.filter((c) => c === 'write').length
+      const before = writes()
+      scene.draws(view(1010, 5, 10))
+      expect(writes()).toBe(before)
+      scene.draws(view(1000, 70, 10))
+      expect(writes()).toBe(before + 1)
+      scene.draws(view(990, 70, 40))
+      expect(writes()).toBe(before + 2)
+    })
+
+    it('follow edits, erasing and the highlight; a big rebuild leaves them right', () => {
+      const { doc, f, scene } = setup()
+      let id = 0
+      let s = 0
+      doc.transact('draw', (tx) => {
+        id = tx.add(ELLIPSE).id
+        s = tx.add({ type: 'spline', layer: 0, degree: 2, closed: false, knots: Float64Array.of(0, 0, 0, 1, 1, 1), ctrl: Float64Array.of(0, 0, 100, 200, 200, 0), weights: null }).id
+      })
+      const v = view(0, 0, 0.3)
+      expect(drawn(f, scene.draws(v)).some((i) => i.style === 1)).toBe(false)
+      scene.setHighlight([s])
+      const hl = drawn(f, scene.draws(v)).filter((i) => i.style === 1)
+      expect(hl.length).toBeGreaterThan(0)
+      expect(hl.every((i) => Math.max(i.v[1]!, i.v[3]!) <= 100 + 1e-6 && Math.min(i.v[0]!, i.v[2]!) >= -1e-6)).toBe(true)
+      doc.transact('move', (tx) => tx.replace({ ...(doc.get(id) as Ellipse), cx: 5000 }))
+      const moved = drawn(f, scene.draws(v)).filter((i) => i.style !== 1)
+      expect(Math.min(...moved.map((i) => Math.min(i.v[0]!, i.v[2]!)))).toBeGreaterThan(-1e-6)
+      // Many lines force a full rebuild: the curves are still there, and still highlighted.
+      doc.transact('many', (tx) => {
+        for (let k = 0; k < 20_000; k++) tx.add(line(k, -10, k, -11))
+      })
+      const after = drawn(f, scene.draws(v))
+      expect(after.filter((i) => i.style === 1).length).toBe(hl.length)
+      doc.transact('erase', (tx) => {
+        tx.remove(id)
+        tx.remove(s)
+      })
+      expect(drawn(f, scene.draws(v)).filter((i) => i.v[1]! > -5 || i.style === 1)).toEqual([])
+    })
   })
 
   it('a highlighted primitive too big for f32 is re-emitted on top, in the highlight style', () => {

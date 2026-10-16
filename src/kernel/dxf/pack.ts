@@ -1,6 +1,6 @@
 import type { Draft } from '../document'
 
-const KIND = { line: 0, circle: 1, arc: 2, point: 3, polyline: 4, opaque: 5 } as const
+const KIND = { line: 0, circle: 1, arc: 2, point: 3, polyline: 4, opaque: 5, ellipse: 6, spline: 7 } as const
 
 /**
  * Drafts as a few typed arrays, so a worker can hand a million of them over without the structured clone of a
@@ -14,7 +14,9 @@ export interface DraftPack {
   readonly colors: Uint32Array
   /**
    * The numbers, draft after draft: line x0 y0 x1 y1 · circle cx cy r · arc cx cy r a0 a1 · point x y · polyline
-   * closed, vertex count, the coordinates, then 1 and a bulge per vertex, or 0 · opaque its index in names/raws.
+   * closed, vertex count, the coordinates, then 1 and a bulge per vertex, or 0 · opaque its index in names/raws ·
+   * ellipse cx cy mx my ratio t0 t1 · spline degree, closed, knot count, the knots, control point count, the
+   * coordinates, then 1 and a weight per point, or 0.
    */
   readonly nums: Float64Array
   /** Draft k's numbers start at nums[at[k]]. */
@@ -81,6 +83,27 @@ export function packDrafts(drafts: readonly Draft[]): DraftPack {
         names.push(d.name)
         raws.push(d.raw)
         break
+      case 'ellipse':
+        put(d.cx, d.cy, d.mx, d.my, d.ratio, d.t0, d.t1)
+        break
+      case 'spline': {
+        const m = d.ctrl.length >> 1
+        need(5 + d.knots.length + 3 * m)
+        nums[len++] = d.degree
+        nums[len++] = d.closed ? 1 : 0
+        nums[len++] = d.knots.length
+        nums.set(d.knots, len)
+        len += d.knots.length
+        nums[len++] = m
+        nums.set(d.ctrl, len)
+        len += d.ctrl.length
+        nums[len++] = d.weights ? 1 : 0
+        if (d.weights) {
+          nums.set(d.weights, len)
+          len += m
+        }
+        break
+      }
     }
   }
   at[n] = len
@@ -116,6 +139,19 @@ export function unpackDrafts(p: DraftPack, from: number, to: number): Draft[] {
         const pts = v.slice(o + 2, o + 2 + 2 * m)
         const b = o + 2 + 2 * m
         d = { type: 'polyline', layer, pts, bulges: v[b] === 1 ? v.slice(b + 1, b + 1 + m) : null, closed: v[o] === 1 }
+        break
+      }
+      case KIND.ellipse:
+        d = { type: 'ellipse', layer, cx: v[o]!, cy: v[o + 1]!, mx: v[o + 2]!, my: v[o + 3]!, ratio: v[o + 4]!, t0: v[o + 5]!, t1: v[o + 6]! }
+        break
+      case KIND.spline: {
+        const nk = v[o + 2]!
+        const knots = v.slice(o + 3, o + 3 + nk)
+        const m = v[o + 3 + nk]!
+        const c = o + 4 + nk
+        const ctrl = v.slice(c, c + 2 * m)
+        const w = c + 2 * m
+        d = { type: 'spline', layer, degree: v[o]!, closed: v[o + 1] === 1, knots, ctrl, weights: v[w] === 1 ? v.slice(w + 1, w + 1 + m) : null }
         break
       }
       default: {

@@ -67,7 +67,37 @@ export interface Opaque extends Base {
   readonly raw: string
 }
 
-export type Entity = Line | Circle | Arc | Polyline | Point | Opaque
+/**
+ * An elliptical arc (DXF ELLIPSE): the points c + M cos t + ratio·J(M) sin t, J turning 90° counter-clockwise, for
+ * t counter-clockwise from t0 to t1 (parameters, not angles); equal parameters make a whole ellipse.
+ */
+export interface Ellipse extends Base {
+  readonly type: 'ellipse'
+  readonly cx: number
+  readonly cy: number
+  /** The major axis, from the centre to its end. */
+  readonly mx: number
+  readonly my: number
+  /** Minor over major axis, in (0, 1]. */
+  readonly ratio: number
+  readonly t0: number
+  readonly t1: number
+}
+
+/** A NURBS curve in the plane (DXF SPLINE), as geom/curve's Nurbs. */
+export interface Spline extends Base {
+  readonly type: 'spline'
+  readonly degree: number
+  readonly knots: Float64Array
+  /** Control points as x, y pairs. */
+  readonly ctrl: Float64Array
+  /** One per control point; null when all are 1. */
+  readonly weights: Float64Array | null
+  /** The DXF closed flag (the ends meet); the geometry is the knots and control points alone. */
+  readonly closed: boolean
+}
+
+export type Entity = Line | Circle | Arc | Polyline | Point | Opaque | Ellipse | Spline
 
 /** Object snap modes, as bits (AutoCAD's OSMODE uses its own values; these are ours). */
 export const SNAP = { END: 1, MID: 2, CEN: 4, INT: 8, QUA: 16, PER: 32, NEA: 64, NOD: 128 } as const
@@ -84,9 +114,16 @@ export interface PrimSink {
 export interface EntityType<E extends Entity> {
   readonly type: E['type']
   bbox(e: E): BBox
-  /** tol: allowed chordal error in world units for curves flattened on the CPU; exact primitives ignore it. */
-  primitives(e: E, tol: number, out: PrimSink): void
+  /**
+   * tol: allowed chordal error in world units for curves flattened on the CPU, 0 for a default relative to the
+   * curve's size; with clip, a flattened curve may leave out what cannot reach it. Exact primitives ignore both.
+   */
+  primitives(e: E, tol: number, out: PrimSink, clip?: BBox): void
+  /** A curve flattened on the CPU (free): the scene flattens it again for the zoom, the visible part only. */
+  readonly free?: true
   distance(e: E, p: Vec2): number
+  /** The point of e nearest p, where primitives at the default tolerance would not be exact enough. */
+  nearest?(e: E, p: Vec2): Vec2
   /** The entity moved by m, same id: only similarities (move, rotate, mirror, uniform scale) are supported. */
   transform?(e: E, m: Affine): E
   /** Emits the snap points of the modes asked for (a bit set of SNAP). */

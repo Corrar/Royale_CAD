@@ -1,7 +1,8 @@
 import { TRUE_COLOR, type Color } from '../color'
 import { createDocument, type Document, type Draft, type Layer } from '../document'
 import type { Entity } from '../entity/types'
-import { normAngle } from '../geom/tol'
+import { nurbsProblem } from '../geom/curve'
+import { TAU, normAngle } from '../geom/tol'
 import { entryEnd, findTable, layerEntry } from './tables'
 import { sections, tokenize, type PairList } from './tokenizer'
 
@@ -261,6 +262,69 @@ function parser(pairs: PairList) {
     return polylineOf(xy, bulges, (flags & 1) !== 0)
   }
 
+  /** ELLIPSE: centre and major axis in WCS; the extrusion (±Z only) says which way the parameter turns. */
+  const ellipse = (a: number, b: number): Parsed => {
+    let cx = 0
+    let cy = 0
+    let mx = 0
+    let my = 0
+    let mz = 0
+    let ratio = 1
+    let t0 = 0
+    let t1 = TAU
+    for (let i = a + 1; i < b; i++) {
+      const c = codes[i]!
+      if (c === 10) cx = num(i)
+      else if (c === 20) cy = num(i)
+      else if (c === 11) mx = num(i)
+      else if (c === 21) my = num(i)
+      else if (c === 31) mz = num(i)
+      else if (c === 40) ratio = num(i)
+      else if (c === 41) t0 = num(i)
+      else if (c === 42) t1 = num(i)
+      else common(c, i)
+    }
+    const s = ocsSign(head)
+    const major = Math.hypot(mx, my)
+    if (!(major > 0) || Math.abs(mz) > 1e-9 * major) throw new Unsupported('its major axis is not in the XY plane')
+    if (!(ratio > 0 && ratio <= 1)) throw new Unsupported(`axis ratio ${ratio} is not in (0, 1]`)
+    // A whole turn, give or take rounding, is the whole ellipse: equal parameters.
+    if (Math.abs(t1 - t0) > TAU - 1e-9 || normAngle(t0) === normAngle(t1)) return { type: 'ellipse', cx, cy, mx, my, ratio, t0: normAngle(s * t0), t1: normAngle(s * t0) }
+    // Seen from -Z the parameter turns clockwise: counter-clockwise, the arc runs from -t1 to -t0.
+    const [b0, b1] = s === 1 ? [t0, t1] : [-t1, -t0]
+    return { type: 'ellipse', cx, cy, mx, my, ratio, t0: normAngle(b0), t1: normAngle(b1) }
+  }
+
+  /** SPLINE: control points in WCS, all at one height; one given by fit points alone stays as is. */
+  const spline = (a: number, b: number): Parsed => {
+    let flags = 0
+    let degree = 3
+    let fits = 0
+    const knots: number[] = []
+    const weights: number[] = []
+    const xy: number[] = []
+    const zs: number[] = []
+    for (let i = a + 1; i < b; i++) {
+      const c = codes[i]!
+      if (c === 70) flags = num(i)
+      else if (c === 71) degree = num(i)
+      else if (c === 40) knots.push(num(i))
+      else if (c === 41) weights.push(num(i))
+      else if (c === 10) xy.push(num(i), 0)
+      else if (c === 20 && xy.length > 0) xy[xy.length - 1] = num(i)
+      else if (c === 30) zs.push(num(i))
+      else if (c === 11) fits++
+      else if (c !== 210 && c !== 220 && c !== 230) common(c, i) // the normal says nothing a flat curve needs
+    }
+    if (xy.length === 0) throw new Unsupported(fits > 0 ? 'splines given by fit points only are not supported' : 'it has no control points')
+    if (zs.some((z) => z !== zs[0])) throw new Unsupported('3D splines are not supported')
+    const w = weights.length > 0 && weights.some((v) => v !== 1) ? Float64Array.from(weights) : null
+    const curve = { type: 'spline' as const, degree, knots: Float64Array.from(knots), ctrl: Float64Array.from(xy), weights: w, closed: (flags & 1) !== 0 }
+    const problem = nurbsProblem(weights.length > 0 && !w ? { ...curve, weights } : curve)
+    if (problem) throw new Unsupported(problem)
+    return curve
+  }
+
   /** The entity [a, end) (its own groups end at own) as understood; null for a type it does not read. */
   const read = (name: string, a: number, own: number, end: number): Parsed | null => {
     reset()
@@ -277,6 +341,10 @@ function parser(pairs: PairList) {
         return lwpolyline(a, own)
       case 'POLYLINE':
         return polyline(a, own, end)
+      case 'ELLIPSE':
+        return ellipse(a, own)
+      case 'SPLINE':
+        return spline(a, own)
     }
     return null
   }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
-import type { Arc, Circle, Entity, Line, Opaque, Point, Polyline } from '../entity/types'
+import type { Arc, Circle, Ellipse, Entity, Line, Opaque, Point, Polyline, Spline } from '../entity/types'
 import { createDocument } from '../document'
 import { drawingFrom, loader, parseDxf, readDxf } from './reader'
 
@@ -95,6 +95,45 @@ describe('readDxf', () => {
     expect(ins).toMatchObject({ type: 'opaque', name: 'INSERT', raw: lines(insert) })
     expect(p).toMatchObject({ type: 'opaque', name: 'LINE', raw: lines(paper) })
     expect(d.warnings).toEqual(['1 HATCH kept as is (not drawn).', '1 INSERT kept as is (not drawn).', '1 entity in paper space kept as is (not drawn).'])
+  })
+
+  it('ELLIPSE: in WCS; an extrusion of (0, 0, -1) runs it the other way; 0 to 2π is the whole ellipse', () => {
+    const e: G = [0, 'ELLIPSE', 8, '0', 10, 10, 20, 20, 30, 0, 11, 6, 21, 8, 31, 0, 40, 0.5, 41, 0.5, 42, 4]
+    const mirrored: G = [...e, 210, 0, 220, 0, 230, -1]
+    const whole: G = [0, 'ELLIPSE', 8, '0', 10, 0, 20, 0, 11, 5, 21, 0, 40, 0.3, 41, 0, 42, 6.283185307179586]
+    const tilted: G = [...e, 210, 1, 220, 0, 230, 0]
+    const d = readDxf(file([...e, ...mirrored, ...whole, ...tilted]))
+    const [a, m, w, t] = all(d) as [Ellipse, Ellipse, Ellipse, Opaque]
+    expect(a).toMatchObject({ type: 'ellipse', cx: 10, cy: 20, mx: 6, my: 8, ratio: 0.5, t0: 0.5, t1: 4 })
+    // ezdxf puts the start of the mirrored one at (17.183…, 25.582…): the end of ours, which runs counter-clockwise.
+    expect(m).toMatchObject({ type: 'ellipse', cx: 10, cy: 20, mx: 6, my: 8, ratio: 0.5 })
+    expect(r9(m.t0)).toBe(r9(2 * Math.PI - 4))
+    expect(r9(m.t1)).toBe(r9(2 * Math.PI - 0.5))
+    expect(w.t0).toBe(w.t1)
+    expect(t.type).toBe('opaque')
+    expect(d.warnings).toHaveLength(1)
+  })
+
+  it('SPLINE: degree, knots, control points, weights and the closed flag; 3D, fit points only and bad data stay as is', () => {
+    const knots = [0, 0, 0, 0, 1, 1, 1, 1].flatMap((k) => [40, k])
+    const ctrl = [[0, 0], [1, 2], [3, 2], [4, 0]].flatMap(([x, y]) => [10, x!, 20, y!, 30, 0])
+    const plain: G = [0, 'SPLINE', 8, '0', 100, 'AcDbSpline', 70, 8, 71, 3, 72, 8, 73, 4, 74, 0, ...knots, ...ctrl]
+    const rational: G = [0, 'SPLINE', 8, '0', 70, 13, 71, 3, 72, 8, 73, 4, 74, 0, ...knots, 41, 1, 41, 2, 41, 2, 41, 1, ...ctrl]
+    const lifted: G = [0, 'SPLINE', 8, '0', 70, 8, 71, 3, 72, 8, 73, 4, ...knots, ...ctrl.map((v, i) => (i === 11 ? 5 : v))]
+    const fitted: G = [0, 'SPLINE', 8, '0', 70, 8, 71, 3, 72, 0, 73, 0, 74, 2, 11, 0, 21, 0, 31, 0, 11, 1, 21, 1, 31, 0]
+    const bad: G = [0, 'SPLINE', 8, '0', 70, 8, 71, 3, 72, 7, 73, 4, ...knots.slice(2), ...ctrl]
+    const d = readDxf(file([...plain, ...rational, ...lifted, ...fitted, ...bad]))
+    const [p, r, l, f, b] = all(d) as [Spline, Spline, Opaque, Opaque, Opaque]
+    expect(p).toMatchObject({ type: 'spline', degree: 3, closed: false, weights: null })
+    expect([...p.knots]).toEqual([0, 0, 0, 0, 1, 1, 1, 1])
+    expect([...p.ctrl]).toEqual([0, 0, 1, 2, 3, 2, 4, 0])
+    expect(r).toMatchObject({ type: 'spline', closed: true })
+    expect([...r.weights!]).toEqual([1, 2, 2, 1])
+    expect([l.type, f.type, b.type]).toEqual(['opaque', 'opaque', 'opaque'])
+    expect(d.warnings).toHaveLength(3)
+    expect(d.warnings.join(' ')).toMatch(/3D/)
+    expect(d.warnings.join(' ')).toMatch(/fit points/)
+    expect(d.warnings.join(' ')).toMatch(/knots/)
   })
 
   it('layers: color, off, frozen, locked and true color from the table; an unknown layer is created', () => {

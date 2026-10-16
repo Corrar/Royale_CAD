@@ -135,6 +135,18 @@ describe('snap', () => {
     expect([hit.p.x, hit.p.y, hit.mode, hit.id]).toEqual([0, 15, SNAP.PER, ids[1]])
   })
 
+  it('NEA on a free curve (ellipse) lands on it at any zoom, not on a coarse flattening of it', () => {
+    const { doc, index, ids } = setup([{ type: 'ellipse', layer: 0, cx: 0, cy: 0, mx: 1e6, my: 0, ratio: 0.5, t0: 0, t1: 0 }])
+    // 1000 px per unit at a point of the ellipse; the cursor a few px off it.
+    const t = 0.7
+    const x = 1e6 * Math.cos(t)
+    const y = 5e5 * Math.sin(t) + 0.004
+    const deep: ViewState = { cx: x, cy: y, scale: 1000, width: 800, height: 600, dpr: 1 }
+    const hit = snap(doc, index, { x, y }, deep, SNAP.NEA, 10)!
+    expect(hit).toMatchObject({ mode: SNAP.NEA, id: ids[0] })
+    expect(Math.abs(Math.hypot(hit.p.x / 1e6, hit.p.y / 5e5) - 1)).toBeLessThan(1e-11)
+  })
+
   it('NEA: the nearest point of the object, only when no other snap is in reach', () => {
     const { doc, index, ids } = setup([line(0, 0, 10, 0), { type: 'arc', layer: 0, cx: 0, cy: 10, r: 2, a0: 0, a1: Math.PI }])
     const onLine = snap(doc, index, { x: 3.3, y: 0.4 }, VIEW, SNAP.NEA | SNAP.END, 10)!
