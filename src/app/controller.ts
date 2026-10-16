@@ -76,6 +76,7 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
     loop.invalidate()
   })
   const offLayers = doc.layers.onChange(() => loop.invalidate())
+  const offRestore = backend.onRestore(() => loop.invalidate())
   const offSelection = selection.onChange(() => {
     scene.setHighlight(selection.ids)
     loop.invalidate()
@@ -127,6 +128,7 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
     window.removeEventListener('keydown', onKey)
     offDoc()
     offLayers()
+    offRestore()
     offSelection()
     index.dispose()
     scene.dispose()

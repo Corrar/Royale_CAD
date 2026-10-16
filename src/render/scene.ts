@@ -36,7 +36,7 @@ const FIRST_STYLE = 2
 
 type Kind = 'segment' | 'arc'
 const WORDS: Record<Kind, number> = { segment: SEGMENT_STRIDE / 4, arc: ARC_STRIDE / 4 }
-const SLOTS = 2 ** 24 // handle = pool index · SLOTS + slot
+const SLOTS = 2 ** 32 // handle = pool index · SLOTS + slot; exact in f64 up to 2^21 pools
 const OPEN_CAPACITY = 256
 const DIRTY_LIST = 64
 /** Edits beyond these sizes rebuild the packed pools instead of filling the open ones. */
@@ -128,7 +128,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
 
   function addHandle(id: number, h: number): void {
     if (id >= one.length) {
-      const grown = new Float64Array(Math.max(2 * one.length, id + 1))
+      const grown = new Float64Array(Math.max(Math.ceil(1.5 * one.length), id + 1))
       grown.set(one)
       one = grown
     }
@@ -333,6 +333,11 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     if (openLive > Math.max(OPEN_MIN, packedLive / 4) || holes > Math.max(OPEN_MIN, packedLive / 2)) needsRebuild = true
   }
   const offDoc = doc.onChange(onChange)
+  // The GPU came back empty: upload everything again with the next draws().
+  const offRestore = backend.onRestore(() => {
+    for (const p of [...pools, ...hlPools]) if (p.count > 0) markDirty(p, 0, p.count)
+    stylesDirty = true
+  })
 
   /**
    * Packs rows of `cols` (all when rows is null) into a new pool of `into`, in Hilbert order of their bbox centres.
@@ -444,6 +449,12 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   function rebuild(): void {
     for (const p of pools) backend.destroyBatch(p.batch)
     pools = []
+    // Styles are re-keyed from the entities alive now: rows of colors no longer used are freed.
+    styleByKey.clear()
+    styleCount = FIRST_STYLE
+    styleLayer.length = FIRST_STYLE
+    styleColor.length = FIRST_STYLE
+    stylesDirty = true
     open = new Map()
     one = new Float64Array(one.length)
     multi = new Map()
@@ -631,6 +642,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       disposed = true
       offDoc()
       offLayers()
+      offRestore()
       for (const p of [...pools, ...hlPools]) backend.destroyBatch(p.batch)
       if (clip) backend.destroyBatch(clip.batch)
       pools = []

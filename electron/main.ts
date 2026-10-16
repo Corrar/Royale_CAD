@@ -15,17 +15,23 @@ const bench = app.commandLine.hasSwitch('bench')
 const hasGate = app.commandLine.hasSwitch('gate')
 const gate = hasGate ? app.commandLine.getSwitchValue('gate') : 'g1'
 const G1_LIMIT_MS = 16.7
-// G2: heap after a full GC, index rebuild after edits, pick p95 (src/app/bench.ts).
-const G2_LIMITS = { heapMB: 400, rebuildMs: 200, pickMs: 1 }
+// G2 (src/app/bench.ts): memory after a full GC (JS heap plus ArrayBuffers), index rebuild after edits, pick p95.
+const G2_LIMITS = { memoryMB: 400, rebuildMs: 200, pickMs: 1 }
+// What the G2 run must have done for its numbers to mean anything: picks that hit, one cold build, then a
+// rebuild after each of the 6 edit rounds (1 warm-up + 5 measured).
+const G2_WORK = { minPickHits: 900, coldBuilds: 1, indexRebuilds: 7 }
 const BENCH_TIMEOUT_MS = 120_000
 
-/** Renderer JS heap after a full collection, in MB, through the DevTools protocol. */
-async function measureHeapMB(wc: Electron.WebContents): Promise<number> {
+/**
+ * Renderer memory after a full collection, in MB, through the DevTools protocol. usedSize is the V8 heap alone;
+ * the backing stores of ArrayBuffers (typed arrays, GPU-side copies) come in backingStorageSize.
+ */
+async function measureMemoryMB(wc: Electron.WebContents): Promise<{ heapMB: number; arrayBuffersMB: number }> {
   wc.debugger.attach('1.3')
   try {
     await wc.debugger.sendCommand('HeapProfiler.collectGarbage')
-    const usage = (await wc.debugger.sendCommand('Runtime.getHeapUsage')) as { usedSize: number }
-    return usage.usedSize / 1e6
+    const usage = (await wc.debugger.sendCommand('Runtime.getHeapUsage')) as { usedSize: number; backingStorageSize?: number }
+    return { heapMB: Math.round(usage.usedSize / 1e6), arrayBuffersMB: Math.round((usage.backingStorageSize ?? NaN) / 1e6) }
   } finally {
     wc.debugger.detach()
   }
@@ -154,7 +160,10 @@ function createWindow(): void {
       received = true
       void (async () => {
         const r = JSON.parse(event.message.slice('BENCH_RESULT '.length)) as Record<string, unknown>
-        if (gate === 'g2' && typeof r.error !== 'string') r.heapMB = Math.round(await measureHeapMB(wc))
+        if (gate === 'g2' && typeof r.error !== 'string') {
+          Object.assign(r, await measureMemoryMB(wc))
+          r.memoryMB = (r.heapMB as number) + (r.arrayBuffersMB as number)
+        }
         console.log(JSON.stringify(r))
         const num = (k: string): number => (typeof r[k] === 'number' && Number.isFinite(r[k]) ? r[k] : NaN)
         if (typeof r.error === 'string') return fail(r.error)
@@ -167,9 +176,13 @@ function createWindow(): void {
           if (r.width !== 1920 || r.height !== 1080) return fail(`drawing buffer ${String(r.width)}x${String(r.height)} is not 1920x1080`)
           pass = num('p95') <= G1_LIMIT_MS
         } else {
-          const [heap, rebuild, pickMs] = [num('heapMB'), num('rebuildMaxMs'), num('pickP95Ms')]
-          if ([heap, rebuild, pickMs].some(Number.isNaN)) return fail('invalid result')
-          pass = heap <= G2_LIMITS.heapMB && rebuild <= G2_LIMITS.rebuildMs && pickMs <= G2_LIMITS.pickMs
+          const [memory, rebuild, pickMs] = [num('memoryMB'), num('rebuildMaxMs'), num('pickP95Ms')]
+          if ([memory, rebuild, pickMs].some(Number.isNaN)) return fail('invalid result')
+          if (!(num('pickHits') >= G2_WORK.minPickHits)) return fail(`only ${String(r.pickHits)} picks hit: the index is not answering`)
+          if (r.coldBuilds !== G2_WORK.coldBuilds || r.indexRebuilds !== G2_WORK.indexRebuilds) {
+            return fail(`expected ${G2_WORK.coldBuilds} cold build and ${G2_WORK.indexRebuilds} rebuilds, got ${String(r.coldBuilds)} and ${String(r.indexRebuilds)}`)
+          }
+          pass = memory <= G2_LIMITS.memoryMB && rebuild <= G2_LIMITS.rebuildMs && pickMs <= G2_LIMITS.pickMs
         }
         if (shot) await writeFile(shot, (await wc.capturePage()).toPNG())
         finish(pass ? 0 : 2)

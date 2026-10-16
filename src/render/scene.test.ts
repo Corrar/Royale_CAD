@@ -22,6 +22,7 @@ function fakeBackend() {
   const writes: { batch: number; first: number; count: number }[] = []
   let styles = new Uint32Array(0)
   let next = 1
+  const restoreListeners = new Set<() => void>()
   const backend: RenderBackend = {
     createBatch(kind, capacity) {
       const id = next++
@@ -49,8 +50,17 @@ function fakeBackend() {
     },
     frame() {},
     resize() {},
+    onRestore(fn) {
+      restoreListeners.add(fn)
+      return () => restoreListeners.delete(fn)
+    },
   }
-  return { backend, batches, log, writes, styles: () => styles }
+  /** What a context loss and restore do: every batch comes back zeroed, then the listeners run. */
+  const restore = (): void => {
+    for (const b of batches.values()) b.bytes.fill(0)
+    for (const fn of [...restoreListeners]) fn()
+  }
+  return { backend, batches, log, writes, styles: () => styles, restore, restoreListeners }
 }
 
 interface Instance { kind: Kind; v: number[]; style: number }
@@ -177,6 +187,25 @@ describe('createScene', () => {
       .sort((p, q) => p.v[1]! - q.v[1]!)
       .map((i) => f.styles()[i.style * STYLE_WORDS])
     expect(colors).toEqual([DRAW, 0xff0000ff, 0x123456ff, DRAW])
+  })
+
+  it('a rebuild frees the style rows of colors no longer in use', () => {
+    const { doc, f, scene } = setup()
+    doc.transact('load', (tx) => {
+      for (let i = 0; i < 20_000; i++) tx.add(line(i, 0, i, 1, { color: trueColor(i & 255, (i >> 8) & 255, 7) }))
+    })
+    scene.draws(FAR)
+    expect(f.styles().length / STYLE_WORDS).toBe(20_002)
+    doc.transact('erase', (tx) => {
+      for (const e of [...doc.entities()]) tx.remove(e.id)
+    })
+    doc.transact('reload', (tx) => {
+      for (let i = 0; i < 20_000; i++) tx.add(line(i, 0, i, 1))
+    })
+    const draws = scene.draws(view(10_000, 0, 0.03)) // 800 px cover 26 667 units
+    expect(f.styles().length / STYLE_WORDS).toBe(3) // hidden, highlight, layer 0 by layer
+    expect(drawn(f, draws)).toHaveLength(20_000)
+    expect(new Set(drawn(f, draws).map((i) => f.styles()[i.style * STYLE_WORDS]))).toEqual(new Set([DRAW]))
   })
 
   it('culls the batches outside the view and merges adjacent ones', () => {
@@ -362,6 +391,23 @@ describe('createScene', () => {
     expect(plain).toHaveLength(1)
   })
 
+  it('after a context restore the next frame uploads everything again', () => {
+    const { doc, f, scene } = setup()
+    const rand = rng(9)
+    doc.transact('load', (tx) => {
+      for (let i = 0; i < 20_000; i++) tx.add(line(rand() * 100, rand() * 100, rand() * 100, rand() * 100))
+    })
+    doc.transact('more', (tx) => {
+      tx.add({ type: 'circle', layer: 0, cx: 1, cy: 1, r: 1 })
+      tx.add(line(0, 0, 5, 5))
+    })
+    scene.setHighlight([1])
+    const v = view(50, 50, 4)
+    const before = drawn(f, scene.draws(v))
+    f.restore()
+    expect(drawn(f, scene.draws(v))).toEqual(before)
+  })
+
   it('dispose destroys every batch and stops listening', () => {
     const { doc, f, scene } = setup()
     doc.transact('a', (tx) => {
@@ -374,6 +420,7 @@ describe('createScene', () => {
     expect(f.batches.size).toBeGreaterThanOrEqual(5) // segments, arcs, highlight segments and arcs, clip
     scene.dispose()
     expect(f.batches.size).toBe(0)
+    expect(f.restoreListeners.size).toBe(0)
     doc.transact('b', (tx) => void tx.add(line(0, 0, 1, 1)))
     expect(f.batches.size).toBe(0)
   })

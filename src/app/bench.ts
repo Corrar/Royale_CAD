@@ -199,7 +199,7 @@ function shifted(e: Entity, d: number): Entity {
 /**
  * G2: n entities with the document, the spatial index and the scene alive. Index rebuild after edits (the one
  * met while drawing) and pick time at the full-extent view, where the pick box holds the most candidates. The
- * main process adds the heap, measured after a full collection.
+ * main process adds the memory, measured after a full collection: the JS heap and the ArrayBuffers apart.
  */
 export function runBenchG2(canvas: HTMLCanvasElement, n: number): void {
   const { backend, renderer, base, colors } = setupRender(canvas)
@@ -249,7 +249,7 @@ export function runBenchG2(canvas: HTMLCanvasElement, n: number): void {
   report({
     gate: 'g2', n,
     loadMs: ms(loadMs), sceneMs: ms(sceneMs), coldBuildMs: ms(coldBuildMs),
-    rebuildP50Ms: ms(percentile(r, 0.5)), rebuildMaxMs: ms(r.at(-1)!), coldBuilds: index.coldBuilds,
+    rebuildP50Ms: ms(percentile(r, 0.5)), rebuildMaxMs: ms(r.at(-1)!), coldBuilds: index.coldBuilds, indexRebuilds: index.rebuilds,
     pickP50Ms: ms(percentile(pk, 0.5)), pickP95Ms: Math.round(percentile(pk, 0.95) * 1000) / 1000, pickMaxMs: ms(pk.at(-1)!), pickHits: hits,
     renderer,
   })

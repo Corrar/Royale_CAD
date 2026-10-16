@@ -9,9 +9,14 @@ export interface RenderBackend {
   writeBatch(id: BatchId, first: number, instances: ArrayBufferView): void
   destroyBatch(id: BatchId): void
   setStyleTable(table: Uint32Array): void
-  // The draws array is kept for the replay after a context restore: do not mutate it after the call.
   frame(view: ViewState, draws: readonly Draw[]): void
   resize(width: number, height: number, dpr: number): void
+  /**
+   * After a lost GPU context comes back, every live batch exists again with its capacity but zeroed content (the
+   * style table survives). The listener must rewrite the batches and draw a new frame: the backend keeps no CPU
+   * copy of the instances, their owner already has one.
+   */
+  onRestore(fn: () => void): () => void
 }
 
 /** Channels in 0..1. */

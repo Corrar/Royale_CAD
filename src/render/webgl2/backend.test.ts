@@ -105,11 +105,28 @@ describe('createWebGL2Backend', () => {
     }
   })
 
-  it('setStyleTable rejects a partial row and more rows than MAX_TEXTURE_SIZE', () => {
+  it('setStyleTable rejects a partial row and more styles than the wrapped texture holds', () => {
     const t = setup()
+    // MAX_TEXTURE_SIZE 64: rows of 32 styles (64 texels), at most 64 rows.
+    const most = (MAX_TEXTURE_SIZE / STYLE_WORDS) * MAX_TEXTURE_SIZE
     expect(() => t.backend.setStyleTable(new Uint32Array(STYLE_WORDS + 1))).toThrow(RangeError)
-    expect(() => t.backend.setStyleTable(new Uint32Array((MAX_TEXTURE_SIZE + 1) * STYLE_WORDS))).toThrow(RangeError)
-    t.backend.setStyleTable(new Uint32Array(MAX_TEXTURE_SIZE * STYLE_WORDS))
+    expect(() => t.backend.setStyleTable(new Uint32Array((most + 1) * STYLE_WORDS))).toThrow(RangeError)
+    t.backend.setStyleTable(new Uint32Array(most * STYLE_WORDS))
+    const call = t.named('texImage2D').at(-1)!
+    expect([call.args[3], call.args[4]]).toEqual([MAX_TEXTURE_SIZE, MAX_TEXTURE_SIZE])
+  })
+
+  it('wraps the style table into rows and pads the last one', () => {
+    const t = setup()
+    const table = new Uint32Array(40 * STYLE_WORDS).map((_, i) => i + 1)
+    t.clear()
+    t.backend.setStyleTable(table)
+    const call = t.named('texImage2D')[0]!
+    expect([call.args[3], call.args[4]]).toEqual([64, 2])
+    const data = call.args[8] as Uint32Array
+    expect(data).toHaveLength(64 * 2)
+    expect(Array.from(data.subarray(0, table.length))).toEqual(Array.from(table))
+    expect(Array.from(data.subarray(table.length))).toEqual(new Array(128 - table.length).fill(0))
   })
 
   it('frame rejects draws outside the capacity', () => {
@@ -163,47 +180,41 @@ describe('createWebGL2Backend', () => {
     expect(setup().lose().defaultPrevented).toBe(true)
   })
 
-  it('restore re-uploads every live batch with its latest data and skips destroyed ones', () => {
+  it('restore recreates every live batch zeroed at its capacity and asks the owner to rewrite them', () => {
     const t = setup()
     const a = t.backend.createBatch('segment', 2)
     const b = t.backend.createBatch('arc', 1)
     const c = t.backend.createBatch('segment', 1)
     t.backend.writeBatch(a, 1, bytes(SEGMENT_STRIDE, 7))
-    t.backend.writeBatch(b, 0, bytes(ARC_STRIDE, 8))
-    t.backend.writeBatch(c, 0, bytes(SEGMENT_STRIDE, 9))
     t.backend.destroyBatch(b)
     const styles = new Uint32Array(2 * STYLE_WORDS).fill(3)
     t.backend.setStyleTable(styles)
+    let restored = 0
+    const off = t.backend.onRestore(() => restored++)
     t.lose()
     t.clear()
     t.restore()
-    const uploads = t.named('bufferData').map((call) => call.args[1])
-    expect(uploads).toEqual([new Uint8Array([...bytes(SEGMENT_STRIDE, 0), ...bytes(SEGMENT_STRIDE, 7)]), bytes(SEGMENT_STRIDE, 9)])
+    expect(t.named('bufferData').map((call) => call.args[1])).toEqual([2 * SEGMENT_STRIDE, SEGMENT_STRIDE])
     expect(t.named('createProgram')).toHaveLength(3) // grid, segment, arc
-    expect(t.named('texImage2D').map((call) => call.args[8])).toEqual([styles])
-  })
-
-  it('restore replays the last frame without the batches destroyed since', () => {
-    const t = setup()
-    const a = t.backend.createBatch('segment', 2)
-    const c = t.backend.createBatch('segment', 1)
-    t.backend.frame(VIEW, [{ batch: a, first: 0, count: 2 }, { batch: c, first: 0, count: 1 }])
-    t.backend.destroyBatch(c)
-    t.lose()
-    t.clear()
+    const uploads = t.named('texImage2D').map((call) => Array.from((call.args[8] as Uint32Array).subarray(0, styles.length)))
+    expect(uploads).toEqual([Array.from(styles)]) // the style table survives
+    expect(restored).toBe(1)
+    expect(t.draws()).toEqual([]) // the owner draws the next frame, once it has rewritten its batches
+    off()
     t.restore()
-    expect(t.named('drawArraysInstanced').map((call) => call.args[3])).toEqual([2])
+    expect(restored).toBe(1)
+    // The batches are usable again.
+    t.backend.writeBatch(c, 0, bytes(SEGMENT_STRIDE, 9))
+    t.backend.frame(VIEW, [{ batch: a, first: 0, count: 2 }, { batch: c, first: 0, count: 1 }])
+    expect(t.named('drawArraysInstanced').map((call) => call.args[3])).toEqual([2, 1])
   })
 
-  it('frame with the context lost records the draws and does not draw', () => {
+  it('frame with the context lost does not draw', () => {
     const t = setup()
     const a = t.backend.createBatch('segment', 3)
     t.setLost(true)
     t.clear()
     t.backend.frame(VIEW, [{ batch: a, first: 0, count: 3 }])
     expect(t.draws()).toEqual([])
-    t.setLost(false)
-    t.restore()
-    expect(t.named('drawArraysInstanced').map((call) => call.args[3])).toEqual([3])
   })
 })

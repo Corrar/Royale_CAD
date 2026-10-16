@@ -17,13 +17,12 @@ interface Batch {
   kind: Kind
   capacity: number
   buffer: WebGLBuffer | null
-  cpu: Uint8Array
 }
 
 interface Pipeline {
   program: WebGLProgram | null
   vao: WebGLVertexArrayObject | null
-  u: Record<'eyeHi' | 'eyeLo' | 'pxPerUnit' | 'dpr' | 'viewportPx' | 'styles' | 'subdiv', WebGLUniformLocation | null>
+  u: Record<'eyeHi' | 'eyeLo' | 'pxPerUnit' | 'dpr' | 'viewportPx' | 'styles' | 'stylesPerRow' | 'subdiv', WebGLUniformLocation | null>
 }
 
 // Both kinds share the attribute slots (vec4, float vector, uint styleId); only size and stride differ.
@@ -40,11 +39,14 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
   const bg = new Float32Array(theme.bg)
   const gridMinor = new Float32Array(theme.gridMinor)
   const gridMajor = new Float32Array(theme.gridMajor)
-  const maxStyleRows = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number // the style table is one row per style
+  // The style table wraps into rows of stylesPerRow styles, STYLE_WORDS texels each.
+  const maxTexture = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number
+  const stylesPerRow = Math.min(1024, Math.floor(maxTexture / STYLE_WORDS))
+  const maxStyles = stylesPerRow * maxTexture
   const batches = new Map<BatchId, Batch>()
   let nextId = 1
   let styleCopy = new Uint32Array(0)
-  let lastFrame: { view: ViewState; draws: readonly Draw[] } | undefined
+  const restoreListeners = new Set<() => void>()
   const eye = new Float32Array(4)
 
   const pipelines = {} as Record<Kind, Pipeline>
@@ -95,7 +97,7 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
 
   function buildPipeline(kind: Kind): void {
     const p = link(LAYOUT[kind].vert, SEGMENT_FRAG)
-    const names = ['eyeHi', 'eyeLo', 'pxPerUnit', 'dpr', 'viewportPx', 'styles', 'subdiv'] as const
+    const names = ['eyeHi', 'eyeLo', 'pxPerUnit', 'dpr', 'viewportPx', 'styles', 'stylesPerRow', 'subdiv'] as const
     const vao = gl!.createVertexArray()
     pipelines[kind] = { program: p, vao, u: Object.fromEntries(names.map((n) => [n, gl!.getUniformLocation(p, n)])) as Pipeline['u'] }
     gl!.bindVertexArray(vao)
@@ -110,16 +112,18 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
     gl!.bindTexture(gl!.TEXTURE_2D, styleTex)
     gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_MIN_FILTER, gl!.NEAREST)
     gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_MAG_FILTER, gl!.NEAREST)
-    const rows = styleCopy.length / STYLE_WORDS
     // An empty table still needs a valid texture; no instance can reference it meaningfully.
-    const data = rows > 0 ? styleCopy : new Uint32Array(STYLE_WORDS)
-    gl!.texImage2D(gl!.TEXTURE_2D, 0, gl!.R32UI, STYLE_WORDS, Math.max(1, rows), 0, gl!.RED_INTEGER, gl!.UNSIGNED_INT, data)
+    const rows = Math.max(1, Math.ceil(styleCopy.length / STYLE_WORDS / stylesPerRow))
+    const data = new Uint32Array(rows * stylesPerRow * STYLE_WORDS)
+    data.set(styleCopy)
+    gl!.texImage2D(gl!.TEXTURE_2D, 0, gl!.R32UI, stylesPerRow * STYLE_WORDS, rows, 0, gl!.RED_INTEGER, gl!.UNSIGNED_INT, data)
   }
 
-  function uploadBatch(b: Batch): void {
+  /** A zeroed buffer at the batch's capacity: zeroed instances have styleId 0, hidden. */
+  function allocBatch(b: Batch): void {
     b.buffer = gl!.createBuffer()
     gl!.bindBuffer(gl!.ARRAY_BUFFER, b.buffer)
-    gl!.bufferData(gl!.ARRAY_BUFFER, b.cpu, gl!.DYNAMIC_DRAW)
+    gl!.bufferData(gl!.ARRAY_BUFFER, b.capacity * LAYOUT[b.kind].stride, gl!.DYNAMIC_DRAW)
   }
 
   // Opaque and fullscreen, so it also replaces the clear.
@@ -164,6 +168,7 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
         gl!.useProgram(program)
         gl!.bindVertexArray(vao)
         gl!.uniform1i(u.styles, 0)
+        gl!.uniform1i(u.stylesPerRow, stylesPerRow)
         gl!.uniform2f(u.eyeHi, eye[0]!, eye[2]!)
         gl!.uniform2f(u.eyeLo, eye[1]!, eye[3]!)
         gl!.uniform1f(u.pxPerUnit, view.scale * view.dpr)
@@ -199,8 +204,8 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
     buildPipeline('segment')
     buildPipeline('arc')
     uploadStyles()
-    for (const b of batches.values()) uploadBatch(b)
-    if (lastFrame) drawFrame(lastFrame.view, lastFrame.draws)
+    for (const b of batches.values()) allocBatch(b)
+    for (const fn of [...restoreListeners]) fn()
   }
 
   canvas.addEventListener('webglcontextlost', onLost)
@@ -212,8 +217,8 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
 
   return {
     createBatch(kind, capacity) {
-      const b: Batch = { kind, capacity, buffer: null, cpu: new Uint8Array(capacity * LAYOUT[kind].stride) }
-      uploadBatch(b)
+      const b: Batch = { kind, capacity, buffer: null }
+      allocBatch(b)
       const id = nextId++
       batches.set(id, b)
       return id
@@ -227,7 +232,6 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
       if (!Number.isInteger(first) || first < 0 || first + bytes.length / stride > b.capacity) {
         throw new RangeError(`write [${first}, +${bytes.length / stride}) exceeds capacity ${b.capacity}`)
       }
-      b.cpu.set(bytes, first * stride)
       gl.bindBuffer(gl.ARRAY_BUFFER, b.buffer)
       gl.bufferSubData(gl.ARRAY_BUFFER, first * stride, bytes)
     },
@@ -240,7 +244,7 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
 
     setStyleTable(table) {
       if (table.length % STYLE_WORDS !== 0) throw new RangeError(`style table length ${table.length} is not a multiple of ${STYLE_WORDS}`)
-      if (table.length / STYLE_WORDS > maxStyleRows) throw new RangeError(`style table has ${table.length / STYLE_WORDS} rows, the limit is ${maxStyleRows}`)
+      if (table.length / STYLE_WORDS > maxStyles) throw new RangeError(`style table has ${table.length / STYLE_WORDS} styles, the limit is ${maxStyles}`)
       styleCopy = table.slice()
       gl.deleteTexture(styleTex)
       uploadStyles()
@@ -256,7 +260,6 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
           throw new RangeError(`arc draw needs an integer subdiv in [1, ${MAX_ARC_SUBDIV}], got ${d.subdiv}`)
         }
       }
-      lastFrame = { view, draws }
       if (gl.isContextLost()) return
       drawFrame(view, draws)
     },
@@ -266,7 +269,14 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
       canvas.height = Math.max(1, Math.round(height * dpr))
     },
 
+    onRestore(fn) {
+      const entry = (): void => fn()
+      restoreListeners.add(entry)
+      return () => restoreListeners.delete(entry)
+    },
+
     dispose() {
+      restoreListeners.clear()
       canvas.removeEventListener('webglcontextlost', onLost)
       canvas.removeEventListener('webglcontextrestored', onRestored)
       for (const b of batches.values()) gl.deleteBuffer(b.buffer)

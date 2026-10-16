@@ -37,25 +37,24 @@ export function hilbert16(x: number, y: number): number {
   return d
 }
 
-// Working arrays shared by every sort; they only grow. Callers never see them.
-let k1 = new Uint32Array(0)
-let k2 = new Uint32Array(0)
-let i2 = new Uint32Array(0)
+// Working arrays shared by the small sorts (the frequent ones: merges of a few edits). A big sort allocates its
+// own and lets them go, so a million-item cold build does not pin tens of MB for the rest of the session.
+const SCRATCH_MAX = 1 << 16
+const k1 = new Uint32Array(SCRATCH_MAX)
+const k2 = new Uint32Array(SCRATCH_MAX)
+const i2 = new Uint32Array(SCRATCH_MAX)
+const keyScratch = new Uint32Array(SCRATCH_MAX)
 const count = new Uint32Array(2048)
 
 /** Stable permutation that sorts keys[0, n) ascending: LSD radix, 11-bit digits. */
 export function radixOrder(keys: Uint32Array, n = keys.length): Uint32Array {
-  if (k1.length < n) {
-    k1 = new Uint32Array(n)
-    k2 = new Uint32Array(n)
-    i2 = new Uint32Array(n)
-  }
+  const small = n <= SCRATCH_MAX
   let idx = new Uint32Array(n)
   for (let i = 0; i < n; i++) idx[i] = i
-  let ka = k1
-  let kb = k2
+  let ka = small ? k1 : new Uint32Array(n)
+  let kb = small ? k2 : new Uint32Array(n)
   let ia = idx
-  let ib = i2
+  let ib = small ? i2 : new Uint32Array(n)
   ka.set(keys.subarray(0, n))
   for (let shift = 0; shift < 32; shift += 11) {
     count.fill(0)
@@ -117,13 +116,10 @@ export function hilbertKey(f: HilbertFrame, x: number, y: number): number {
   return hilbert16(qx | 0, qy | 0)
 }
 
-let keyScratch = new Uint32Array(0)
-
 /** Permutation visiting the points (xs[i], ys[i]), i < n, in Hilbert order over their own extents. */
 export function hilbertOrder(xs: Float64Array, ys: Float64Array, n = xs.length): Uint32Array {
   const f = hilbertFrame(xs, ys, n)
-  if (keyScratch.length < n) keyScratch = new Uint32Array(n)
-  const keys = keyScratch
+  const keys = n <= SCRATCH_MAX ? keyScratch : new Uint32Array(n)
   for (let i = 0; i < n; i++) keys[i] = hilbert16(((xs[i]! - f.x0) * f.sx) | 0, ((ys[i]! - f.y0) * f.sy) | 0)
   return radixOrder(keys, n)
 }

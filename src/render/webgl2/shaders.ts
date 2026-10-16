@@ -11,15 +11,17 @@ uniform vec2 eyeLo;
 uniform float pxPerUnit; // device px per world unit
 uniform float dpr;
 uniform vec2 viewportPx; // drawing buffer size, device px
-uniform usampler2D styles; // 2 texels per row: color 0xRRGGBBAA, width/64 px | visible << 16
+uniform usampler2D styles; // 2 texels per style: color 0xRRGGBBAA, width/64 px | visible << 16
+uniform int stylesPerRow; // the table wraps into rows of this many styles
 
 out vec4 vColor;
 
 // Sets vColor and returns the half width in device px; false when the style is hidden.
 bool loadStyle(uint styleId, out float halfW) {
-  int row = int(styleId);
-  uint c = texelFetch(styles, ivec2(0, row), 0).r;
-  uint w = texelFetch(styles, ivec2(1, row), 0).r;
+  int id = int(styleId);
+  ivec2 at = ivec2((id % stylesPerRow) * 2, id / stylesPerRow);
+  uint c = texelFetch(styles, at, 0).r;
+  uint w = texelFetch(styles, at + ivec2(1, 0), 0).r;
   halfW = 0.5 * float(w & 0xFFFFu) / 64.0 * dpr;
   vColor = vec4(float((c >> 24) & 255u), float((c >> 16) & 255u), float((c >> 8) & 255u), float(c & 255u)) / 255.0;
   return ((w >> 16) & 1u) != 0u;

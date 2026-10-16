@@ -56,8 +56,8 @@ function allocTree(n: number, frame: HilbertFrame, spare: Tree | null): Tree {
     return { n, boxes: spare.boxes, ids: spare.ids, keys: spare.keys, frame, start, size }
   }
   // Headroom so that a drawing that grows a little keeps its arrays.
-  const cap = Math.ceil(n * 1.25) + 16
-  return { n, boxes: new Float64Array(4 * Math.ceil(total * 1.25 + 16)), ids: new Float64Array(cap), keys: new Uint32Array(cap), frame, start, size }
+  const cap = Math.ceil(n * 1.1) + 16
+  return { n, boxes: new Float64Array(4 * Math.ceil(total * 1.1 + 16)), ids: new Float64Array(cap), keys: new Uint32Array(cap), frame, start, size }
 }
 
 /** Fills the levels above the leaves. */
@@ -94,19 +94,13 @@ function copyBox(from: Float64Array, i: number, to: Float64Array, j: number): vo
   to[4 * j + 3] = from[4 * i + 3]!
 }
 
-// Doubled bbox centres and keys for the cold build; they only grow.
-let cx = new Float64Array(0)
-let cy = new Float64Array(0)
-let keys = new Uint32Array(0)
-
-/** Full build: sorts every item. `cache` holds 4 bbox values per id. */
+/** Full build: sorts every item. `cache` holds 4 bbox values per id. Rare (loads, big edits): its scratch is not kept. */
 function coldBuild(ids: Float64Array, cache: Float64Array, spare: Tree | null): Tree {
   const n = ids.length
-  if (cx.length < n) {
-    cx = new Float64Array(n)
-    cy = new Float64Array(n)
-    keys = new Uint32Array(n)
-  }
+  // Doubled bbox centres and their keys.
+  const cx = new Float64Array(n)
+  const cy = new Float64Array(n)
+  const keys = new Uint32Array(n)
   for (let i = 0; i < n; i++) {
     const o = 4 * ids[i]!
     cx[i] = cache[o]! + cache[o + 2]!
@@ -221,7 +215,7 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
 
   function put(e: Entity): void {
     if (e.id >= flags.length) {
-      const grown = Math.max(2 * flags.length, e.id + 1)
+      const grown = Math.max(Math.ceil(1.5 * flags.length), e.id + 1)
       const c = new Float64Array(4 * grown)
       c.set(cache)
       cache = c
