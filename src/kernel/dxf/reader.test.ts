@@ -286,6 +286,29 @@ describe('readDxf', () => {
     expect(plain.attribs).toBeUndefined()
   })
 
+  it('R2018 ATTRIB: the 71 (attribute type), 72 and 11 AcDbAttribute repeats are not text groups; AcDbText justifies it', () => {
+    const blocks: G = [0, 'BLOCK', 8, '0', 2, 'BUBBLE', 70, 2, 10, 0, 20, 0, 0, 'CIRCLE', 8, '0', 10, 0, 20, 0, 40, 5, 0, 'ENDBLK']
+    // As ezdxf and AutoCAD 2018 write them: middle center, center, and a multiline one (71 2).
+    const entities: G = [
+      0, 'INSERT', 5, '38', 100, 'AcDbEntity', 8, '0', 100, 'AcDbBlockReference', 66, 1, 2, 'BUBBLE', 10, 50, 20, 50, 30, 0,
+      0, 'ATTRIB', 5, '3A', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 50, 20, 50, 30, 0, 40, 2, 1, 'A12', 72, 1, 11, 50, 21, 50, 31, 0,
+      100, 'AcDbAttribute', 2, 'GRID', 70, 0, 74, 2, 71, 1, 72, 0, 11, 50, 21, 50, 31, 0,
+      0, 'ATTRIB', 5, '3B', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 50, 20, 40, 30, 0, 40, 1, 1, 'centered', 72, 1, 11, 50, 21, 40, 31, 0,
+      100, 'AcDbAttribute', 2, 'NOTE', 70, 0, 71, 1, 72, 0, 11, 50, 21, 40, 31, 0,
+      0, 'ATTRIB', 5, '3C', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 12, 20, 22, 30, 0, 40, 1, 1, 'line1', 11, 12, 21, 22, 31, 0,
+      100, 'AcDbAttribute', 2, 'TAG', 70, 0, 74, 3, 71, 2, 72, 0, 11, 12, 21, 22, 31, 0, 101, 'Embedded Object', 10, 12, 20, 22, 40, 1, 41, 30, 71, 1, 1, 'line1\\Pline2',
+      0, 'SEQEND', 5, '3D', 100, 'AcDbEntity', 8, '0',
+    ]
+    const d = readDxf(lines([0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES', ...entities, 0, 'ENDSEC', 0, 'EOF']))
+    expect(d.warnings).toEqual([])
+    const [bubble] = all(d) as [Insert]
+    expect(bubble.attribs!.map((a) => [a.tag, a.x, a.y, a.halign, a.valign, a.backward, a.upsideDown])).toEqual([
+      ['GRID', 50, 50, 1, 2, false, false],
+      ['NOTE', 50, 40, 1, 0, false, false],
+      ['TAG', 12, 22, 0, 3, false, false],
+    ])
+  })
+
   it('BLOCK and INSERT: nested blocks with their base points, layer 0 and ByBlock kept for the insert, -Z, grids', () => {
     const blocks: G = [
       0, 'BLOCK', 8, '0', 2, 'A', 70, 0, 10, 1, 20, 1, 30, 0, 3, 'A',

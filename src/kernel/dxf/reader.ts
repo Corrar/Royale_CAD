@@ -564,6 +564,9 @@ function parser(pairs: PairList) {
    */
   const attribAt = (a: number, b: number): PendingAttrib | null => {
     const t = textGroups()
+    // Past its 100 AcDbAttribute marker, R2018 repeats 72 and 11 and has 71 as the attribute type (1 single line,
+    // 2 multiline): the text's own groups are those of AcDbText.
+    let attribute = false
     let tag = ''
     let flags = 0
     let invisible = false
@@ -577,6 +580,8 @@ function parser(pairs: PairList) {
       for (let i = a + 1; i < b; i++) {
         const c = codes[i]!
         if (c === 101) break
+        if (c === 100) attribute = pairs.value(i).trim() === 'AcDbAttribute'
+        if (attribute && (c === 71 || c === 72 || c === 11 || c === 21 || c === 31)) continue
         if (textGroup(t, c, i, 74)) continue
         if (c === 2) tag = pairs.value(i).trim()
         else if (c === 70) flags = num(i)

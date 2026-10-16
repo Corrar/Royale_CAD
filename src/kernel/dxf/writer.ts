@@ -731,7 +731,15 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
  */
 function patchText(gs: [number, string][], e: Omit<Text, 'id'>, vcode: 73 | 74, modern: boolean): boolean {
   let ok = true
-  const at = (code: number): number => gs.findIndex((g) => g[0] === code)
+  // An ATTRIB's text groups are those before its AcDbAttribute marker: R2018 repeats 72 and 11 after it, and has the
+  // attribute type in 71. Its own groups (tag, flags, field length, 74) are after it.
+  const marker = (): number => (vcode === 74 ? gs.findIndex((g) => g[0] === 100 && g[1].trim() === 'AcDbAttribute') : -1)
+  const end = (): number => {
+    const k = marker()
+    return k >= 0 ? k : gs.length
+  }
+  const own = (code: number, k: number): boolean => k < end() || code === 74 || code === 73 || code === 70 || code === 2
+  const at = (code: number): number => gs.findIndex((g, k) => g[0] === code && own(code, k))
   const set = (code: number, v: string): boolean => {
     const k = at(code)
     if (k >= 0) gs[k]![1] = v
@@ -741,7 +749,7 @@ function patchText(gs: [number, string][], e: Omit<Text, 'id'>, vcode: 73 | 74, 
   const opt = (code: number, v: string, atDefault: boolean, after: readonly number[]): void => {
     if (set(code, v) || atDefault) return
     for (const a of after) {
-      const k = gs.findLastIndex((g) => g[0] === a)
+      const k = gs.findLastIndex((g, j) => g[0] === a && own(a, j))
       if (k >= 0) return void gs.splice(k + 1, 0, [code, v])
     }
     ok = false
@@ -763,9 +771,20 @@ function patchText(gs: [number, string][], e: Omit<Text, 'id'>, vcode: 73 | 74, 
     opt(11, real(second.x), false, order)
     opt(21, real(second.y), false, [11])
     opt(31, '0.0', false, [21])
+  } else if (at(11) >= 0 && at(21) >= 0) {
+    // Left on the baseline, a second point the record has anyway (R2018's ATTRIB) stays on the first.
+    put(11, first.x)
+    put(21, first.y)
   }
   if (vcode === 74) {
     opt(74, String(e.valign), e.valign === 0, [73, 70, 2])
+    // The repeated alignment point follows the text's, so no reader finds it stale.
+    const k = marker()
+    const point = second ?? first
+    for (const [code, v] of [[11, point.x], [21, point.y]] as const) {
+      const j = gs.findIndex((g, i) => i > k && g[0] === code)
+      if (k >= 0 && j >= 0) gs[j]![1] = real(v)
+    }
     return ok
   }
   if (!set(73, String(e.valign)) && e.valign !== 0) {

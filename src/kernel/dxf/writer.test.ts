@@ -508,6 +508,37 @@ describe('writeDxf', () => {
     expect(got[2]!.attribs).toEqual(want[2]!.attribs)
   })
 
+  it('R2018 ATTRIB: a moved insert patches the AcDbText groups of its attributes; 71 stays the attribute type, 11 follows', () => {
+    const BLOCKS: G = [0, 'SECTION', 2, 'BLOCKS',
+      0, 'BLOCK', 5, '40', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockBegin', 2, 'BUBBLE', 70, 2, 10, 0, 20, 0, 30, 0, 3, 'BUBBLE',
+      0, 'CIRCLE', 5, '41', 8, '0', 100, 'AcDbEntity', 100, 'AcDbCircle', 10, 0, 20, 0, 30, 0, 40, 5,
+      0, 'ENDBLK', 5, '43', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockEnd',
+      0, 'ENDSEC']
+    // As ezdxf and AutoCAD 2018 write them: AcDbAttribute repeats 72 and 11, and has the attribute type in 71.
+    const BUBBLE: G = [0, 'INSERT', 5, '50', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbBlockReference', 66, 1, 2, 'BUBBLE', 10, 50, 20, 50, 30, 0,
+      0, 'ATTRIB', 5, '51', 330, '50', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 50, 20, 50, 30, 0, 40, 2, 1, 'A12', 72, 1, 11, 50, 21, 50, 31, 0,
+      100, 'AcDbAttribute', 2, 'GRID', 70, 0, 74, 2, 71, 1, 72, 0, 11, 50, 21, 50, 31, 0,
+      0, 'ATTRIB', 5, '52', 330, '50', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 50, 20, 40, 30, 0, 40, 1, 1, 'centered', 72, 1, 11, 50, 21, 40, 31, 0,
+      100, 'AcDbAttribute', 2, 'NOTE', 70, 0, 71, 1, 72, 0, 11, 50, 21, 40, 31, 0,
+      0, 'ATTRIB', 5, '54', 330, '50', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 50, 20, 56, 30, 0, 40, 1, 1, 'K1', 11, 50, 21, 56, 31, 0,
+      100, 'AcDbAttribute', 2, 'LEFT', 70, 0, 71, 1, 72, 0, 11, 50, 21, 56, 31, 0,
+      0, 'SEQEND', 5, '53', 330, '50', 100, 'AcDbEntity', 8, '0']
+    const text = file(BUBBLE, 'AC1032').replace(lines([0, 'SECTION', 2, 'ENTITIES']), lines(BLOCKS) + lines([0, 'SECTION', 2, 'ENTITIES']))
+    const t = commandBench()
+    const d = drawingFrom(t.doc, parseDxf(text))
+    t.run('MOVE⏎ALL⏎⏎0,0⏎10,0⏎')
+    const out = writeDxf(t.doc, d.source)
+    const grid = out.slice(out.indexOf(lines([5, '51'])), out.indexOf(lines([5, '52'])))
+    expect(grid).toContain(lines([1, 'A12', 72, 1, 11, '60.0', 21, '50.0', 31, '0.0', 100, 'AcDbAttribute', 2, 'GRID', 70, 0, 74, 2, 71, 1, 72, 0, 11, '60.0', 21, '50.0']))
+    const note = out.slice(out.indexOf(lines([5, '52'])), out.indexOf(lines([5, '54'])))
+    expect(note).toContain(lines([72, 1, 11, '60.0', 21, '40.0', 31, '0.0', 100, 'AcDbAttribute', 2, 'NOTE', 70, 0, 71, 1, 72, 0, 11, '60.0', 21, '40.0']))
+    // Left on the baseline, its 11 (which R2018 writes anyway) moves with it.
+    const left = out.slice(out.indexOf(lines([5, '54'])), out.indexOf(lines([5, '53'])))
+    expect(left).toContain(lines([10, '60.0', 20, '56.0', 30, 0, 40, '1.0', 1, 'K1', 11, '60.0', 21, '56.0', 31, 0, 100, 'AcDbAttribute', 2, 'LEFT', 70, 0, 71, 1, 72, 0, 11, '60.0', 21, '56.0']))
+    const [bubble] = [...readDxf(out).doc.entities()] as [Insert]
+    expect(bubble.attribs!.map((a) => [a.x, a.y, a.halign, a.valign])).toEqual([[60, 50, 1, 2], [60, 40, 1, 0], [60, 56, 0, 0]])
+  })
+
   it('TEXT and MTEXT: edits are patched in place (handle, style, extra groups kept), new ones written fresh; all read back the same', () => {
     const TEXT: G = [0, 'TEXT', 5, '60', 330, '1F', 100, 'AcDbEntity', 8, 'Walls', 100, 'AcDbText', 10, 4.5, 20, 5.5, 30, 0, 40, 1, 1, 'MC', 7, 'ROMANS', 72, 1, 11, 5, 21, 6, 31, 0, 100, 'AcDbText', 73, 2, 1001, 'ROYALE', 1000, 'kept']
     const MTEXT: G = [0, 'MTEXT', 5, '61', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbMText', 10, 0, 20, 10, 30, 0, 40, 2, 41, 20, 71, 1, 72, 1, 3, 'two ', 1, 'chunks\\Pand a paragraph', 7, 'Standard', 11, 1, 21, 0, 31, 0, 73, 1, 44, 1]
