@@ -42,6 +42,15 @@ describe('TEXT', () => {
     expect([z!.height, round(z!.rotation)]).toEqual([7, round(Math.PI / 4)])
   })
 
+  it("TEXTSIZE is the app's to set and read: the drawing keeps it", () => {
+    const t = commandBench()
+    t.interp.vars.set('TEXTSIZE', 0.2)
+    t.run('TEXT⏎0,0⏎')
+    expect(t.interp.prompt).toBe('Specify height <0.2000>:')
+    t.run('5⏎0⏎Hi⏎⏎')
+    expect(t.interp.vars.get('TEXTSIZE')).toBe(5)
+  })
+
   it('takes the text as typed, spaces and codes included', () => {
     const t = commandBench()
     t.run('TEXT⏎0,0⏎⏎⏎')

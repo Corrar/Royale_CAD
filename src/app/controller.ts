@@ -187,16 +187,19 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
         doc,
         parse: parseInWorker,
         print: (line) => interp.print(line),
-        replaced: (currentLayer, extents) => {
+        replaced: (currentLayer, textSize, extents) => {
           selection.clear()
           const i = currentLayer === null ? -1 : doc.layers.indexOf(currentLayer)
           interp.layer = i >= 0 ? i : 0
+          // TEXTSIZE is the drawing's, not the session's: TEXT offers this one's.
+          interp.vars.set('TEXTSIZE', textSize)
           frame(extents)
           performance.mark('royale:framed')
           // A small drawing is whole already; a big one is when buildBetweenFrames ends.
           if (!scene.building && !index.building) performance.mark('royale:built')
         },
         currentLayer: () => doc.layers.get(interp.layer)!.name,
+        textSize: () => interp.vars.get('TEXTSIZE') as number | undefined,
       })
     : null
   if (files) host.files = files

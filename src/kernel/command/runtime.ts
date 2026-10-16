@@ -159,6 +159,8 @@ export interface Interpreter {
   cursor: Vec2 | null
   /** The current layer (CLAYER), where new entities go; listeners hear when it changes. */
   layer: number
+  /** Values kept between commands (CIRCLERAD, TEXTSIZE…): those a drawing keeps, the app sets as it puts one in place. */
+  readonly vars: Map<string, unknown>
   /** Object snap on clicks while a point is asked for (F3). On by default, as in AutoCAD. */
   osnap: boolean
   /** Squares points to the base point's axes (F8). Typed coordinates are exempt; a snap wins over it. */
@@ -574,6 +576,7 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
       ctx.setLayer(index)
       emit()
     },
+    vars,
     get osnap() {
       return osnap
     },

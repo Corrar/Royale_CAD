@@ -8,7 +8,7 @@ import { TAU, normAngle } from '../geom/tol'
 import { baselineStart, mtextLines } from '../text/layout'
 import type { DxfSource } from './reader'
 import { entryEnd, findTable, groupValue, layerEntry, type TableRange } from './tables'
-import { FIRST_FREE_HANDLE, H, writeTemplate } from './template'
+import { FIRST_FREE_HANDLE, H, TEXTSIZE, textSizeOf, writeTemplate } from './template'
 import { tokenize, type PairList } from './tokenizer'
 
 /** A group code as AutoCAD lays it out: right-aligned in three columns. */
@@ -1103,6 +1103,8 @@ const section = (nl: string, name: string, body: string): string =>
 export interface WriteOptions {
   /** The current layer's name, kept as $CLAYER. */
   currentLayer?: string
+  /** TEXT's default height, kept as $TEXTSIZE. */
+  textSize?: number
 }
 
 export function writeDxf(doc: Document, source?: DxfSource, opts: WriteOptions = {}): string {
@@ -1145,6 +1147,9 @@ export function writeDxf(doc: Document, source?: DxfSource, opts: WriteOptions =
     const name = current >= 0 ? fileLayer(c, current) : opts.currentLayer
     if (name !== source.header.get('$CLAYER')) header.text = setHeaderVar(header.text, nl, '$CLAYER', 8, name)
   }
+  if (header && opts.textSize !== undefined && opts.textSize !== textSizeOf(source.header)) {
+    header.text = setHeaderVar(header.text, nl, '$TEXTSIZE', 40, real(opts.textSize))
+  }
   return sections.map((s) => s.before + s.text).join('') + eof(source.text.slice(source.sections.at(-1)?.end ?? 0), nl)
 }
 
@@ -1165,6 +1170,7 @@ function writeNew(doc: Document, opts: WriteOptions): string {
     {
       extents: docExtents(doc),
       currentLayer: opts.currentLayer ?? '0',
+      textSize: opts.textSize ?? TEXTSIZE,
       layers(out) {
         for (let i = 0; i < doc.layers.size; i++) freshLayer(out, f, doc.layers.get(i)!, i === 0 ? H.layer0 : ids.take(), H.layerTable, H.plotStyleNormal)
         return doc.layers.size

@@ -5,6 +5,7 @@ import { typeOf } from '../kernel/entity/registry'
 import type { Entity } from '../kernel/entity/types'
 import { bboxEmpty, bboxUnion, type BBox } from '../kernel/geom/vec'
 import { loader, parseDxf, type DxfSource, type ParsedMeta } from '../kernel/dxf/reader'
+import { textSizeOf } from '../kernel/dxf/template'
 import { writeDxf } from '../kernel/dxf/writer'
 import { DEFAULT_ENCODING, decodeDxf, encodeDxf } from './codec'
 import { createStore, type Store } from './stores'
@@ -105,11 +106,13 @@ export interface FilesOptions {
   print(line: string): void
   /**
    * A drawing was put in place (opened or new): the view frames it (extents when known, else the app works them
-   * out), the selection goes, its layer is current.
+   * out), the selection goes, its layer is current, its text height ($TEXTSIZE) is TEXT's default.
    */
-  replaced(currentLayer: string | null, extents?: BBox | null): void
+  replaced(currentLayer: string | null, textSize: number, extents?: BBox | null): void
   /** The current layer's name, which the file keeps ($CLAYER). */
   currentLayer(): string
+  /** TEXT's default height, which the file keeps ($TEXTSIZE); without it the file's stays as it was. */
+  textSize?(): number | undefined
 }
 
 declare global {
@@ -174,13 +177,14 @@ export function createFiles(o: FilesOptions): Files {
   const replace = (fn: () => void): void => {
     quietly(fn)
     setDirty(false)
-    o.replaced(source?.header.get('$CLAYER') ?? null)
+    o.replaced(source?.header.get('$CLAYER') ?? null, textSizeOf(source?.header))
   }
 
   async function save(asNew: boolean): Promise<boolean> {
     const name = state.get().name
     patch({ busy: `Saving ${name}…` })
-    const bytes = encodeDxf(writeDxf(doc, source ?? undefined, { currentLayer: o.currentLayer() }), encoding)
+    const kept = { currentLayer: o.currentLayer(), textSize: o.textSize?.() }
+    const bytes = encodeDxf(writeDxf(doc, source ?? undefined, kept), encoding)
     const r = await (asNew ? api.saveAs(bytes, name) : api.save(bytes, name))
     if (r === null) {
       o.print('Save cancelled.')
@@ -252,7 +256,7 @@ export function createFiles(o: FilesOptions): Files {
       o.print(`Could not open ${f.name}: ${messageOf(error)}`)
       return
     }
-    o.replaced(source.header.get('$CLAYER') ?? null, result.extents)
+    o.replaced(source.header.get('$CLAYER') ?? null, textSizeOf(source.header), result.extents)
     performance.mark('royale:loaded', { detail: { objects: doc.size } })
     encoding = result.encoding
     patch({ name: f.name })
