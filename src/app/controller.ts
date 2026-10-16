@@ -2,6 +2,7 @@ import { fit, type ViewState } from '../kernel/view'
 import { ARC_STRIDE, SEGMENT_STRIDE, arcSubdiv, writeArc, writeSegment, writeStyle } from '../render/backend'
 import { createWebGL2Backend } from '../render/webgl2/backend'
 import { attachInput, FIT_MARGIN_PX } from './input'
+import { packRgba, readBackendTheme, readCssColor } from './theme'
 
 // Temporary demo scene (removed in T13): a triangle a few millimetres wide at UTM coordinates.
 const A = { x: 7_400_000.001, y: 9_100_000.001 }
@@ -35,7 +36,7 @@ export function createFrameLoop(
 }
 
 export function startApp(canvas: HTMLCanvasElement): () => void {
-  const backend = createWebGL2Backend(canvas)
+  const backend = createWebGL2Backend(canvas, readBackendTheme(canvas))
 
   const buf = new ArrayBuffer(3 * SEGMENT_STRIDE)
   const f32 = new Float32Array(buf)
@@ -56,7 +57,7 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
   backend.writeBatch(arcs, 0, af32)
 
   const styles = new Uint32Array(2)
-  writeStyle(styles, 0, 0xf2f4f5ff, 1.5, true) // mirrors --draw in tokens.css
+  writeStyle(styles, 0, packRgba(readCssColor(canvas, '--draw')), 1.5, true)
   backend.setStyleTable(styles)
 
   const bbox = { minX: A.x, minY: A.y, maxX: B.x, maxY: C.y }

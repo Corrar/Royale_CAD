@@ -1,6 +1,7 @@
 import { fit, type ViewState } from '../kernel/view'
 import { SEGMENT_STRIDE, writeSegment, writeStyle } from '../render/backend'
 import { createWebGL2Backend } from '../render/webgl2/backend'
+import { packRgba, readBackendTheme, readCssColor } from './theme'
 
 const ORIGIN = { x: 7_400_000, y: 9_100_000 }
 const SIZE = 2000
@@ -56,7 +57,7 @@ const sorted = (xs: readonly number[]): number[] => [...xs].sort((a, b) => a - b
 
 /** Reports through one console line starting with BENCH_RESULT; the main process parses it. */
 export function runBench(canvas: HTMLCanvasElement, n: number): void {
-  const backend = createWebGL2Backend(canvas)
+  const backend = createWebGL2Backend(canvas, readBackendTheme(canvas))
   const gl = canvas.getContext('webgl2')!
   const info = gl.getExtension('WEBGL_debug_renderer_info')
   const renderer = info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : 'unknown'
@@ -80,7 +81,7 @@ export function runBench(canvas: HTMLCanvasElement, n: number): void {
   const batch = backend.createBatch('segment', n)
   backend.writeBatch(batch, 0, f32)
   const styles = new Uint32Array(2)
-  writeStyle(styles, 0, 0xf2f4f5ff, 1, true)
+  writeStyle(styles, 0, packRgba(readCssColor(canvas, '--draw')), 1, true)
   backend.setStyleTable(styles)
 
   const base = fit(

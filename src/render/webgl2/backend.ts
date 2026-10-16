@@ -1,5 +1,7 @@
 import type { ViewState } from '../../kernel/view'
-import { ARC_STRIDE, MAX_ARC_SUBDIV, SEGMENT_STRIDE, STYLE_WORDS, type BatchId, type Draw, type RenderBackend } from '../backend'
+import {
+  ARC_STRIDE, MAX_ARC_SUBDIV, SEGMENT_STRIDE, STYLE_WORDS, type BackendTheme, type BatchId, type Draw, type RenderBackend,
+} from '../backend'
 import { gridParams } from '../grid'
 import { splitDouble } from '../hilo'
 import { ARC_VERT, GRID_FRAG, GRID_VERT, SEGMENT_FRAG, SEGMENT_VERT } from './shaders'
@@ -30,38 +32,14 @@ const LAYOUT: Record<Kind, { stride: number; shapeSize: number; vert: string }> 
   arc: { stride: ARC_STRIDE, shapeSize: 3, vert: ARC_VERT },
 }
 
-type Rgba = [number, number, number, number]
-
-/** Resolves any CSS color held by a custom property (alpha included) to 0..1 RGBA. */
-export function readCssColor(canvas: HTMLCanvasElement, name: string): Rgba {
-  const value = getComputedStyle(canvas).getPropertyValue(name).trim()
-  const ctx = document.createElement('canvas').getContext('2d')
-  if (!value || !ctx) throw new Error(`cannot resolve CSS color ${name}`)
-  // An unparsable value leaves fillStyle untouched, so two different sentinels read back differently.
-  ctx.fillStyle = '#010203'
-  ctx.fillStyle = value
-  const s = ctx.fillStyle
-  ctx.fillStyle = '#040506'
-  ctx.fillStyle = value
-  if (ctx.fillStyle !== s) throw new Error(`cannot resolve CSS color ${name}: ${value}`)
-  // fillStyle reads back as '#rrggbb' or 'rgba(r, g, b, a)'.
-  if (s.startsWith('#')) {
-    const n = parseInt(s.slice(1), 16)
-    return [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, 1]
-  }
-  const m = /^rgba?\(([^)]+)\)$/.exec(s)
-  const parts = m?.[1]?.split(',').map(Number)
-  if (!parts || parts.length < 3 || parts.some(Number.isNaN)) throw new Error(`cannot resolve CSS color ${name}: ${value}`)
-  return [parts[0]! / 255, parts[1]! / 255, parts[2]! / 255, parts[3] ?? 1]
-}
-
-export function createWebGL2Backend(canvas: HTMLCanvasElement): WebGL2Backend {
+export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendTheme): WebGL2Backend {
   const gl = canvas.getContext('webgl2', { alpha: false, antialias: true, depth: false, stencil: false })
   if (!gl) throw new Error('WebGL2 is not available: the canvas could not create a webgl2 context')
 
-  const bg = readCssColor(canvas, '--bg')
-  const gridMinor = readCssColor(canvas, '--grid-minor')
-  const gridMajor = readCssColor(canvas, '--grid-major')
+  // Copies: the caller may reuse its arrays, and uniform4fv takes a Float32Array.
+  const bg = new Float32Array(theme.bg)
+  const gridMinor = new Float32Array(theme.gridMinor)
+  const gridMajor = new Float32Array(theme.gridMajor)
   const maxStyleRows = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number // the style table is one row per style
   const batches = new Map<BatchId, Batch>()
   let nextId = 1

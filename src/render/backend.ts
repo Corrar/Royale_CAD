@@ -14,6 +14,11 @@ export interface RenderBackend {
   resize(width: number, height: number, dpr: number): void
 }
 
+/** Channels in 0..1. */
+export type Rgba = readonly [number, number, number, number]
+/** Colors the backend paints itself; the caller resolves them (e.g. from CSS tokens). */
+export interface BackendTheme { bg: Rgba; gridMinor: Rgba; gridMajor: Rgba }
+
 export const SEGMENT_STRIDE = 36 // bytes per instance
 export const ARC_STRIDE = 32
 export const STYLE_WORDS = 2 // u32 words per style
