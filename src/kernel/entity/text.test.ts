@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyAffine, mirroring, rotation, scaling } from '../geom/vec'
+import { applyAffine, mirroring, rotation, scaling, translation } from '../geom/vec'
 import { advanceOf } from '../text/font'
 import { typeOf } from './registry'
 import { SNAP, type Block, type Entity, type Insert, type MText, type Text } from './types'
@@ -12,6 +12,8 @@ const text = (extra: Partial<Text> = {}): Text => ({
 const mtext = (extra: Partial<MText> = {}): MText => ({ type: 'mtext', id: 2, layer: 0, value: 'HH\\PH', x: 0, y: 0, height: 1, width: 0, attachment: 1, rotation: 0, spacing: 1, ...extra })
 
 type G = [number, number, number, number, number, number, number]
+/** Rounded to compare, −0 as 0. */
+const fixed = (vs: number[]): number[] => vs.map((v) => +v.toFixed(9) + 0)
 const glyphs = (e: Entity): G[] => {
   const out: G[] = []
   typeOf(e).primitives(e, 0, { segment() {}, arc() {}, glyph: (...a) => out.push(a) })
@@ -47,6 +49,23 @@ describe('text', () => {
     expect(b.maxX).toBeCloseTo(90, 9)
   })
 
+  it('aligned and fit take their direction from their points, not from a 50 that disagrees (ezdxf writes none)', () => {
+    for (const halign of [3, 5]) {
+      const t = text({ halign, x: 0, y: 0, x2: 10, y2: 10, rotation: 0 })
+      for (const m of [translation(5, 0), rotation({ x: 0, y: 0 }, 90), rotation({ x: 3, y: -2 }, 33), mirroring({ x: 50, y: 0 }, { x: 50, y: 1 })]) {
+        const after = typeOf(t).transform!(t, m)
+        const [p1, p2] = [applyAffine(m, 0, 0), applyAffine(m, 10, 10)]
+        // The points go where m puts them (a mirror reads them the other way round); the letters run along them.
+        const ends = [[after.x, after.y], [after.x2, after.y2]].sort((a, b) => a[0]! - b[0]! || a[1]! - b[1]!)
+        const want = [[p1.x, p1.y], [p2.x, p2.y]].sort((a, b) => a[0]! - b[0]! || a[1]! - b[1]!)
+        expect(fixed(ends.flat())).toEqual(fixed(want.flat()))
+        const g = glyphs(after)[0]!
+        expect(Math.abs(g[3] * (after.y2 - after.y) - g[4] * (after.x2 - after.x))).toBeLessThan(1e-9)
+        expect(after.rotation).toBeCloseTo(Math.atan2(after.y2 - after.y, after.x2 - after.x) + (after.y2 < after.y ? 2 * Math.PI : 0), 9)
+      }
+    }
+  })
+
   it('MIRROR puts a backward or upside-down text where the mirror puts its box, flags kept', () => {
     const across = mirroring({ x: 50, y: 0 }, { x: 50, y: 1 })
     for (const flags of [{ backward: true }, { upsideDown: true }, { backward: true, upsideDown: true }, { backward: true, halign: 2 }]) {
@@ -55,7 +74,7 @@ describe('text', () => {
       const mirrored = typeOf(t).transform!(t, across)
       const a = typeOf(mirrored).bbox(mirrored)
       expect([mirrored.backward, mirrored.upsideDown]).toEqual([t.backward, t.upsideDown])
-      expect([a.minX, a.maxX, a.minY, a.maxY].map((v) => +v.toFixed(9))).toEqual([100 - b.maxX, 100 - b.minX, b.minY, b.maxY].map((v) => +v.toFixed(9)))
+      expect(fixed([a.minX, a.maxX, a.minY, a.maxY])).toEqual(fixed([100 - b.maxX, 100 - b.minX, b.minY, b.maxY]))
     }
   })
 
