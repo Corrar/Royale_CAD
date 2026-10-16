@@ -138,8 +138,8 @@ function mapped(m: Affine, out: PrimSink, owner: Insert | BlockEntity, tol: numb
   }
 }
 
-/** What an insert needs to know of its block, worked out once: its box, whether it holds arcs or free curves. */
-interface BlockInfo { box: BBox; arcs: boolean; free: boolean }
+/** What an insert needs to know of its block, worked out once: its box, whether it holds arcs, free curves or fills. */
+interface BlockInfo { box: BBox; arcs: boolean; free: boolean; fills: boolean }
 const infos = new WeakMap<Block, BlockInfo>()
 
 function infoOf(block: Block): BlockInfo {
@@ -148,6 +148,7 @@ function infoOf(block: Block): BlockInfo {
   const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
   let arcs = false
   let free = false
+  let fills = false
   for (const d of block.entities) {
     const e = asEntity(d)
     const t = typeOf(e)
@@ -160,10 +161,11 @@ function infoOf(block: Block): BlockInfo {
       const inner = infoOf(e.block)
       arcs ||= inner.arcs
       free ||= inner.free
+      fills ||= inner.fills
     } else if (t.free?.(e)) free = true
-    else if (!arcs) t.primitives(e, 0, { segment() {}, arc: () => void (arcs = true) })
+    else if (!arcs || !fills) t.primitives(e, 0, { segment() {}, arc: () => void (arcs = true), tri: () => void (fills = true) })
   }
-  infos.set(block, (info = { box, arcs, free }))
+  infos.set(block, (info = { box, arcs, free, fills }))
   return info
 }
 
@@ -279,6 +281,9 @@ export const insertType: EntityType<Insert> = {
     return undefined
   },
 }
+
+/** Whether e's block holds filled triangles, nested blocks included: a free insert's are exact at any zoom. */
+export const insertFills = (e: Insert): boolean => infoOf(e.block).fills
 
 /** For tests and callers that need a point of an insert: where copy (i, j) puts the block's base. */
 export const insertionPoint = (e: Insert, i = 0, j = 0): Vec2 => applyAffine(copyAffine(e, i, j), e.block.x, e.block.y)

@@ -1,5 +1,6 @@
 import { ACI_DEFAULT, colorRgb, type Color } from '../kernel/color'
 import type { Change, Document } from '../kernel/document'
+import { insertFills } from '../kernel/entity/insert'
 import { typeOf } from '../kernel/entity/registry'
 import { BY_BLOCK, type Entity, type PrimSink } from '../kernel/entity/types'
 import { arcSpansInBox, clipSegment } from '../kernel/geom/clip'
@@ -57,6 +58,35 @@ const triBox = (x0: number, y0: number, x1: number, y1: number, x2: number, y2: 
   minX: Math.min(x0, x1, x2), minY: Math.min(y0, y1, y2), maxX: Math.max(x0, x1, x2), maxY: Math.max(y0, y1, y2),
 })
 
+/** A filled triangle's longest edge: what the shader's limit on segments applies to. */
+const triExtent = (x0: number, y0: number, x1: number, y1: number, x2: number, y2: number): number =>
+  Math.max(Math.hypot(x1 - x0, y1 - y0), Math.hypot(x2 - x1, y2 - y1), Math.hypot(x0 - x2, y0 - y2))
+
+/** The part of a triangle inside the box b, in f64, as a fan of triangles (none when they are apart). */
+function clipTriangle(b: BBox, c: readonly number[], out: (x0: number, y0: number, x1: number, y1: number, x2: number, y2: number) => void): void {
+  let poly = c.slice()
+  // Each side of the box in turn: x ≥ minX, x ≤ maxX, y ≥ minY, y ≤ maxY.
+  for (const [axis, limit, keepAbove] of [[0, b.minX, true], [0, b.maxX, false], [1, b.minY, true], [1, b.maxY, false]] as const) {
+    const next: number[] = []
+    const n = poly.length / 2
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n
+      const pi = poly[2 * i + axis]! - limit
+      const pj = poly[2 * j + axis]! - limit
+      const inI = keepAbove ? pi >= 0 : pi <= 0
+      const inJ = keepAbove ? pj >= 0 : pj <= 0
+      if (inI) next.push(poly[2 * i]!, poly[2 * i + 1]!)
+      if (inI !== inJ) {
+        const t = pi / (pi - pj)
+        next.push(poly[2 * i]! + t * (poly[2 * j]! - poly[2 * i]!), poly[2 * i + 1]! + t * (poly[2 * j + 1]! - poly[2 * i + 1]!))
+      }
+    }
+    poly = next
+    if (poly.length < 6) return
+  }
+  for (let k = 2; k < poly.length / 2; k++) out(poly[0]!, poly[1]!, poly[2 * k - 2]!, poly[2 * k - 1]!, poly[2 * k]!, poly[2 * k + 1]!)
+}
+
 /** A glyph's reach from its baseline-left, in capital heights: past any letter's cell, so culling never cuts one. */
 const GLYPH_REACH = { x0: -0.6, x1: 2, y0: -0.8, y1: 1.8 }
 
@@ -105,15 +135,16 @@ interface Handles { one: Float64Array; multi: Map<number, number[]>; base: numbe
 interface Styles { table: Uint32Array; count: number; byKey: Map<number, number>; layer: number[]; color: (Color | undefined)[] }
 
 /** What a rebuild makes, put in place of the current pools in one go. */
-interface Generation { pools: Pool[]; handles: Handles; styles: Styles; packedLive: number }
+interface Generation { pools: Pool[]; handles: Handles; styles: Styles; packedLive: number; fillTop: number }
 
 /** A run of slots with the bounds of their primitives; extent is a segment's length or an arc's radius. */
 interface Bucket { first: number; count: number; minX: number; minY: number; maxX: number; maxY: number; maxExtent: number }
 
 /**
  * One backend batch and its CPU copy. Packed pools hold the primitives present at the last rebuild, sorted along
- * the Hilbert curve and cut into buckets for culling; their freed slots stay as hidden holes. Open pools take
- * later additions, grow by doubling and reuse freed slots; they have a single bucket.
+ * the Hilbert curve (fills: in drawing order, the later on top) and cut into buckets for culling; their freed slots
+ * stay as hidden holes. Open pools take later additions, grow by doubling and reuse freed slots (the fills' pool only
+ * appends, to keep their order); they have a single bucket.
  */
 interface Pool {
   index: number
@@ -183,6 +214,8 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   let openLive = 0
   let packedLive = 0
   let holes = 0
+  /** The latest entity with fills in the pools: a fill placed for an earlier one breaks the drawing order. */
+  let fillTop = 0
   let needsRebuild = doc.size > 0
   let disposed = false
   /** A rebuild in slices; its result goes in place when it ends. */
@@ -288,11 +321,8 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   let letters: number[] = [] // x, y, ux, uy, vx, vy, glyph, style
   let freeGlyphMain = 0
   let freeGlyphCount = 0
-  // The filled triangles of free entities (a solid in a free insert): their own batch too, in the same order.
-  let freeTriBatch: { batch: BatchId; capacity: number; f32: Float32Array; u32: Uint32Array } | null = null
-  let fills: number[] = [] // x0, y0, x1, y1, x2, y2, style
-  let freeTriMain = 0
-  let freeTriCount = 0
+  /** A free entity's fills are exact at any zoom: they go in the pools with the others, in drawing order. */
+  const freeFills = (e: Entity): boolean => e.type === 'insert' && insertFills(e)
 
   /**
    * Flattens the visible free curves near rect for the zoom band: chords within FREE_TOL_PX at the band's finest
@@ -324,36 +354,15 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         glyph(cp, x, y, ux, uy, vx, vy) {
           letters.push(x, y, ux, uy, vx, vy, glyphOf(cp), style)
         },
-        tri(x0, y0, x1, y1, x2, y2) {
-          fills.push(x0, y0, x1, y1, x2, y2, style)
-        },
       }, region)
     }
     letters = []
-    fills = []
     for (const id of freeIds) flatten(doc.get(id)!, false)
     freeMain = n
     freeGlyphMain = letters.length / 8
-    freeTriMain = fills.length / 7
     for (const id of highlight) if (freeIds.has(id)) flatten(doc.get(id)!, true)
     freeCount = n
     freeGlyphCount = letters.length / 8
-    freeTriCount = fills.length / 7
-    if (freeTriCount > 0) {
-      if (!freeTriBatch || freeTriBatch.capacity < freeTriCount) {
-        if (freeTriBatch) backend.destroyBatch(freeTriBatch.batch)
-        let capacity = freeTriBatch?.capacity ?? OPEN_CAPACITY
-        while (capacity < freeTriCount) capacity *= 2
-        const buf = new ArrayBuffer(capacity * TRI_STRIDE)
-        freeTriBatch = { batch: backend.createBatch('tri', capacity), capacity, f32: new Float32Array(buf), u32: new Uint32Array(buf) }
-      }
-      const t = freeTriBatch
-      for (let i = 0; i < freeTriCount; i++) {
-        const o = 7 * i
-        writeTri(t.f32, t.u32, i, fills[o]!, fills[o + 1]!, fills[o + 2]!, fills[o + 3]!, fills[o + 4]!, fills[o + 5]!, fills[o + 6]!)
-      }
-      backend.writeBatch(t.batch, 0, t.u32.subarray(0, freeTriCount * WORDS.tri))
-    }
     if (freeGlyphCount > 0) {
       if (!freeGlyphBatch || freeGlyphBatch.capacity < freeGlyphCount) {
         if (freeGlyphBatch) backend.destroyBatch(freeGlyphBatch.batch)
@@ -457,7 +466,12 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   /** Takes a slot of the open pool for (kind, band), runs write on it, and records it for entity id. */
   function place(kind: Kind, band: number, id: number, b: BBox, extent: number, write: (p: Pool, slot: number) => void): void {
     const p = openPool(kind, band)
-    let slot = p.free.pop()
+    if (kind === 'tri') {
+      // A fill of an earlier entity (edited, or back by an undo) would draw over later ones: a rebuild sorts it in.
+      if (id < fillTop) needsRebuild = true
+      fillTop = Math.max(fillTop, id)
+    }
+    let slot = kind === 'tri' ? undefined : p.free.pop()
     if (slot === undefined) {
       if (p.count === p.capacity) grow(p)
       slot = p.count++
@@ -478,25 +492,30 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   }
 
   function addEntity(e: Entity): void {
-    if (isFree(e)) return // the free batch draws it
+    // The free batch draws a free entity's curves and letters; only its fills come here.
+    const free = isFree(e)
+    if (free && !freeFills(e)) return
     let style = styleOf(e)
     typeOf(e).primitives(e, 0, {
       look(layer, color) {
         style = lookOf(layer, color)
       },
       segment(x0, y0, x1, y1) {
+        if (free) return
         const b = { minX: Math.min(x0, x1), minY: Math.min(y0, y1), maxX: Math.max(x0, x1), maxY: Math.max(y0, y1) }
         place('segment', 0, e.id, b, Math.hypot(x1 - x0, y1 - y0), (p, s) => writeSegment(p.f32, p.u32, s, x0, y0, x1, y1, style))
       },
       arc(cx, cy, r, a0, sweep) {
+        if (free) return
         place('arc', bandOf(r), e.id, arcBBox(cx, cy, r, a0, sweep), r, (p, s) => writeArc(p.f32, p.u32, s, cx, cy, r, a0, sweep, style))
       },
       glyph(cp, x, y, ux, uy, vx, vy) {
+        if (free) return
         const g = glyphOf(cp)
         place('glyph', 0, e.id, glyphBox(x, y, ux, uy, vx, vy), 0, (p, s) => writeGlyph(p.f32, p.u32, s, x, y, ux, uy, vx, vy, g, style))
       },
       tri(x0, y0, x1, y1, x2, y2) {
-        place('tri', 0, e.id, triBox(x0, y0, x1, y1, x2, y2), 0, (p, s) => writeTri(p.f32, p.u32, s, x0, y0, x1, y1, x2, y2, style))
+        place('tri', 0, e.id, triBox(x0, y0, x1, y1, x2, y2), triExtent(x0, y0, x1, y1, x2, y2), (p, s) => writeTri(p.f32, p.u32, s, x0, y0, x1, y1, x2, y2, style))
       },
     })
   }
@@ -515,7 +534,9 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         holes++
       } else {
         openLive--
-        p.free.push(slot)
+        // A fill's slot is not taken again, which would draw the next fill under earlier ones: a hole till a rebuild.
+        if (p.kind === 'tri') holes++
+        else p.free.push(slot)
       }
     }
   }
@@ -567,7 +588,8 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
 
   /**
    * Packs rows of `cols` (all when rows is null) into a new pool of `into`, in Hilbert order of their bbox centres,
-   * yielding now and then. Handles go to `hs` (the main pools only). Returns how many it packed.
+   * yielding now and then; fills by entity id instead, the drawing order, as overlapping ones show the later on top.
+   * Handles go to `hs` (the main pools only). Returns how many it packed.
    */
   function* pack(kind: Kind, band: number, cols: Columns, rows: Uint32Array | null, into: Pool[], hs: Handles | null): Generator<void, number> {
     const n = rows ? rows.length : cols.n
@@ -575,16 +597,23 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     const row = (k: number): number => (rows ? rows[k]! : k)
     const w = cols.width
     const v = cols.v
-    const cx = new Float64Array(n)
-    const cy = new Float64Array(n)
-    for (let k = 0; k < n; k++) {
-      const o = w * row(k)
-      // Hilbert order needs no true centre: twice a segment's middle, three times a triangle's centroid.
-      cx[k] = kind === 'segment' ? v[o]! + v[o + 2]! : kind === 'tri' ? v[o]! + v[o + 2]! + v[o + 4]! : v[o]!
-      cy[k] = kind === 'segment' ? v[o + 1]! + v[o + 3]! : kind === 'tri' ? v[o + 1]! + v[o + 3]! + v[o + 5]! : v[o + 1]!
+    let order: Uint32Array
+    if (kind === 'tri') {
+      // Gathered in the document's order, where an entity back from an undo comes last: by id, a stable sort.
+      const owner = cols.owner
+      order = new Uint32Array(n).map((_, k) => k).sort((a, b) => owner[row(a)]! - owner[row(b)]! || a - b)
+    } else {
+      const cx = new Float64Array(n)
+      const cy = new Float64Array(n)
+      for (let k = 0; k < n; k++) {
+        const o = w * row(k)
+        // Hilbert order needs no true centre: twice a segment's middle.
+        cx[k] = kind === 'segment' ? v[o]! + v[o + 2]! : v[o]!
+        cy[k] = kind === 'segment' ? v[o + 1]! + v[o + 3]! : v[o + 1]!
+      }
+      yield
+      order = hilbertOrder(cx, cy, n)
     }
-    yield
-    const order = hilbertOrder(cx, cy, n)
     yield
     const p = createPool(kind, band, true, n, into)
     const size = bucketSize(n)
@@ -620,7 +649,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         minY = b.minY
         maxX = b.maxX
         maxY = b.maxY
-        extent = 0
+        extent = triExtent(v[o]!, v[o + 1]!, v[o + 2]!, v[o + 3]!, v[o + 4]!, v[o + 5]!)
       } else {
         const r = v[o + 2]!
         writeArc(p.f32, p.u32, slot, v[o]!, v[o + 1]!, r, v[o + 3]!, v[o + 4]!, cols.style[i]!)
@@ -652,22 +681,29 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     return n
   }
 
-  /** Gathers the primitives of `entities` and packs them into `into`, yielding now and then. Returns the count. */
-  function* packAll(entities: Iterable<Entity>, styleFor: (layer: number, color: Color | undefined) => number, into: Pool[], sizeHint: number, hs: Handles | null): Generator<void, number> {
+  /**
+   * Gathers the primitives of `entities` and packs them into `into`, yielding now and then. Returns the count. With
+   * outline (the highlight), fills go as their outline's segments: filled, they would hide what lies on them.
+   */
+  function* packAll(
+    entities: Iterable<Entity>, styleFor: (layer: number, color: Color | undefined) => number, into: Pool[], sizeHint: number, hs: Handles | null,
+    outline = false,
+  ): Generator<void, number> {
     const segs = new Columns(4, Math.max(16, sizeHint))
     const arcs = new Columns(5, 16)
     const glyphs = new Columns(7, 16)
     const tris = new Columns(6, 16)
     let style = 0
     let owner = 0
+    const segment = (x0: number, y0: number, x1: number, y1: number): void => {
+      const o = 4 * segs.push(style, owner)
+      segs.v[o] = x0
+      segs.v[o + 1] = y0
+      segs.v[o + 2] = x1
+      segs.v[o + 3] = y1
+    }
     const sink: PrimSink = {
-      segment(x0, y0, x1, y1) {
-        const o = 4 * segs.push(style, owner)
-        segs.v[o] = x0
-        segs.v[o + 1] = y0
-        segs.v[o + 2] = x1
-        segs.v[o + 3] = y1
-      },
+      segment,
       arc(cx, cy, r, a0, sweep) {
         const o = 5 * arcs.push(style, owner)
         arcs.v[o] = cx
@@ -684,17 +720,24 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         glyphs.v.set([x, y, ux, uy, vx, vy, glyphOf(cp)], o)
       },
       tri(x0, y0, x1, y1, x2, y2) {
+        if (outline) return
         const o = 6 * tris.push(style, owner)
         tris.v.set([x0, y0, x1, y1, x2, y2], o)
       },
+      edge(x0, y0, x1, y1) {
+        if (outline) segment(x0, y0, x1, y1)
+      },
     }
+    // Of a free entity, only the fills: the free batch draws the rest.
+    const fillsOnly: PrimSink = { segment() {}, arc() {}, look: sink.look, tri: sink.tri, edge: sink.edge }
     let k = 0
     for (const e of entities) {
       if (++k % GATHER_STEP === 0) yield
-      if (isFree(e)) continue // the free batch draws it
+      const free = isFree(e)
+      if (free && !freeFills(e)) continue
       style = styleFor(e.layer, e.color)
       owner = e.id
-      typeOf(e).primitives(e, 0, sink)
+      typeOf(e).primitives(e, 0, free ? fillsOnly : sink)
     }
     let packed = yield* pack('tri', 0, tris, null, into, hs)
     packed += yield* pack('segment', 0, segs, null, into, hs)
@@ -719,7 +762,10 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     const room = base === handles.base ? handles.one.length : Math.max(1024, doc.size)
     const hs: Handles = { one: new Float64Array(room), multi: new Map(), base }
     const packedLive = yield* packAll(doc.entities(), (layer, color) => styleIn(st, layer, color), into, doc.size, hs)
-    return { pools: into, handles: hs, styles: st, packedLive }
+    // Packed by id: the last slot holds the latest.
+    let fillTop = 0
+    for (const p of into) if (p.kind === 'tri' && p.count > 0) fillTop = Math.max(fillTop, p.owner[p.count - 1]!)
+    return { pools: into, handles: hs, styles: st, packedLive, fillTop }
   }
 
   /** Puts a generation in place of the current pools. */
@@ -735,6 +781,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     openLive = 0
     packedLive = g.packedLive
     holes = 0
+    fillTop = g.fillTop
     needsRebuild = false
   }
 
@@ -783,7 +830,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       const e = doc.get(id)
       if (e && doc.layers.get(e.layer)!.visible) shown.push(e)
     }
-    drain(packAll(shown, () => HIGHLIGHT_STYLE, hlPools, shown.length, null))
+    drain(packAll(shown, () => HIGHLIGHT_STYLE, hlPools, shown.length, null, true))
     hlDirty = false
   }
 
@@ -792,6 +839,9 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   // Collected per frame before the batch is sized, so no draw can point at a batch replaced by a growth.
   let clipped = new Float64Array(5 * 64) // x0, y0, x1, y1, style
   let clipCount = 0
+  // Fills, re-emitted in drawing order: those too big and every later one over the view, so the order holds.
+  let clipTri: { batch: BatchId; capacity: number; f32: Float32Array; u32: Uint32Array } | null = null
+  let clippedTris: number[] = [] // x0, y0, x1, y1, x2, y2, style
 
   function pushClip(x0: number, y0: number, x1: number, y1: number, style: number): void {
     if (5 * clipCount === clipped.length) {
@@ -808,16 +858,88 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   }
 
   /**
-   * Collects, clipped to `rect` and flattened in f64, the visible primitives of `list` whose extent on screen is
-   * past half the shader's limit. Between half and the full limit both copies draw, over the same pixels.
+   * Collects, clipped to `rect` in f64, the fills of `list` that reach it from the first one whose longest edge is
+   * past half the shader's segment limit on: the big ones, and those drawn after them, which must stay on top.
    */
-  function collectClipped(list: readonly Pool[], view: ViewState, rect: BBox, styleFor: (layer: number, color: Color | undefined) => number): void {
+  function collectClippedFills(list: readonly Pool[], view: ViewState, rect: BBox, styleFor: (layer: number, color: Color | undefined) => number): void {
+    const limit = MAX_SEGMENT_PX / 2 / (view.scale * view.dpr)
+    const tris = list.filter((p) => p.kind === 'tri' && p.live > 0)
+    const words = WORDS.tri
+    /** Calls fn with the owner of each visible fill of the pools whose box reaches rect, and its corners. */
+    const each = (all: boolean, fn: (owner: number, c: number[]) => void): void => {
+      for (const p of tris) {
+        const f = p.f32
+        for (const b of p.buckets) {
+          if ((!all && b.maxExtent <= limit) || !intersects(b, rect)) continue
+          for (let s = b.first; s < b.first + b.count; s++) {
+            const w = s * words
+            if (p.u32[w + words - 1] === HIDDEN_STYLE) continue
+            // From the hi/lo pairs: off by ~x·2^-48, far below what decides here.
+            const c = [0, 2, 4, 6, 8, 10].map((k) => f[w + k]! + f[w + k + 1]!)
+            if (Math.max(c[0]!, c[2]!, c[4]!) < rect.minX || Math.min(c[0]!, c[2]!, c[4]!) > rect.maxX) continue
+            if (Math.max(c[1]!, c[3]!, c[5]!) < rect.minY || Math.min(c[1]!, c[3]!, c[5]!) > rect.maxY) continue
+            fn(p.owner[s]!, c)
+          }
+        }
+      }
+    }
+    let first = Infinity
+    each(false, (owner, c) => {
+      if (triExtent(c[0]!, c[1]!, c[2]!, c[3]!, c[4]!, c[5]!) > limit) first = Math.min(first, owner)
+    })
+    if (first === Infinity) return
+    const ids = new Set<number>()
+    each(true, (owner) => {
+      if (owner >= first) ids.add(owner)
+    })
+    for (const id of [...ids].sort((a, b) => a - b)) {
+      const e = doc.get(id)!
+      let style = styleFor(e.layer, e.color)
+      typeOf(e).primitives(e, 0, {
+        look(layer, color) {
+          style = styleFor(layer, color)
+        },
+        segment() {},
+        arc() {},
+        tri(...c) {
+          clipTriangle(rect, c, (...t) => clippedTris.push(...t, style))
+        },
+      })
+    }
+  }
+
+  /** Uploads the collected fills; returns their batch, or null when there are none. */
+  function uploadClippedFills(): BatchId | null {
+    const n = clippedTris.length / 7
+    if (n === 0) return null
+    if (!clipTri || clipTri.capacity < n) {
+      if (clipTri) backend.destroyBatch(clipTri.batch)
+      let capacity = clipTri?.capacity ?? OPEN_CAPACITY
+      while (capacity < n) capacity *= 2
+      const buf = new ArrayBuffer(capacity * TRI_STRIDE)
+      clipTri = { batch: backend.createBatch('tri', capacity), capacity, f32: new Float32Array(buf), u32: new Uint32Array(buf) }
+    }
+    const t = clippedTris
+    for (let i = 0; i < n; i++) {
+      const o = 7 * i
+      writeTri(clipTri.f32, clipTri.u32, i, t[o]!, t[o + 1]!, t[o + 2]!, t[o + 3]!, t[o + 4]!, t[o + 5]!, t[o + 6]!)
+    }
+    backend.writeBatch(clipTri.batch, 0, clipTri.u32.subarray(0, n * WORDS.tri))
+    return clipTri.batch
+  }
+
+  /**
+   * Collects, clipped to `rect` and flattened in f64, the visible primitives of `list` whose extent on screen is
+   * past half the shader's limit. Between half and the full limit both copies draw, over the same pixels. With
+   * outline (the highlight), the outline segments that stand for fills too.
+   */
+  function collectClipped(list: readonly Pool[], view: ViewState, rect: BBox, styleFor: (layer: number, color: Color | undefined) => number, outline = false): void {
     const ppu = view.scale * view.dpr
     const segLimit = MAX_SEGMENT_PX / 2 / ppu
     const arcLimit = MAX_ARC_RADIUS_PX / 2 / ppu
     const ids = new Set<number>()
     for (const p of list) {
-      // A glyph is a few capital heights across: the shader's limits never reach it. A fill has no stroke to thicken.
+      // A glyph is a few capital heights across: the shader's limits never reach it. Fills have their own pass.
       if (p.kind === 'glyph' || p.kind === 'tri') continue
       const limit = p.kind === 'segment' ? segLimit : arcLimit
       const words = WORDS[p.kind]
@@ -850,14 +972,18 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     for (const id of ids) {
       const e = doc.get(id)!
       let style = styleFor(e.layer, e.color)
+      const segment = (x0: number, y0: number, x1: number, y1: number): void => {
+        if (Math.hypot(x1 - x0, y1 - y0) <= segLimit) return
+        const c = clipSegment(rect, x0, y0, x1, y1)
+        if (c) pushClip(c[0], c[1], c[2], c[3], style)
+      }
       typeOf(e).primitives(e, 0, {
         look(layer, color) {
           style = styleFor(layer, color)
         },
-        segment(x0, y0, x1, y1) {
-          if (Math.hypot(x1 - x0, y1 - y0) <= segLimit) return
-          const c = clipSegment(rect, x0, y0, x1, y1)
-          if (c) pushClip(c[0], c[1], c[2], c[3], style)
+        segment,
+        edge(x0, y0, x1, y1) {
+          if (outline) segment(x0, y0, x1, y1)
         },
         arc(cx, cy, r, a0, sweep) {
           if (r <= arcLimit) return
@@ -902,10 +1028,10 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     return clip.batch
   }
 
-  /** Appends the culled draws of `list`, merging buckets adjacent in the same batch. Fills first, under the rest. */
+  /** Appends the culled draws of `list`, merging buckets adjacent in the same batch. */
   function emitDraws(list: readonly Pool[], view: ViewState, rect: BBox, out: Draw[]): void {
     const ppu = view.scale * view.dpr
-    for (const p of [...list.filter((q) => q.kind === 'tri'), ...list.filter((q) => q.kind !== 'tri')]) {
+    for (const p of list) {
       if (p.live === 0) continue
       const subdiv = p.kind === 'arc' ? arcSubdiv(2 ** (p.band + 1) * ppu) : undefined
       for (const b of p.buckets) {
@@ -931,26 +1057,29 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       const rect = { minX: view.cx - halfW, minY: view.cy - halfH, maxX: view.cx + halfW, maxY: view.cy + halfH }
       // Before the styles go up: flattening may add their rows.
       const band = Math.floor(Math.log2(view.scale * view.dpr))
-      if (freeIds.size === 0) freeMain = freeCount = freeGlyphMain = freeGlyphCount = freeTriMain = freeTriCount = 0
+      if (freeIds.size === 0) freeMain = freeCount = freeGlyphMain = freeGlyphCount = 0
       else if (!freeAt || freeAt.band !== band || !bboxContains(freeAt.region, rect)) rebuildFree(band, rect)
       if (stylesDirty) {
         backend.setStyleTable(styles.table.subarray(0, styles.count * STYLE_WORDS))
         stylesDirty = false
       }
       clipCount = 0
+      clippedTris = []
       collectClipped(pools, view, rect, lookOf)
       const mainClipped = clipCount
-      collectClipped(hlPools, view, rect, () => HIGHLIGHT_STYLE)
+      collectClipped(hlPools, view, rect, () => HIGHLIGHT_STYLE, true)
       const clipBatch = uploadClipped()
-      // Order: the drawing, its clipped primitives and free curves, then the highlight on top with its own; fills
-      // first in each, so lines and letters show over them.
+      collectClippedFills(pools, view, rect, lookOf)
+      const fillBatch = uploadClippedFills()
+      // Order: the drawing's fills (in drawing order, their clipped copies last), its other primitives, clipped
+      // ones and free curves, so lines and letters show over fills; then the highlight on top, fills by outline.
       const out: Draw[] = []
-      if (freeTriBatch && freeTriMain > 0) out.push({ batch: freeTriBatch.batch, first: 0, count: freeTriMain })
-      emitDraws(pools, view, rect, out)
+      emitDraws(pools.filter((p) => p.kind === 'tri'), view, rect, out)
+      if (fillBatch !== null) out.push({ batch: fillBatch, first: 0, count: clippedTris.length / 7 })
+      emitDraws(pools.filter((p) => p.kind !== 'tri'), view, rect, out)
       if (clipBatch !== null && mainClipped > 0) out.push({ batch: clipBatch, first: 0, count: mainClipped })
       if (freeBatch && freeMain > 0) out.push({ batch: freeBatch.batch, first: 0, count: freeMain })
       if (freeGlyphBatch && freeGlyphMain > 0) out.push({ batch: freeGlyphBatch.batch, first: 0, count: freeGlyphMain })
-      if (freeTriBatch && freeTriCount > freeTriMain) out.push({ batch: freeTriBatch.batch, first: freeTriMain, count: freeTriCount - freeTriMain })
       emitDraws(hlPools, view, rect, out)
       if (clipBatch !== null && clipCount > mainClipped) out.push({ batch: clipBatch, first: mainClipped, count: clipCount - mainClipped })
       if (freeBatch && freeCount > freeMain) out.push({ batch: freeBatch.batch, first: freeMain, count: freeCount - freeMain })
@@ -987,13 +1116,13 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
       if (clip) backend.destroyBatch(clip.batch)
       if (freeBatch) backend.destroyBatch(freeBatch.batch)
       if (freeGlyphBatch) backend.destroyBatch(freeGlyphBatch.batch)
-      if (freeTriBatch) backend.destroyBatch(freeTriBatch.batch)
+      if (clipTri) backend.destroyBatch(clipTri.batch)
       pools = []
       hlPools = []
       clip = null
       freeBatch = null
       freeGlyphBatch = null
-      freeTriBatch = null
+      clipTri = null
     },
   }
 }

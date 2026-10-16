@@ -172,8 +172,13 @@ layout(location = 3) in vec4 p2;
 void main() {
   float half_w;
   if (!loadStyle(styleId, half_w)) { drop(); return; }
-  vec4 p = gl_VertexID == 0 ? p0 : gl_VertexID == 1 ? p1 : p2;
-  gl_Position = vec4(toEyePx(p) / (0.5 * viewportPx), 0.0, 1.0);
+  // An edge past the segment limit is dropped, as a segment is: the caller re-emits the fill clipped in f64.
+  vec2 a = toEyePx(p0);
+  vec2 b = toEyePx(p1);
+  vec2 c = toEyePx(p2);
+  if (max(length(b - a), max(length(c - b), length(a - c))) > ${MAX_SEGMENT_PX.toFixed(1)}) { drop(); return; }
+  vec2 p = gl_VertexID == 0 ? a : gl_VertexID == 1 ? b : c;
+  gl_Position = vec4(p / (0.5 * viewportPx), 0.0, 1.0);
 }
 `
 

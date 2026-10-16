@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { ViewState } from '../../kernel/view'
-import { ARC_STRIDE, MAX_ARC_SUBDIV, SEGMENT_STRIDE, STYLE_WORDS, TRI_STRIDE, type BackendTheme } from '../backend'
+import { ARC_STRIDE, MAX_ARC_SUBDIV, MAX_SEGMENT_PX, SEGMENT_STRIDE, STYLE_WORDS, TRI_STRIDE, type BackendTheme } from '../backend'
 import { createWebGL2Backend } from './backend'
+import { SEGMENT_VERT, TRI_VERT } from './shaders'
 
 const THEME: BackendTheme = { bg: [0.1, 0.2, 0.3, 1], gridMinor: [0, 1, 1, 0.1], gridMajor: [0, 1, 1, 0.25] }
 const VIEW: ViewState = { cx: 0, cy: 0, scale: 1, width: 100, height: 100, dpr: 1 }
@@ -228,6 +229,12 @@ describe('createWebGL2Backend', () => {
     const pointers = t.named('vertexAttribPointer').map((c) => c.args)
     expect(pointers).toEqual([[0, 4, 'FLOAT', false, TRI_STRIDE, o], [1, 4, 'FLOAT', false, TRI_STRIDE, o + 16], [3, 4, 'FLOAT', false, TRI_STRIDE, o + 32]])
     expect(t.named('vertexAttribIPointer').map((c) => c.args)).toEqual([[2, 1, 'UNSIGNED_INT', TRI_STRIDE, o + TRI_STRIDE - 4]])
+  })
+
+  it('a fill with an edge past the segment limit is dropped, as a segment is: the scene re-emits it in f64', () => {
+    const limit = `> ${MAX_SEGMENT_PX.toFixed(1)}) { drop(); return; }`
+    expect(SEGMENT_VERT).toContain(limit)
+    expect(TRI_VERT).toContain(limit)
   })
 
   it('frame with the context lost does not draw', () => {
