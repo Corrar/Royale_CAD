@@ -125,6 +125,36 @@ describe('TRIM', () => {
     expect(t.lines()).toContainEqual([0, 0, 3, 0])
     expect(t.lines()).toContainEqual([7, 0, 10, 0])
   })
+
+  it('a click right on a cut removes one piece only: the one after it, or before it at the end', () => {
+    const t = commandBench()
+    t.run('L⏎3,-5⏎3,5⏎⏎')
+    t.run('L⏎7,-5⏎7,5⏎⏎')
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.run('TR⏎⏎')
+    t.click(3, 0)
+    t.run('⏎')
+    expect(t.lines()).toEqual([[3, -5, 3, 5], [7, -5, 7, 5], [0, 0, 3, 0], [7, 0, 10, 0]])
+    const u = commandBench()
+    u.run('L⏎7,-5⏎7,5⏎⏎')
+    u.run('L⏎10,-5⏎10,5⏎⏎')
+    u.run('L⏎0,0⏎10,0⏎⏎')
+    u.run('TR⏎⏎')
+    u.click(10, 0)
+    u.run('⏎')
+    expect(u.lines()).toEqual([[7, -5, 7, 5], [10, -5, 10, 5], [0, 0, 7, 0]])
+  })
+
+  it('a cut at a vertex that the next vertex repeats keeps the piece before it', () => {
+    const t = commandBench()
+    t.run('PL⏎0,0⏎10,0⏎10,0⏎10,10⏎⏎')
+    t.run('L⏎10,0⏎15,-5⏎⏎') // touches the corner
+    t.run('TR⏎⏎')
+    t.click(10, 5)
+    t.run('⏎')
+    const [p] = polylines(t)
+    expect(Array.from(p!.pts)).toEqual([0, 0, 10, 0])
+  })
 })
 
 describe('EXTEND', () => {
@@ -175,6 +205,31 @@ describe('EXTEND', () => {
     expect(Array.from(p!.pts)).toEqual([0, 0, 2, 0, 2, 5])
     expect(Array.from(q!.pts).map(r9)).toEqual([0, -10, 10, -10, 7, -1])
     expect(on(q!, 10 + 5 * Math.cos(2), -5 + 5 * Math.sin(2))).toBe(true)
+  })
+
+  it('takes the end of a polyline nearer the click along it, whatever the vertex count', () => {
+    const t = commandBench()
+    t.run('PL⏎0,0⏎100,0⏎100,1⏎100,2⏎100,3⏎⏎')
+    t.run('L⏎-10,-10⏎-10,10⏎⏎') // left of the start
+    t.run('L⏎90,10⏎110,10⏎⏎') // above the end
+    t.run('EX⏎⏎')
+    t.click(90, 0) // 90 from the start, 13 from the end
+    t.run('⏎')
+    const [p] = polylines(t)
+    expect(Array.from(p!.pts)).toEqual([0, 0, 100, 0, 100, 1, 100, 2, 100, 10])
+  })
+
+  it('extends a polyline past repeated end vertices, which move with the end', () => {
+    const t = commandBench()
+    t.run('PL⏎0,0⏎0,0⏎10,0⏎10,0⏎⏎')
+    t.run('L⏎20,-5⏎20,5⏎⏎')
+    t.run('L⏎-20,-5⏎-20,5⏎⏎')
+    t.run('EX⏎⏎')
+    t.click(10.1, 0)
+    t.click(-0.1, 0)
+    t.run('⏎')
+    const [p] = polylines(t)
+    expect(Array.from(p!.pts)).toEqual([-20, 0, -20, 0, 20, 0, 20, 0])
   })
 
   it('with no boundary in the way nothing changes', () => {

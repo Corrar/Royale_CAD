@@ -15,8 +15,13 @@ export interface Path {
   readonly closed: boolean
   /** The parameter of the point of the path nearest p. Past the end of a line or an arc, u < 0 or u > end. */
   param(p: Vec2): number
-  /** How far u moves for the length tolerance, near u. */
-  slack(u: number): number
+  /** The length of the path from its start to u. */
+  along(u: number): number
+  /**
+   * How far u moves for the length tolerance, near u. At a vertex of a polyline it is measured on the piece starting
+   * there, or on the piece ending there when `before`.
+   */
+  slack(u: number, before?: boolean): number
   /**
    * The piece from u0 to u1, with u0 < u1 inside [0, end]; on a closed path u1 may pass end, by less than a turn.
    * Same id, layer and color: a circle gives an arc, a polyline an open polyline.
@@ -45,6 +50,7 @@ function linePath(e: Line, tol: number): Path {
     end: 1,
     closed: false,
     param: (p) => (len2 > 0 ? ((p.x - e.x0) * dx + (p.y - e.y0) * dy) / len2 : 0),
+    along: (u) => u * Math.sqrt(len2),
     slack: () => tol / Math.sqrt(len2),
     slice: (u0, u1) => ({ ...e, x0: lerp(e.x0, e.x1, u0), y0: lerp(e.y0, e.y1, u0), x1: lerp(e.x0, e.x1, u1), y1: lerp(e.y0, e.y1, u1) }),
   }
@@ -59,6 +65,7 @@ function arcPath(e: Arc, tol: number): Path {
       const s = normAngle(Math.atan2(p.y - e.cy, p.x - e.cx) - e.a0)
       return s > sweep && s - sweep > TAU - s ? s - TAU : s
     },
+    along: (u) => u * e.r,
     slack: () => tol / e.r,
     slice: (u0, u1) => ({ ...e, a0: u0 === 0 ? e.a0 : normAngle(e.a0 + u0), a1: u1 === sweep ? e.a1 : normAngle(e.a0 + u1) }),
   }
@@ -69,6 +76,7 @@ function circlePath(e: Circle, tol: number): Path {
     end: TAU,
     closed: true,
     param: (p) => normAngle(Math.atan2(p.y - e.cy, p.x - e.cx)),
+    along: (u) => u * e.r,
     slack: () => tol / e.r,
     slice(u0, u1) {
       const { type: _type, ...rest } = e
@@ -98,12 +106,16 @@ function polylinePath(e: Polyline, tol: number): Path {
     return { x: lerp(p.x, q.x, f), y: lerp(p.y, q.y, f) }
   }
   const pieceAt = (u: number): number => Math.min(Math.floor(u), e.closed ? Infinity : m - 1)
-  const slack = (u: number): number => {
-    const i = pieceAt(Math.max(0, u)) % m
+  const lengthOf = (i: number): number => {
     const a = arcOf(i)
     const p = vertex(i)
     const q = vertex(i + 1)
-    return tol / Math.max(a ? a.r * Math.abs(a.sweep) : Math.hypot(q.x - p.x, q.y - p.y), tol)
+    return a ? a.r * Math.abs(a.sweep) : Math.hypot(q.x - p.x, q.y - p.y)
+  }
+  const slack = (u: number, before = false): number => {
+    // At a vertex, the piece ending there may be a different length from the one starting there (or none at all).
+    const i = (before && u > 0 && Number.isInteger(u) ? u - 1 : pieceAt(Math.max(0, u))) % m
+    return tol / Math.max(lengthOf(i), tol)
   }
   return {
     end: m,
@@ -136,6 +148,12 @@ function polylinePath(e: Polyline, tol: number): Path {
         }
       }
       return best
+    },
+    along(u) {
+      const i = pieceAt(Math.max(0, u))
+      let s = 0
+      for (let k = 0; k < i; k++) s += lengthOf(k % m)
+      return s + (u - i) * lengthOf(i % m)
     },
     slack,
     slice(u0, u1) {
