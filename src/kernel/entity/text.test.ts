@@ -14,6 +14,7 @@ const mtext = (extra: Partial<MText> = {}): MText => ({ type: 'mtext', id: 2, la
 type G = [number, number, number, number, number, number, number]
 /** Rounded to compare, −0 as 0. */
 const fixed = (vs: number[]): number[] => vs.map((v) => +v.toFixed(9) + 0)
+const fixedRows = (rows: number[][]): number[][] => rows.map(fixed)
 const glyphs = (e: Entity): G[] => {
   const out: G[] = []
   typeOf(e).primitives(e, 0, { segment() {}, arc() {}, glyph: (...a) => out.push(a) })
@@ -76,6 +77,19 @@ describe('text', () => {
       expect([mirrored.backward, mirrored.upsideDown]).toEqual([t.backward, t.upsideDown])
       expect(fixed([a.minX, a.maxX, a.minY, a.maxY])).toEqual(fixed([100 - b.maxX, 100 - b.minX, b.minY, b.maxY]))
     }
+  })
+
+  it('an underline is a segment, with the text and through the insert it is in', () => {
+    const segments = (e: Entity): number[][] => {
+      const out: number[][] = []
+      typeOf(e).primitives(e, 0, { segment: (...a) => out.push(a.map((v) => +v.toFixed(9) + 0)), arc() {} })
+      return out
+    }
+    const t = text({ value: '%%uHH', x: 0, y: 0 })
+    expect(segments(t)).toEqual(fixedRows([[0, -0.4, 4 * H, -0.4]]))
+    const block: Block = { name: 'U', x: 0, y: 0, entities: [{ ...t, id: undefined } as never] }
+    const ins: Insert = { type: 'insert', id: 3, layer: 0, block, x: 100, y: 0, sx: 2, sy: 3, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }
+    expect(segments(ins)).toEqual(fixedRows([[100, -1.2, 100 + 8 * H, -1.2]]))
   })
 
   it('snaps INS at its point; validate wants a height and a width factor', () => {

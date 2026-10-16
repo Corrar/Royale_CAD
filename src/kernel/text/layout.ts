@@ -1,16 +1,20 @@
 import type { MText, Text } from '../entity/types'
 import { normAngle } from '../geom/tol'
 import { applyAffine, type Affine, type Vec2 } from '../geom/vec'
-import { decodeText, mtextParagraphs } from './codes'
+import { decodeTextMarked, MARK, mtextParagraphsMarked, type Marked } from './codes'
 import { advanceOf, DESCENT } from './font'
 
 /** Where text sits: world = origin + x·u + y·v for (x, y) in capital heights; u along the baseline, v up. */
 export interface TextFrame { ox: number; oy: number; ux: number; uy: number; vx: number; vy: number }
 
-/** Text laid out: its frame, its characters (baseline starts, in capital heights), and the box they fill. */
+/**
+ * Text laid out: its frame, its characters (baseline starts, in capital heights), the lines its underlines,
+ * overlines and strike-throughs draw (x0 to x1 at height y), and the box they fill.
+ */
 export interface Laid {
   frame: TextFrame
   glyphs: { cp: number; x: number; y: number }[]
+  rules: { x0: number; x1: number; y: number }[]
   box: { x0: number; y0: number; x1: number; y1: number }
 }
 
@@ -32,15 +36,38 @@ export function widthOf(s: string): number {
   return w
 }
 
-/** The characters of s from (x, y) on: a space or a control character only advances. */
-function place(s: string, x: number, y: number, out: Laid['glyphs']): void {
+/** Where underline, overline and strike-through run, in heights above the baseline. */
+const MARK_Y: readonly (readonly [number, number])[] = [[MARK.UNDER, -0.2], [MARK.OVER, 1.2], [MARK.STRIKE, 0.5]]
+
+/** The characters of s from (x, y) on (a space or a control character only advances), and the lines of its marks. */
+function place(s: Marked, x: number, y: number, out: Pick<Laid, 'glyphs' | 'rules'>): void {
+  // Where each UTF-16 unit of s starts, from where the line starts; the last, where s ends.
+  const xs: number[] = []
   let at = 0
-  for (const ch of s) {
+  for (const ch of s.text) {
     const cp = ch.codePointAt(0)!
-    if (cp > 32 && cp !== 0xa0) out.push({ cp, x: x + at, y })
+    if (cp > 32 && cp !== 0xa0) out.glyphs.push({ cp, x: x + at, y })
+    for (let k = 0; k < ch.length; k++) xs.push(at)
     at += advanceAt(cp, at)
   }
+  xs.push(at)
+  // Each run of marked characters, spaces and all, gets one line, as AutoCAD draws it.
+  for (const [mark, dy] of MARK_Y) {
+    let from = -1
+    for (let k = 0; k <= s.marks.length; k++) {
+      const on = k < s.marks.length && (s.marks[k]! & mark) !== 0
+      if (on && from < 0) from = k
+      else if (!on && from >= 0) {
+        if (xs[k]! > xs[from]!) out.rules.push({ x0: x + xs[from]!, x1: x + xs[k]!, y: y + dy })
+        from = -1
+      }
+    }
+  }
 }
+
+/** The box from its y0 to its y1 with the lines of the marks too: an overline is above the capitals. */
+const reach = (box: Laid['box'], rules: Laid['rules']): Laid['box'] =>
+  ({ ...box, y0: Math.min(box.y0, ...rules.map((r) => r.y)), y1: Math.max(box.y1, ...rules.map((r) => r.y)) })
 
 /** The frame that puts local point (ax, ay) at world (x, y), turned by rotation, one capital height being h. */
 function frameAt(x: number, y: number, ax: number, ay: number, rotation: number, h: number, wf: number, slant: number): TextFrame {
@@ -59,11 +86,11 @@ const H_AT = [0, 0.5, 1, 0, 0.5, 0]
 
 /** A TEXT laid out: justified at its point, aligned or fit between its two, slanted, mirrored as flagged. */
 export function layoutText(t: TextProps): Laid {
-  const s = decodeText(t.value)
-  const w = widthOf(s)
-  const glyphs: Laid['glyphs'] = []
-  place(s, 0, 0, glyphs)
-  const box = { x0: 0, y0: -DESCENT, x1: w, y1: 1 }
+  const s = decodeTextMarked(t.value)
+  const w = widthOf(s.text)
+  const laid: Pick<Laid, 'glyphs' | 'rules'> = { glyphs: [], rules: [] }
+  place(s, 0, 0, laid)
+  const box = reach({ x0: 0, y0: -DESCENT, x1: w, y1: 1 }, laid.rules)
   let frame: TextFrame
   // The local point mirroring pivots on.
   let ax: number
@@ -86,26 +113,34 @@ export function layoutText(t: TextProps): Laid {
   // Mirrored about its justification point, which stays put: MIRROR with MIRRTEXT 1 writes these flags so.
   if (t.backward) frame = { ...frame, ox: frame.ox + 2 * ax * frame.ux, oy: frame.oy + 2 * ax * frame.uy, ux: -frame.ux, uy: -frame.uy }
   if (t.upsideDown) frame = { ...frame, ox: frame.ox + 2 * ay * frame.vx, oy: frame.oy + 2 * ay * frame.vy, vx: -frame.vx, vy: -frame.vy }
-  return { frame, glyphs, box }
+  return { frame, ...laid, box }
 }
 
+/** s from a to b, with its marks. */
+const cut = (s: Marked, a: number, b: number): Marked => ({ text: s.text.slice(a, b), marks: s.marks.slice(a, b) })
+
 /** Paragraphs wrapped at maxWidth capital heights (Infinity: not at all), at spaces; a long word keeps its line. */
-function wrap(paragraphs: readonly string[], maxWidth: number): string[] {
+function wrap(paragraphs: readonly Marked[], maxWidth: number): Marked[] {
   if (maxWidth === Infinity) return [...paragraphs]
-  const lines: string[] = []
+  const lines: Marked[] = []
   for (const p of paragraphs) {
     // Spaces that start a paragraph indent it, as when it is not wrapped; those where a line wraps go.
-    let line = /^ */.exec(p)![0]
+    let at = /^ */.exec(p.text)![0].length // where the next word starts
+    let start = 0 // where the line starts
+    let end = at // where it ends, so far
     let bare = true // nothing on the line yet but the indent
-    for (const word of p.slice(line.length).split(' ')) {
-      const next = bare ? line + word : `${line} ${word}`
-      if (!bare && widthOf(next) > maxWidth) {
-        lines.push(line)
-        line = word
-      } else line = next
-      bare = line === ''
+    for (const word of p.text.slice(at).split(' ')) {
+      if (bare) {
+        if (start === end) start = at
+      } else if (widthOf(p.text.slice(start, at + word.length)) > maxWidth) {
+        lines.push(cut(p, start, end))
+        start = at
+      }
+      end = at + word.length
+      bare = start === end
+      at = end + 1
     }
-    lines.push(line)
+    lines.push(cut(p, start, end))
   }
   return lines
 }
@@ -114,9 +149,9 @@ function wrap(paragraphs: readonly string[], maxWidth: number): string[] {
 const LINE_GAP = 5 / 3
 
 /** An MTEXT's lines, each with its baseline start in its frame, and the box they fill. */
-function mtextPlan(m: MTextProps): { frame: TextFrame; lines: { text: string; x: number; y: number }[]; box: Laid['box'] } {
-  const texts = wrap(mtextParagraphs(m.value), m.width > 0 ? m.width / m.height : Infinity)
-  const widths = texts.map(widthOf)
+function mtextPlan(m: MTextProps): { frame: TextFrame; lines: { text: Marked; x: number; y: number }[]; box: Laid['box'] } {
+  const texts = wrap(mtextParagraphsMarked(m.value), m.width > 0 ? m.width / m.height : Infinity)
+  const widths = texts.map((t) => widthOf(t.text))
   const w = m.width > 0 ? m.width / m.height : Math.max(0, ...widths)
   const gap = LINE_GAP * m.spacing
   const toLast = 1 + (texts.length - 1) * gap
@@ -136,15 +171,15 @@ function mtextPlan(m: MTextProps): { frame: TextFrame; lines: { text: string; x:
  */
 export function layoutMText(m: MTextProps): Laid {
   const { frame, lines, box } = mtextPlan(m)
-  const glyphs: Laid['glyphs'] = []
-  for (const l of lines) place(l.text, l.x, l.y, glyphs)
-  return { frame, glyphs, box }
+  const laid: Pick<Laid, 'glyphs' | 'rules'> = { glyphs: [], rules: [] }
+  for (const l of lines) place(l.text, l.x, l.y, laid)
+  return { frame, ...laid, box: reach(box, laid.rules) }
 }
 
 /** An MTEXT's lines as shown, codes gone: each line's text and where its baseline starts, in the world. */
 export function mtextLines(m: MTextProps): { text: string; x: number; y: number }[] {
   const { frame, lines } = mtextPlan(m)
-  return lines.map((l) => ({ text: l.text, ...atFrame(frame, l.x, l.y) }))
+  return lines.map((l) => ({ text: l.text.text, ...atFrame(frame, l.x, l.y) }))
 }
 
 /** Where the baseline of a TEXT starts, unmirrored: DXF's first alignment point, which its justification works out. */
