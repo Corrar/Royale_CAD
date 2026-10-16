@@ -12,6 +12,8 @@ interface Ask {
   prompt: string
   /** Matched case-insensitively, by unique prefix. */
   keywords?: readonly string[]
+  /** Taken like keywords but left out of the prompt: options AutoCAD takes there unlisted (TEXT's justifications). */
+  hidden?: readonly string[]
 }
 
 export interface PointRequest extends Ask {
@@ -367,7 +369,8 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     t.mode === 'abs' ? { x: t.x, y: t.y } : { x: lastPoint.x + t.x, y: lastPoint.y + t.y }
 
   function keyword(word: string, text: string): boolean {
-    const k = matchKeyword(word, request!.keywords)
+    const r = request!
+    const k = matchKeyword(word, r.hidden ? [...(r.keywords ?? []), ...r.hidden] : r.keywords)
     if (k === undefined) return false
     answer({ kind: 'keyword', word: k }, text)
     return true

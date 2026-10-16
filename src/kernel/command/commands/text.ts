@@ -34,11 +34,15 @@ export const text: Command = function* (ctx) {
   const size = (ctx.vars.get('TEXTSIZE') as number | undefined) ?? 2.5
   ctx.message(`Current text style:  "Standard"  Text height:  ${formatNumber(size)}`)
   let option = 'Left'
-  let at = yield* getPoint('Specify start point of text', { keywords: ['Justify'] })
+  let at = yield* getPoint('Specify start point of text', { keywords: ['Justify'], hidden: JUSTIFY })
   if (at === 'Justify') {
     const r = yield { kind: 'keyword', prompt: 'Enter an option', keywords: JUSTIFY }
     if (r.kind !== 'keyword') return
-    option = r.word
+    at = r.word
+  }
+  if (typeof at === 'string') {
+    // An option chosen after Justify, or typed at once: AutoCAD takes them at the first prompt unlisted.
+    option = at
     if (option === 'Align' || option === 'Fit') at = yield* getPoint('Specify first endpoint of text baseline')
     else at = yield* getPoint(`Specify ${pointName(PLACES[option]![2])}`)
   }

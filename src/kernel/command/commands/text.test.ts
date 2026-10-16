@@ -66,6 +66,17 @@ describe('TEXT', () => {
     expect(f).toMatchObject({ halign: 5, x: 0, y: 10, x2: 10, y2: 10, height: 3 })
   })
 
+  it('takes a justification at the first prompt, without Justify, as AutoCAD does', () => {
+    const t = commandBench()
+    t.run('TEXT⏎')
+    // Only Justify shows; the options it lists are taken all the same.
+    expect(t.interp.prompt).toBe('Specify start point of text or [Justify]:')
+    t.run('MC⏎')
+    expect(t.interp.prompt).toBe('Specify middle-center point of text:')
+    t.run('5,5⏎2⏎0⏎Hi⏎⏎DT⏎c⏎5,5⏎2⏎0⏎Hi⏎⏎DT⏎A⏎0,0⏎10,0⏎Hi⏎⏎')
+    expect(texts(t).map((e) => [e.halign, e.valign])).toEqual([[1, 2], [1, 0], [3, 0]])
+  })
+
   it('refuses a second endpoint on the first', () => {
     const t = commandBench()
     t.run('TEXT⏎J⏎A⏎0,0⏎0,0⏎')
