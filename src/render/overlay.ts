@@ -74,13 +74,16 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: OverlayState, them
     ctx.beginPath()
     ctx.fillStyle = theme.preview
     ctx.font = `${TEXT_CAP_PX / CAP_PER_EM}px ${theme.textFamily}`
+    const segment = (x0: number, y0: number, x1: number, y1: number): void => {
+      const a = worldToScreen(view, x0, y0)
+      const b = worldToScreen(view, x1, y1)
+      ctx.moveTo(a.x, a.y)
+      ctx.lineTo(b.x, b.y)
+    }
     s.preview(p, {
-      segment(x0, y0, x1, y1) {
-        const a = worldToScreen(view, x0, y0)
-        const b = worldToScreen(view, x1, y1)
-        ctx.moveTo(a.x, a.y)
-        ctx.lineTo(b.x, b.y)
-      },
+      segment,
+      // A fill is ghosted by its outline: filled, it would hide what it moves over.
+      edge: segment,
       arc(cx, cy, r, a0, sweep) {
         const c = worldToScreen(view, cx, cy)
         // The screen's Y points down: a counter-clockwise sweep in the world is anticlockwise on the canvas.
