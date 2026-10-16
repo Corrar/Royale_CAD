@@ -1,5 +1,5 @@
 import { arcBBox, arcDistance, bulgeToArc } from '../geom/curve'
-import { bboxAdd, emptyBBox, segmentDistance } from '../geom/vec'
+import { affineDet, applyAffine, bboxAdd, emptyBBox, segmentDistance } from '../geom/vec'
 import { SNAP, type EntityType, type Polyline, type PrimSink } from './types'
 
 /** Emits each piece in vertex order; the closing piece last. */
@@ -37,6 +37,17 @@ export const polylineType: EntityType<Polyline> = {
     return b
   },
   primitives: (e, _tol, out) => pieces(e, out),
+  transform(e, m) {
+    const pts = new Float64Array(e.pts.length)
+    for (let i = 0; i + 1 < e.pts.length; i += 2) {
+      const p = applyAffine(m, e.pts[i]!, e.pts[i + 1]!)
+      pts[i] = p.x
+      pts[i + 1] = p.y
+    }
+    // A mirroring turns every arc piece the other way.
+    const bulges = e.bulges && affineDet(m) < 0 ? e.bulges.map((b) => -b) : e.bulges && e.bulges.slice()
+    return { ...e, pts, bulges }
+  },
   snapPoints(e, modes, out) {
     if (modes & SNAP.END) for (let i = 0; i + 1 < e.pts.length; i += 2) out(e.pts[i]!, e.pts[i + 1]!, SNAP.END)
     if (modes & SNAP.MID) {

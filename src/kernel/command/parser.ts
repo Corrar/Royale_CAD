@@ -1,3 +1,5 @@
+import { unitDeg } from '../geom/vec'
+
 /** What one line typed at the command line means, before any prompt gives it context. */
 export type Token =
   | { kind: 'point'; mode: 'abs' | 'rel'; x: number; y: number }
@@ -17,14 +19,6 @@ function number(s: string): number | undefined {
   return Number.isFinite(v) ? v : undefined
 }
 
-/** cos and sin of an angle in degrees, exact on the axes. */
-function unit(deg: number): [number, number] {
-  const q = deg / 90
-  if (Number.isInteger(q)) return [[1, 0, -1, 0][((q % 4) + 4) % 4]!, [0, 1, 0, -1][((q % 4) + 4) % 4]!]
-  const a = (deg * Math.PI) / 180
-  return [Math.cos(a), Math.sin(a)]
-}
-
 /** "x,y" or "d<a" (degrees, counter-clockwise) as a vector. */
 function vector(s: string): [number, number] | undefined {
   const comma = s.split(',')
@@ -38,7 +32,7 @@ function vector(s: string): [number, number] | undefined {
     const d = number(polar[0]!)
     const a = number(polar[1]!)
     if (d === undefined || a === undefined) return undefined
-    const [c, n] = unit(a)
+    const [c, n] = unitDeg(a)
     return [d * c, d * n]
   }
   return undefined

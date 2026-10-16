@@ -28,8 +28,9 @@ export interface PointRequest extends Ask {
 
 export interface NumberRequest extends Ask {
   kind: 'number'
-  /** A picked point answers its distance from base. */
+  /** A picked point answers its distance from base, or with `angle` the base-to-point direction in degrees. */
   base?: Vec2
+  angle?: boolean
   /** What Enter answers; without it Enter is refused. */
   default?: number
   positive?: boolean
@@ -124,7 +125,8 @@ const HISTORY_MAX = 500
 /** "Specify next point or [Close/Undo] <5>:" */
 export function formatPrompt(r: Request | null): string {
   if (!r) return 'Command:'
-  const keywords = r.keywords && r.keywords.length > 0 ? ` or [${r.keywords.join('/')}]` : ''
+  // A question with only options reads "Erase source objects? [Yes/No] <No>:", without "or".
+  const keywords = r.keywords && r.keywords.length > 0 ? `${r.kind === 'keyword' ? '' : ' or'} [${r.keywords.join('/')}]` : ''
   const def = (r.kind === 'number' || r.kind === 'keyword') && r.default !== undefined ? ` <${r.default}>` : ''
   return `${r.prompt}${keywords}${def}:`
 }
@@ -229,6 +231,10 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     return { p: raw, snap: null }
   }
 
+  /** What a point answers to a number request with a base: a distance, or an angle in degrees. */
+  const measure = (r: NumberRequest, p: Vec2): number =>
+    r.angle ? (Math.atan2(p.y - r.base!.y, p.x - r.base!.x) * 180) / Math.PI : Math.hypot(p.x - r.base!.x, p.y - r.base!.y)
+
   const pointOf = (t: Extract<Token, { kind: 'point' }>): Vec2 =>
     t.mode === 'abs' ? { x: t.x, y: t.y } : { x: lastPoint.x + t.x, y: lastPoint.y + t.y }
 
@@ -274,10 +280,8 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
       case 'number': {
         let value: number | undefined
         if (t.kind === 'number') value = t.value
-        else if (t.kind === 'point' && r.base) {
-          const p = pointOf(t)
-          value = Math.hypot(p.x - r.base.x, p.y - r.base.y)
-        } else if (t.kind === 'word' && keyword(t.text, echo)) return
+        else if (t.kind === 'point' && r.base) value = measure(r, pointOf(t))
+        else if (t.kind === 'word' && keyword(t.text, echo)) return
         else if (t.kind === 'empty' && r.default !== undefined) return answer({ kind: 'number', value: r.default }, '')
         if (value === undefined) return refuse(r.keywords?.length ? 'Requires a number or an option keyword.' : 'Requires a number.')
         if (r.positive && !(value > 0)) return refuse('Value must be positive and nonzero.')
@@ -328,7 +332,7 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     const r = request!
     const p = resolve(raw).p
     if (r.kind === 'point') return answer({ kind: 'point', p }, '')
-    if (r.kind === 'number' && r.base) return answer({ kind: 'number', value: Math.hypot(p.x - r.base.x, p.y - r.base.y) }, '')
+    if (r.kind === 'number' && r.base) return answer({ kind: 'number', value: measure(r, p) }, '')
     refuse(r.kind === 'number' ? 'Requires a number.' : 'Invalid option keyword.')
   }
 

@@ -1,5 +1,5 @@
 import type { Color } from '../color'
-import type { BBox, Vec2 } from '../geom/vec'
+import type { Affine, BBox, Vec2 } from '../geom/vec'
 
 /**
  * Entities are immutable: never mutate one, nor its arrays, once it is in a document; replace it in a transaction.
@@ -68,6 +68,8 @@ export interface EntityType<E extends Entity> {
   /** tol: allowed chordal error in world units for curves flattened on the CPU; exact primitives ignore it. */
   primitives(e: E, tol: number, out: PrimSink): void
   distance(e: E, p: Vec2): number
+  /** The entity moved by m, same id: only similarities (move, rotate, mirror, uniform scale) are supported. */
+  transform?(e: E, m: Affine): E
   /** Emits the snap points of the modes asked for (a bit set of SNAP). */
   snapPoints?(e: E, modes: number, out: SnapSink): void
   /** A message when the fields break the type's invariants; the document also rejects non-finite bboxes. */

@@ -146,7 +146,7 @@ describe('selection and ERASE', () => {
     t.doc.transact('move to layer', (tx) => tx.replace({ ...first, layer: locked }))
     t.run('E⏎ALL⏎⏎')
     expect(t.lines()).toEqual([[0, 0, 10, 0]])
-    expect(t.interp.history).toContain('1 were on a locked layer.')
+    expect(t.interp.history).toContain('1 was on a locked layer.')
   })
 })
 

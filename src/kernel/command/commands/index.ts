@@ -5,6 +5,7 @@ import { erase } from './erase'
 import { line } from './line'
 import { pline } from './pline'
 import { rectang } from './rectang'
+import { copy, mirror, move, rotate, scale } from './transform'
 import { redo, u, undo } from './undo'
 import { pan, zoom } from './view'
 
@@ -16,6 +17,11 @@ export const BUILTIN_COMMANDS: Readonly<Record<string, Command>> = {
   PLINE: pline,
   RECTANG: rectang,
   ERASE: erase,
+  MOVE: move,
+  COPY: copy,
+  ROTATE: rotate,
+  MIRROR: mirror,
+  SCALE: scale,
   U: u,
   UNDO: undo,
   REDO: redo,
