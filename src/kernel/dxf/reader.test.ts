@@ -298,6 +298,26 @@ describe('readDxf', () => {
     expect(plain.attribs).toBeUndefined()
   })
 
+  it('a constant attribute definition (ATTDEF 70 bit 2) shows in the inserts of its block, as a text of it; others do not', () => {
+    const blocks: G = [
+      0, 'BLOCK', 8, '0', 2, 'K', 70, 2, 10, 0, 20, 0, 0, 'CIRCLE', 8, '0', 10, 0, 20, 0, 40, 5,
+      // As AutoCAD 2018 writes them: the R2018 attribute type in 71, 72 and 11 repeated after the subclass marker.
+      0, 'ATTDEF', 8, 'Tags', 62, 3, 100, 'AcDbText', 10, 0, 20, 6, 30, 0, 40, 1, 1, 'K1', 7, 'ROMANS', 72, 1, 11, 0, 21, 6, 31, 0,
+      100, 'AcDbAttributeDefinition', 3, '', 2, 'CONST', 70, 2, 71, 1, 72, 0, 11, 0, 21, 6, 31, 0,
+      0, 'ATTDEF', 8, '0', 100, 'AcDbText', 10, 0, 20, 8, 30, 0, 40, 1, 1, 'HIDDEN', 100, 'AcDbAttributeDefinition', 3, '', 2, 'HIDK', 70, 3,
+      0, 'ATTDEF', 8, '0', 100, 'AcDbText', 10, 0, 20, 9, 30, 0, 40, 1, 1, 'default', 100, 'AcDbAttributeDefinition', 3, 'Value?', 2, 'VAR', 70, 0,
+      0, 'ENDBLK',
+    ]
+    const d = readDxf(lines([0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES', 0, 'INSERT', 8, '0', 2, 'K', 10, 50, 20, 50, 0, 'ENDSEC', 0, 'EOF']))
+    expect(d.warnings).toEqual([])
+    const [k] = all(d) as [Insert]
+    expect(k.block.entities.map((e) => e.type)).toEqual(['circle', 'text'])
+    expect(k.block.entities[1]).toEqual({
+      type: 'text', layer: d.doc.layers.indexOf('Tags'), color: 3, value: 'K1', x: 0, y: 6, x2: 0, y2: 6, height: 1, rotation: 0, widthFactor: 1,
+      oblique: 0, halign: 1, valign: 0, backward: false, upsideDown: false, style: 'ROMANS',
+    })
+  })
+
   it('INSERT attributes seen from -Z: in the world, mirrored (backward, angles the other way), aligned ones between their points', () => {
     const blocks: G = [0, 'BLOCK', 8, '0', 2, 'DOOR', 70, 2, 10, 0, 20, 0, 0, 'LINE', 8, '0', 10, 0, 20, 0, 11, 1, 21, 0, 0, 'ENDBLK']
     const z: G = [210, 0, 220, 0, 230, -1]

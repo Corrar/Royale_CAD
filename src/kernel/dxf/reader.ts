@@ -595,7 +595,7 @@ function parser(pairs: PairList) {
       for (let i = a + 1; i < b; i++) {
         const c = codes[i]!
         if (c === 101) break
-        if (c === 100) attribute = pairs.value(i).trim() === 'AcDbAttribute'
+        if (c === 100) attribute = pairs.value(i).trim().startsWith('AcDbAttribute') // ATTDEF's AcDbAttributeDefinition too
         if (attribute && (c === 71 || c === 72 || c === 11 || c === 21 || c === 31)) continue
         if (textGroup(t, c, i, 74)) continue
         if (c === 2) tag = pairs.value(i).trim()
@@ -615,6 +615,14 @@ function parser(pairs: PairList) {
       if (error instanceof Unsupported) return null
       throw error
     }
+  }
+
+  /** An ATTDEF [a, b) inserts show (constant, 70 bit 2, and not hidden) as a text of its block; null otherwise. */
+  const constantAt = (a: number, b: number): PendingAttrib | null => {
+    let flags = 0
+    for (let i = a + 1; i < b && codes[i] !== 101; i++) if (codes[i] === 70) flags = num(i)
+    const at = (flags & 2) !== 0 ? attribAt(a, b) : null
+    return at && !at.hidden ? at : null
   }
 
   /**
@@ -694,7 +702,7 @@ function parser(pairs: PairList) {
     return null
   }
 
-  return { head, read, scanHead }
+  return { head, read, scanHead, constantAt }
 }
 
 /** The entities of the ENTITIES section as pair ranges: entity k is [starts[k], ends[k]), its own groups end at owns[k]. */
@@ -880,7 +888,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
 
   const ents = find('ENTITIES')
   const recs = ents ? records(pairs, ents.start, ents.end) : { n: 0, starts: new Int32Array(0), owns: new Int32Array(0), ends: new Int32Array(0) }
-  const { head, read, scanHead } = parser(pairs)
+  const { head, read, scanHead, constantAt } = parser(pairs)
 
   // Blocks, read when an insert first needs one: name (any case) to definition, then to the block made of it.
   const bs = find('BLOCKS')
@@ -903,8 +911,16 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
     for (let k = 0; k < rs.n; k++) {
       const a = rs.starts[k]!
       const name = pairs.value(a).trim()
-      // An attribute definition never shows in an insert: its values (ATTRIB) do.
-      if (name === 'ATTDEF') continue
+      // An attribute definition shows in an insert only when constant: the values of the others (ATTRIB) do.
+      if (name === 'ATTDEF') {
+        const at = constantAt(a, rs.owns[k]!)
+        if (at) {
+          const { layerName, aci, trueColor, tag: _tag, hidden: _hidden, ...text } = at
+          const color = colorOf({ ...head, aci, trueColor })
+          entities.push({ ...text, layer: layers.of(layerName), ...(color !== undefined && { color }) })
+        }
+        continue
+      }
       try {
         const d = resolve(read(name, a, rs.owns[k]!, rs.ends[k]!))
         if (d) entities.push(d as BlockEntity)
