@@ -117,4 +117,31 @@ describe('createGlyphAtlas', () => {
     expect(up.table[7]).toBe(0)
     expect(up.table[5]).toBeCloseTo((30 + 4 + 8) / up.height, 9)
   })
+  it('says which code points wait to be drawn, oldest first', () => {
+    const atlas = createGlyphAtlas({ raster: () => box(4, 4), capPx: 4, spread: 2, width: 64 })
+    atlas.index(0x416)
+    atlas.index(0x41)
+    atlas.index(0x416)
+    expect(atlas.queued).toEqual([0x416, 0x41])
+    atlas.work(() => false)
+    expect(atlas.queued).toEqual([0x41])
+  })
+
+  it('stays within maxSize: widens once it is as tall as it may be, and leaves a glyph past both undrawn', () => {
+    // Cells of 42 px, 3 rows to 128 px: 3 in the first 64 px column, 3 in the one widening adds; then it is full.
+    const atlas = createGlyphAtlas({ raster: () => box(30, 30), capPx: 30, spread: 4, width: 64, maxSize: 128 })
+    for (let cp = 0; cp < 12; cp++) atlas.index(cp)
+    atlas.work(() => true)
+    const up = atlas.take()!
+    expect([up.width, up.height]).toEqual([128, 128])
+    const size = (i: number): number => up.table[8 * i + 2]! - up.table[8 * i]!
+    expect(Array.from({ length: 12 }, (_, i) => size(i) > 0)).toEqual([...new Array(6).fill(true), ...new Array(6).fill(false)])
+    // Each drawn glyph still has its ink at its cell's centre: widening moved the old rows with the atlas.
+    for (let i = 0; i < 6; i++) {
+      const [u0, v0, u1, v1] = up.table.subarray(8 * i + 4, 8 * i + 8)
+      const x = Math.floor(((u0! + u1!) / 2) * up.width)
+      const y = Math.floor(((v0! + v1!) / 2) * up.height)
+      expect(up.data[y * up.width + x]).toBeGreaterThan(200)
+    }
+  })
 })

@@ -336,7 +336,11 @@ export function createWebGL2Backend(canvas: HTMLCanvasElement, theme: BackendThe
       gridVisible = visible
     },
 
+    maxTextureSize: maxTexture,
+
     setGlyphs(glyphs) {
+      // GL would refuse it and leave no atlas: every glyph would vanish.
+      if (glyphs.width > maxTexture || glyphs.height > maxTexture) return
       glyphCopy = glyphs
       uploadGlyphs()
     },

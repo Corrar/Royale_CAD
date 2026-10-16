@@ -16,7 +16,12 @@ export interface RenderBackend {
   resize(width: number, height: number, dpr: number): void
   /** Shows or hides the grid (F7); hidden, frames clear to the background. */
   setGrid(visible: boolean): void
-  /** The glyph atlas and table glyph instances index (render/glyphs.ts); replaces the previous ones. */
+  /** The largest side of a texture (MAX_TEXTURE_SIZE): the glyph atlas must stay within it. */
+  readonly maxTextureSize: number
+  /**
+   * The glyph atlas and table glyph instances index (render/glyphs.ts); replaces the previous ones. An atlas past
+   * maxTextureSize is ignored, the previous one kept.
+   */
   setGlyphs(glyphs: GlyphUpload): void
   /**
    * After a lost GPU context comes back, every live batch exists again with its capacity but zeroed content (the

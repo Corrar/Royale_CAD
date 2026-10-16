@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ViewState } from '../kernel/view'
 import { CAP_PER_EM } from '../kernel/text/font'
+import { commandBench } from '../kernel/command/testing'
 import { CROSSHAIR_PX, drawOverlay, TEXT_CAP_PX, type OverlayState, type OverlayTheme } from './overlay'
 
 const THEME: OverlayTheme = {
@@ -116,5 +117,19 @@ describe('drawOverlay', () => {
       return JSON.stringify(f.calls)
     })
     expect(new Set(marks).size).toBe(9)
+  })
+})
+
+describe('drawOverlay, a transform previewing text', () => {
+  it.each(['MOVE', 'COPY', 'ROTATE', 'MIRROR', 'SCALE'])('%s drags the text with the cursor', (name) => {
+    const t = commandBench()
+    t.run('TEXT⏎0,0⏎10⏎0⏎abc⏎⏎')
+    t.run(`${name}⏎ALL⏎⏎0,0⏎`)
+    const r = t.interp.request
+    const preview = r && (r.kind === 'point' || r.kind === 'number') ? (r.preview ?? null) : null
+    expect(preview).not.toBeNull()
+    const f = fakeContext()
+    drawOverlay(f.ctx, state({ cursor: { x: 150, y: 20 }, preview }), THEME, 5)
+    expect(f.named('fillText').map((c) => c[1])).toEqual(['a', 'b', 'c'])
   })
 })

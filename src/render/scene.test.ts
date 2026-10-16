@@ -54,6 +54,7 @@ function fakeBackend() {
     frame() {},
     resize() {},
     setGrid() {},
+    maxTextureSize: 16384,
     setGlyphs() {
       log.push('glyphs')
     },
