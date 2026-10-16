@@ -490,7 +490,8 @@ function writeEntities(c: Ctx, source: DxfSource | null): void {
       continue
     }
     const handle = span ? source!.handleOf(e.id) : null
-    if (span && handle !== null) {
+    // Patched with or without a handle: an R12 file may have none.
+    if (span) {
       const p = patched(c, e, span.entity, source!.text.slice(span.start, span.end), source!.newline)
       if (p !== null) {
         c.o.raw(p)
@@ -676,28 +677,42 @@ export function writeDxf(doc: Document, source?: DxfSource, opts: WriteOptions =
   const ents = emitter(nl)
   const c: Ctx = { o: ents, f, ids, doc, owner: f.modern ? modelSpace(source) : null }
   writeEntities(c, source)
-  const sections = source.sections.map((s) => ({ name: s.name, text: source.text.slice(s.start, s.end) }))
+  // What lies between sections (999 comments) goes back before the section that followed it.
+  const sections = source.sections.map((s, k) => ({
+    name: s.name, before: source.text.slice(source.sections[k - 1]?.end ?? 0, s.start), text: source.text.slice(s.start, s.end),
+  }))
   const tablesAt = sections.findIndex((s) => s.name === 'TABLES')
   if (tablesAt >= 0) sections[tablesAt]!.text = writeTables(c, sections[tablesAt]!.text, nl)
   else {
     // A file without tables (some R12 writers): a LAYER table only when the layers need one.
     const bare = section(nl, 'TABLES', '')
     const tables = writeTables(c, bare, nl)
-    if (tables !== bare) sections.splice(Math.max(0, sections.findIndex((s) => s.name !== 'HEADER' && s.name !== 'CLASSES')), 0, { name: 'TABLES', text: tables })
+    if (tables !== bare) {
+      // After HEADER and CLASSES, whatever follows them, if anything.
+      const after = sections.findIndex((s) => s.name !== 'HEADER' && s.name !== 'CLASSES')
+      sections.splice(after < 0 ? sections.length : after, 0, { name: 'TABLES', before: '', text: tables })
+    }
   }
   const body = section(nl, 'ENTITIES', ents.text())
   const at = sections.findIndex((s) => s.name === 'ENTITIES')
   if (at >= 0) sections[at]!.text = body
   else {
     const objects = sections.findIndex((s) => s.name === 'OBJECTS' || s.name === 'THUMBNAILIMAGE' || s.name === 'ACDSDATA')
-    sections.splice(objects >= 0 ? objects : sections.length, 0, { name: 'ENTITIES', text: body })
+    sections.splice(objects >= 0 ? objects : sections.length, 0, { name: 'ENTITIES', before: '', text: body })
   }
   const header = sections.find((s) => s.name === 'HEADER')
   if (header && f.handles) header.text = setHeaderVar(header.text, nl, '$HANDSEED', 5, ids.seed())
   if (header && opts.currentLayer !== undefined && opts.currentLayer !== source.header.get('$CLAYER')) {
     header.text = setHeaderVar(header.text, nl, '$CLAYER', 8, opts.currentLayer)
   }
-  return sections.map((s) => s.text).join('') + codeText(0) + nl + 'EOF' + nl
+  return sections.map((s) => s.before + s.text).join('') + eof(source.text.slice(source.sections.at(-1)?.end ?? 0), nl)
+}
+
+/** The text after the last section as read, through its EOF line; an EOF line added when it has none. */
+function eof(tail: string, nl: string): string {
+  const p = tokenize(tail)
+  for (let i = 0; i < p.length; i++) if (p.is(i, 0, 'EOF')) return tail.slice(0, p.offset(i + 1))
+  return tail + codeText(0) + nl + 'EOF' + nl
 }
 
 function writeNew(doc: Document, opts: WriteOptions): string {

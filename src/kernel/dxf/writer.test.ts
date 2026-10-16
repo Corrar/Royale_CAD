@@ -4,7 +4,8 @@ import { createDocument } from '../document'
 import type { Arc, Circle, Ellipse, Entity, Insert, Line, Polyline, Spline } from '../entity/types'
 import { typeOf } from '../entity/registry'
 import { rotation } from '../geom/vec'
-import { readDxf } from './reader'
+import { commandBench } from '../command/testing'
+import { drawingFrom, parseDxf, readDxf } from './reader'
 import { tokenize } from './tokenizer'
 import { nearestAci, real, writeDxf } from './writer'
 
@@ -75,6 +76,46 @@ describe('writeDxf', () => {
     expect(writeDxf(d.doc, d.source)).toBe(text)
     // A new current layer goes into the header.
     expect(readDxf(writeDxf(d.doc, d.source, { currentLayer: 'Walls' })).source.header.get('$CLAYER')).toBe('Walls')
+  })
+
+  it('text outside the sections, such as the 999 comment LibreCAD starts with, is written back as read', () => {
+    const ENTITIES = lines([0, 'SECTION', 2, 'ENTITIES'])
+    const text = lines([999, 'dxfrw 0.6.3']) + file(LINE).replace(ENTITIES, lines([999, 'between']) + ENTITIES).replace(lines([0, 'EOF']), lines([999, 'last', 0, 'EOF']))
+    const d = readDxf(text)
+    expect(writeDxf(d.doc, d.source)).toBe(text)
+    d.doc.transact('edit', (tx) => tx.replace({ ...([...d.doc.entities()][0] as Line), x1: 20 }))
+    const out = writeDxf(d.doc, d.source)
+    expect(out.startsWith(lines([999, 'dxfrw 0.6.3', 0, 'SECTION', 2, 'HEADER']))).toBe(true)
+    expect(out).toContain(lines([0, 'ENDSEC', 999, 'between', 0, 'SECTION', 2, 'ENTITIES']))
+    expect(out.endsWith(lines([0, 'ENDSEC', 999, 'last', 0, 'EOF']))).toBe(true)
+  })
+
+  it('a file with only a HEADER gets its new TABLES after the HEADER', () => {
+    const text = lines([0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1, 'AC1009', 0, 'ENDSEC', 0, 'EOF'], '\n')
+    const d = readDxf(text)
+    const b = d.doc.layers.add({ name: 'B', color: 1, visible: true, locked: false })
+    d.doc.transact('draw', (tx) => void tx.add({ type: 'line', layer: b, x0: 0, y0: 0, x1: 1, y1: 1 }))
+    const back = readDxf(writeDxf(d.doc, d.source))
+    expect(back.source.sections.map((s) => s.name)).toEqual(['HEADER', 'TABLES', 'ENTITIES'])
+    expect(back.doc.layers.get(back.doc.layers.indexOf('B'))).toEqual({ name: 'B', color: 1, visible: true, locked: false })
+  })
+
+  it('an R12 file without handles: an edit is patched in place too, its extra groups and OCS kept', () => {
+    const text = lines([
+      0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1, 'AC1009', 0, 'ENDSEC',
+      0, 'SECTION', 2, 'ENTITIES',
+      0, 'LINE', 8, '0', 6, 'DASHED', 39, 2.5, 10, 0, 20, 0, 30, 0, 11, 10, 21, 0, 31, 0, 1001, 'ROYALE', 1000, 'kept',
+      0, 'CIRCLE', 8, '0', 10, 5, 20, 1, 30, 0, 40, 1, 210, 0, 220, 0, 230, -1,
+      0, 'ENDSEC', 0, 'EOF',
+    ], '\n')
+    const t = commandBench()
+    const d = drawingFrom(t.doc, parseDxf(text))
+    t.run('MOVE⏎ALL⏎⏎0,0⏎3,4⏎')
+    const out = writeDxf(t.doc, d.source)
+    expect(out).toContain(lines([0, 'LINE', 8, '0', 6, 'DASHED', 39, 2.5, 10, '3.0', 20, '4.0', 30, 0, 11, '13.0', 21, '4.0', 31, 0, 1001, 'ROYALE', 1000, 'kept'], '\n'))
+    // Still seen from -Z: the centre, from (-5, 1) to (-2, 5), is (2, 5) in its OCS.
+    expect(out).toContain(lines([0, 'CIRCLE', 8, '0', 10, '2.0', 20, '5.0', 30, 0, 40, '1.0', 210, 0, 220, 0, 230, -1], '\n'))
+    expect(handles(out)).toEqual([])
   })
 
   it('read, edit, write, read: the same document; opaque text identical; extra groups and OCS survive the edit', () => {
