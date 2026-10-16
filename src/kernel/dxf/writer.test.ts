@@ -582,11 +582,14 @@ describe('writeDxf', () => {
   it('an R12 file has no MTEXT: each of its lines goes as a TEXT where the line shows', () => {
     const d = readDxf(lines([0, 'SECTION', 2, 'ENTITIES', 0, 'ENDSEC', 0, 'EOF'], '\n'))
     d.doc.transact('add', (tx) => void tx.add({ type: 'mtext', layer: 0, value: 'A\\PB', x: 0, y: 0, height: 1, width: 0, attachment: 1, rotation: 0, spacing: 1 }))
+    // Control characters and carets go back into caret codes: a raw ^M would break the file's lines.
+    d.doc.transact('add', (tx) => void tx.add({ type: 'mtext', layer: 0, value: '1.^IA^Mx^ y', x: 0, y: 9, height: 1, width: 0, attachment: 1, rotation: 0, spacing: 1 }))
     const out = writeDxf(d.doc, d.source)
     expect(out).not.toContain('MTEXT')
-    const [a, b] = [...readDxf(out).doc.entities()] as [Text, Text]
+    const [a, b, c] = [...readDxf(out).doc.entities()] as [Text, Text, Text]
     expect([a.value, a.x, a.y, a.height, a.halign]).toEqual(['A', 0, -1, 1, 0])
     expect([b.value, b.x, Math.round(b.y * 1e12)]).toEqual(['B', 0, Math.round((-1 - 5 / 3) * 1e12)])
+    expect([c.value, c.y]).toEqual(['1.^IA^Mx^ y', 8])
   })
 
   it('an R12 file has no ELLIPSE nor SPLINE: they go as polylines close to them', () => {

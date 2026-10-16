@@ -62,16 +62,25 @@ function anchorOf(l: Laid, x: number, y: number): Vec2 {
   return { x: (dx * f.vy - dy * f.vx) / det, y: (f.ux * dy - f.uy * dx) / det }
 }
 
+/** The way text runs: aligned and fit from their first point to their second, as drawn, whatever their 50 says. */
+function directionOf(e: Text | MText): number {
+  const spanned = e.type === 'text' && (e.halign === 3 || e.halign === 5) && (e.x2 !== e.x || e.y2 !== e.y)
+  return spanned ? Math.atan2(e.y2 - e.y, e.x2 - e.x) : e.rotation
+}
+
 /** A turn and uniform scale move the point and the rotation; a mirror keeps the text readable. */
 function moved<E extends Text | MText>(e: E, m: Affine): { x: number; y: number; rotation: number; k: number } {
   const det = affineDet(m)
   const k = Math.sqrt(Math.abs(det))
   if (det > 0) {
     const p = applyAffine(m, e.x, e.y)
-    return { x: p.x, y: p.y, rotation: normAngle(e.rotation + Math.atan2(m.b, m.a)), k }
+    return { x: p.x, y: p.y, rotation: normAngle(directionOf(e) + Math.atan2(m.b, m.a)), k }
   }
   const l = layoutOf(e)
-  return { ...mirrorPlacement(l, anchorOf(l, e.x, e.y), m, e.rotation), k }
+  // A backward text reads against its rotation: place it by the way it reads, then turn back.
+  const back = e.type === 'text' && e.backward ? Math.PI : 0
+  const p = mirrorPlacement(l, anchorOf(l, e.x, e.y), m, directionOf(e) + back)
+  return { ...p, rotation: normAngle(p.rotation + back), k }
 }
 
 export const textType: EntityType<Text> = {

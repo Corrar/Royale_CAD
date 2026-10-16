@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { applyAffine, mirroring, rotation, scaling } from '../geom/vec'
-import { advanceOf } from '../text/font'
+import { applyAffine, mirroring, rotation, scaling, translation } from '../geom/vec'
+import { advanceOf, DESCENT } from '../text/font'
 import { typeOf } from './registry'
 import { SNAP, type Block, type Entity, type Insert, type MText, type Text } from './types'
 
@@ -12,6 +12,8 @@ const text = (extra: Partial<Text> = {}): Text => ({
 const mtext = (extra: Partial<MText> = {}): MText => ({ type: 'mtext', id: 2, layer: 0, value: 'HH\\PH', x: 0, y: 0, height: 1, width: 0, attachment: 1, rotation: 0, spacing: 1, ...extra })
 
 type G = [number, number, number, number, number, number, number]
+/** Rounded to compare, −0 as 0. */
+const fixed = (vs: number[]): number[] => vs.map((v) => +v.toFixed(9) + 0)
 const glyphs = (e: Entity): G[] => {
   const out: G[] = []
   typeOf(e).primitives(e, 0, { segment() {}, arc() {}, glyph: (...a) => out.push(a) })
@@ -47,6 +49,35 @@ describe('text', () => {
     expect(b.maxX).toBeCloseTo(90, 9)
   })
 
+  it('aligned and fit take their direction from their points, not from a 50 that disagrees (ezdxf writes none)', () => {
+    for (const halign of [3, 5]) {
+      const t = text({ halign, x: 0, y: 0, x2: 10, y2: 10, rotation: 0 })
+      for (const m of [translation(5, 0), rotation({ x: 0, y: 0 }, 90), rotation({ x: 3, y: -2 }, 33), mirroring({ x: 50, y: 0 }, { x: 50, y: 1 })]) {
+        const after = typeOf(t).transform!(t, m)
+        const [p1, p2] = [applyAffine(m, 0, 0), applyAffine(m, 10, 10)]
+        // The points go where m puts them (a mirror reads them the other way round); the letters run along them.
+        const ends = [[after.x, after.y], [after.x2, after.y2]].sort((a, b) => a[0]! - b[0]! || a[1]! - b[1]!)
+        const want = [[p1.x, p1.y], [p2.x, p2.y]].sort((a, b) => a[0]! - b[0]! || a[1]! - b[1]!)
+        expect(fixed(ends.flat())).toEqual(fixed(want.flat()))
+        const g = glyphs(after)[0]!
+        expect(Math.abs(g[3] * (after.y2 - after.y) - g[4] * (after.x2 - after.x))).toBeLessThan(1e-9)
+        expect(after.rotation).toBeCloseTo(Math.atan2(after.y2 - after.y, after.x2 - after.x) + (after.y2 < after.y ? 2 * Math.PI : 0), 9)
+      }
+    }
+  })
+
+  it('MIRROR puts a backward or upside-down text where the mirror puts its box, flags kept', () => {
+    const across = mirroring({ x: 50, y: 0 }, { x: 50, y: 1 })
+    for (const flags of [{ backward: true }, { upsideDown: true }, { backward: true, upsideDown: true }, { backward: true, halign: 2 }]) {
+      const t = text(flags)
+      const b = typeOf(t).bbox(t)
+      const mirrored = typeOf(t).transform!(t, across)
+      const a = typeOf(mirrored).bbox(mirrored)
+      expect([mirrored.backward, mirrored.upsideDown]).toEqual([t.backward, t.upsideDown])
+      expect(fixed([a.minX, a.maxX, a.minY, a.maxY])).toEqual(fixed([100 - b.maxX, 100 - b.minX, b.minY, b.maxY]))
+    }
+  })
+
   it('snaps INS at its point; validate wants a height and a width factor', () => {
     const out: number[][] = []
     typeOf(text()).snapPoints!(text(), SNAP.INS | SNAP.END, (x, y, mode) => out.push([x, y, mode]))
@@ -74,5 +105,16 @@ describe('text in a block', () => {
     const block: Block = { name: 'T', x: 0, y: 0, entities: [{ ...text({ x: 0, y: 0 }), id: undefined } as never] }
     const ins: Insert = { type: 'insert', id: 3, layer: 0, block, x: 100, y: 0, sx: 2, sy: 3, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }
     expect(glyphs(ins)[0]).toEqual([72, 100, 0, 4, 0, 0, 6])
+  })
+
+  it('is picked by clicking its letters, however the insert scales them', () => {
+    const block: Block = { name: 'T', x: 0, y: 0, entities: [{ ...text({ x: 0, y: 0, value: 'HHHH', height: 1 }), id: undefined } as never] }
+    for (const [sx, sy] of [[2, 2], [2, 1], [1, -3]]) {
+      const ins: Insert = { type: 'insert', id: 3, layer: 0, block, x: 100, y: 0, sx, sy, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }
+      const top = Math.max(sy, -sy * DESCENT)
+      expect(typeOf(ins).distance(ins, { x: 101, y: sy / 2 })).toBe(0)
+      // One unit past the cap line (or, mirrored, past the descent): as far as that from the letters.
+      expect(typeOf(ins).distance(ins, { x: 101, y: top + 1 })).toBeCloseTo(1, 9)
+    }
   })
 })

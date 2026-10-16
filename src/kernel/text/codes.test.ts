@@ -11,6 +11,14 @@ describe('decodeText', () => {
     expect(decodeText('%%uTitle%%u and %%oover%%o')).toBe('Title and over')
     expect(decodeText('50%')).toBe('50%')
   })
+
+  it('turns DXF caret codes into the control characters they stand for: ^I a tab, "^ " a caret', () => {
+    expect(decodeText('A^IB')).toBe('A\tB')
+    expect(decodeText('A^JB^M')).toBe('A\nB\r')
+    expect(decodeText('x^ y')).toBe('x^y')
+    // Not a caret code: as typed.
+    expect(decodeText('m^2 x^')).toBe('m^2 x^')
+  })
 })
 
 describe('mtextParagraphs', () => {
@@ -26,5 +34,13 @@ describe('mtextParagraphs', () => {
     expect(mtextParagraphs('1\\S1/2; and \\S3#4; and \\Sx^2;')).toEqual(['11/2 and 3/4 and x2'])
     expect(mtextParagraphs('%%c25 \\U+00B0')).toEqual(['⌀25 °'])
     expect(mtextParagraphs('\\pxi-3,l3,t4;Indented')).toEqual(['Indented'])
+  })
+
+  it('caret codes: ^I is a tab (AutoCAD writes one after each number of a list), ^J breaks the paragraph', () => {
+    expect(mtextParagraphs('\\pxi-3,l3,t3;1.^IALL DIMENSIONS IN MM\\P2.^IDO NOT SCALE')).toEqual(['1.\tALL DIMENSIONS IN MM', '2.\tDO NOT SCALE'])
+    expect(mtextParagraphs('A^JB')).toEqual(['A', 'B'])
+    expect(mtextParagraphs('x^ y')).toEqual(['x^y'])
+    // A tolerance stack keeps its caret: it splits the stack, it is no code.
+    expect(mtextParagraphs('\\S+0.1^ -0.2;')).toEqual(['+0.1 -0.2'])
   })
 })

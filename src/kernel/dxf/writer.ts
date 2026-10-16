@@ -5,6 +5,7 @@ import { insertAffines } from '../entity/insert'
 import type { Attrib, Ellipse, Entity, Insert, MText, Polyline, Spline, Text } from '../entity/types'
 import { affineDet, applyAffine, type Affine } from '../geom/vec'
 import { TAU, normAngle } from '../geom/tol'
+import { caretCoded } from '../text/codes'
 import { baselineStart, mtextLines } from '../text/layout'
 import type { DxfSource } from './reader'
 import { entryEnd, findTable, groupValue, layerEntry, type TableRange } from './tables'
@@ -221,7 +222,7 @@ function fresh(c: Ctx, e: Entity, handle: string | null): void {
       if (!f.modern) {
         // R12 has no MTEXT: a TEXT for each line, where the line shows.
         mtextLines(e).forEach((l, k) => freshText(c, {
-          type: 'text', id: e.id, layer: e.layer, ...(e.color !== undefined && { color: e.color }), value: l.text,
+          type: 'text', id: e.id, layer: e.layer, ...(e.color !== undefined && { color: e.color }), value: caretCoded(l.text),
           x: l.x, y: l.y, x2: l.x, y2: l.y, height: e.height, rotation: e.rotation, widthFactor: 1, oblique: 0,
           halign: 0, valign: 0, backward: false, upsideDown: false,
         }, k === 0 ? handle : f.handles ? c.ids.take() : null))

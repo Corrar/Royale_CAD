@@ -1,8 +1,15 @@
 /** The characters AutoCAD's %% codes stand for: diameter, degree, plus-minus. */
 const PERCENT: Readonly<Record<string, string>> = { c: '⌀', d: '°', p: '±', '%': '%' }
 
-/** At s[i], a %% code or a \U+XXXX escape: what it stands for and its length; null when there is none. */
+/** At s[i], a %% code, a \U+XXXX escape or a caret code: what it stands for and its length; null when there is none. */
 function special(s: string, i: number): [string, number] | null {
+  // DXF writes a control character as ^ and the letter 64 above it (^I a tab, ^J a line feed), a caret as "^ ".
+  if (s[i] === '^' && i + 1 < s.length) {
+    const n = s.charCodeAt(i + 1)
+    if (n === 32) return ['^', 2]
+    if (n >= 64 && n <= 95) return [String.fromCharCode(n - 64), 2]
+    return null
+  }
   if (s[i] === '%' && s[i + 1] === '%') {
     const c = s[i + 2]?.toLowerCase() ?? ''
     if (c in PERCENT) return [PERCENT[c]!, 3]
@@ -19,7 +26,11 @@ function special(s: string, i: number): [string, number] | null {
   return null
 }
 
-/** A TEXT string as it shows: %%c, %%d, %%p, %%%, %%nnn and \U+XXXX turned into their characters. */
+/** s as a DXF string holds it: control characters and carets in caret codes, so they read back as they were. */
+export const caretCoded = (s: string): string =>
+  s.replace(/[\x00-\x1f^]/g, (c) => (c === '^' ? '^ ' : `^${String.fromCharCode(c.charCodeAt(0) + 64)}`))
+
+/** A TEXT string as it shows: %%c, %%d, %%p, %%%, %%nnn, \U+XXXX and caret codes turned into their characters. */
 export function decodeText(raw: string): string {
   let out = ''
   for (let i = 0; i < raw.length; ) {
@@ -46,7 +57,11 @@ export function mtextParagraphs(raw: string): string[] {
     const ch = raw[i]!
     const sp = special(raw, i)
     if (sp) {
-      out += sp[0]
+      // A line feed (^J) breaks the paragraph, as \P does.
+      if (sp[0] === '\n') {
+        paragraphs.push(out)
+        out = ''
+      } else out += sp[0]
       i += sp[1]
       continue
     }

@@ -1,6 +1,7 @@
 import { arcDistance, ellipsePieces, flattenPieces } from '../geom/curve'
 import { TAU, normAngle } from '../geom/tol'
 import { affineDet, applyAffine, bboxIntersects, segmentDistance, triangleDistance, type Affine, type BBox, type Vec2 } from '../geom/vec'
+import { advanceOf, DESCENT } from '../text/font'
 import { DEFAULT_TOL } from './free'
 import { typeOf } from './registry'
 import { BY_BLOCK, SNAP, type Attrib, type Block, type BlockEntity, type Entity, type EntityType, type Insert, type PrimSink } from './types'
@@ -49,6 +50,21 @@ function invert(m: Affine): Affine {
   const c = -m.c / det
   const d = m.a / det
   return { a, b, c, d, e: -(a * m.e + c * m.f), f: -(b * m.e + d * m.f) }
+}
+
+/** The distance from p to the parallelogram o + s·u + t·v (s, t in 0..1): 0 inside. */
+function quadDistance(p: Vec2, ox: number, oy: number, ux: number, uy: number, vx: number, vy: number): number {
+  const det = ux * vy - uy * vx
+  const px = p.x - ox
+  const py = p.y - oy
+  const s = (px * vy - py * vx) / det
+  const t = (ux * py - uy * px) / det
+  if (s >= 0 && s <= 1 && t >= 0 && t <= 1) return 0
+  const xs = [ox, ox + ux, ox + ux + vx, ox + vx]
+  const ys = [oy, oy + uy, oy + uy + vy, oy + vy]
+  let d = Infinity
+  for (let i = 0; i < 4; i++) d = Math.min(d, segmentDistance(p.x, p.y, xs[i]!, ys[i]!, xs[(i + 1) % 4]!, ys[(i + 1) % 4]!))
+  return d
 }
 
 /** The box of b's corners taken through m. */
@@ -199,6 +215,11 @@ export const insertType: EntityType<Insert> = {
       segment: (x0, y0, x1, y1) => void (best = Math.min(best, segmentDistance(p.x, p.y, x0, y0, x1, y1))),
       arc: (cx, cy, r, a0, sweep) => void (best = Math.min(best, arcDistance(p.x, p.y, cx, cy, r, a0, sweep))),
       tri: (...c) => void (best = Math.min(best, triangleDistance(p.x, p.y, ...c))),
+      // A letter counts by its cell, advance by descent to cap, as crossing selection takes it.
+      glyph(cp, x, y, ux, uy, vx, vy) {
+        const w = advanceOf(cp)
+        best = Math.min(best, quadDistance(p, x - DESCENT * vx, y - DESCENT * vy, w * ux, w * uy, (1 + DESCENT) * vx, (1 + DESCENT) * vy))
+      },
     })
     return best
   },

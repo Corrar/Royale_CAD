@@ -19,19 +19,26 @@ export type MTextProps = Omit<MText, 'type' | 'id' | 'layer' | 'color'>
 
 export const atFrame = (f: TextFrame, x: number, y: number): Vec2 => ({ x: f.ox + x * f.ux + y * f.vx, y: f.oy + x * f.uy + y * f.vy })
 
+/** Tab stops, in heights: MTEXT's default, every 4 from where the line starts (\p tab stops are not read). */
+const TAB = 4
+
+/** The advance of cp at x from where its line starts: a tab goes on to the next stop, other controls take none. */
+const advanceAt = (cp: number, x: number): number => (cp === 9 ? (Math.floor(x / TAB) + 1) * TAB - x : cp < 32 ? 0 : advanceOf(cp))
+
 /** The width of s in capital heights. */
 export function widthOf(s: string): number {
   let w = 0
-  for (const ch of s) w += advanceOf(ch.codePointAt(0)!)
+  for (const ch of s) w += advanceAt(ch.codePointAt(0)!, w)
   return w
 }
 
-/** The characters of s from (x, y) on: a space only advances. */
+/** The characters of s from (x, y) on: a space or a control character only advances. */
 function place(s: string, x: number, y: number, out: Laid['glyphs']): void {
+  let at = 0
   for (const ch of s) {
     const cp = ch.codePointAt(0)!
-    if (cp !== 32 && cp !== 0xa0) out.push({ cp, x, y })
-    x += advanceOf(cp)
+    if (cp > 32 && cp !== 0xa0) out.push({ cp, x: x + at, y })
+    at += advanceAt(cp, at)
   }
 }
 
@@ -58,6 +65,9 @@ export function layoutText(t: TextProps): Laid {
   place(s, 0, 0, glyphs)
   const box = { x0: 0, y0: -DESCENT, x1: w, y1: 1 }
   let frame: TextFrame
+  // The local point mirroring pivots on.
+  let ax: number
+  let ay: number
   const span = Math.hypot(t.x2 - t.x, t.y2 - t.y)
   if ((t.halign === 3 || t.halign === 5) && w > 0 && span > 0) {
     // Aligned keeps the proportions and scales the height to the span; fit keeps the height and stretches.
@@ -65,13 +75,17 @@ export function layoutText(t: TextProps): Laid {
     const h = t.halign === 3 ? span / (w * t.widthFactor) : t.height
     const wf = t.halign === 3 ? t.widthFactor : span / (w * t.height)
     frame = frameAt(t.x, t.y, 0, 0, rotation, h, wf, t.oblique)
+    // Backward it stays between its points; upside down it hangs from its baseline.
+    ax = w / 2
+    ay = 0
   } else {
-    const ay = t.halign === 4 ? 0.5 : [0, -DESCENT, 0.5, 1][t.valign] ?? 0
-    frame = frameAt(t.x, t.y, (H_AT[t.halign] ?? 0) * w, ay, t.rotation, t.height, t.widthFactor, t.oblique)
+    ax = (H_AT[t.halign] ?? 0) * w
+    ay = t.halign === 4 ? 0.5 : [0, -DESCENT, 0.5, 1][t.valign] ?? 0
+    frame = frameAt(t.x, t.y, ax, ay, t.rotation, t.height, t.widthFactor, t.oblique)
   }
-  // Mirrored in its own box: the box stays where it is.
-  if (t.backward) frame = { ...frame, ox: frame.ox + (box.x0 + box.x1) * frame.ux, oy: frame.oy + (box.x0 + box.x1) * frame.uy, ux: -frame.ux, uy: -frame.uy }
-  if (t.upsideDown) frame = { ...frame, ox: frame.ox + (box.y0 + box.y1) * frame.vx, oy: frame.oy + (box.y0 + box.y1) * frame.vy, vx: -frame.vx, vy: -frame.vy }
+  // Mirrored about its justification point, which stays put: MIRROR with MIRRTEXT 1 writes these flags so.
+  if (t.backward) frame = { ...frame, ox: frame.ox + 2 * ax * frame.ux, oy: frame.oy + 2 * ax * frame.uy, ux: -frame.ux, uy: -frame.uy }
+  if (t.upsideDown) frame = { ...frame, ox: frame.ox + 2 * ay * frame.vx, oy: frame.oy + 2 * ay * frame.vy, vx: -frame.vx, vy: -frame.vy }
   return { frame, glyphs, box }
 }
 
@@ -80,13 +94,16 @@ function wrap(paragraphs: readonly string[], maxWidth: number): string[] {
   if (maxWidth === Infinity) return [...paragraphs]
   const lines: string[] = []
   for (const p of paragraphs) {
-    let line = ''
-    for (const word of p.split(' ')) {
-      const next = line === '' ? word : `${line} ${word}`
-      if (line !== '' && widthOf(next) > maxWidth) {
+    // Spaces that start a paragraph indent it, as when it is not wrapped; those where a line wraps go.
+    let line = /^ */.exec(p)![0]
+    let bare = true // nothing on the line yet but the indent
+    for (const word of p.slice(line.length).split(' ')) {
+      const next = bare ? line + word : `${line} ${word}`
+      if (!bare && widthOf(next) > maxWidth) {
         lines.push(line)
         line = word
       } else line = next
+      bare = line === ''
     }
     lines.push(line)
   }
@@ -107,7 +124,10 @@ function mtextPlan(m: MTextProps): { frame: TextFrame; lines: { text: string; x:
   const row = Math.floor((m.attachment - 1) / 3)
   const lines = texts.map((text, i) => ({ text, x: ((w - widths[i]!) * col) / 2, y: -1 - i * gap }))
   const frame = frameAt(m.x, m.y, (col * w) / 2, (-row * toLast) / 2, m.rotation, m.height, 1, 0)
-  return { frame, lines, box: { x0: 0, y0: -toLast - DESCENT, x1: w, y1: 0 } }
+  // A word wider than the width keeps its line and runs out of the width: the box takes it in.
+  const x0 = Math.min(0, ...lines.map((l) => l.x))
+  const x1 = Math.max(w, ...lines.map((l, i) => l.x + widths[i]!))
+  return { frame, lines, box: { x0, y0: -toLast - DESCENT, x1, y1: 0 } }
 }
 
 /**
