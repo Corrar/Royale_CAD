@@ -26,6 +26,8 @@ export interface PointRequest extends Ask {
   preview?: (cursor: Vec2, out: PrimSink) => void
   /** The point picks an object (TRIM, EXTEND): OSNAP and ORTHO leave it where it is, and the pick box shows. */
   pick?: boolean
+  /** What Enter stands for, shown as <…>; Enter still answers { kind: 'empty' } (allowEmpty). */
+  default?: string
 }
 
 export interface NumberRequest extends Ask {
@@ -131,7 +133,7 @@ export function formatPrompt(r: Request | null): string {
   if (!r) return 'Command:'
   // A question with only options reads "Erase source objects? [Yes/No] <No>:", without "or".
   const keywords = r.keywords && r.keywords.length > 0 ? `${r.kind === 'keyword' ? '' : ' or'} [${r.keywords.join('/')}]` : ''
-  const def = (r.kind === 'number' || r.kind === 'keyword') && r.default !== undefined ? ` <${r.default}>` : ''
+  const def = r.kind !== 'selection' && r.default !== undefined ? ` <${r.default}>` : ''
   return `${r.prompt}${keywords}${def}:`
 }
 

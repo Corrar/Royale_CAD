@@ -4,6 +4,7 @@ import { circle } from './circle'
 import { erase } from './erase'
 import { extend } from './extend'
 import { line } from './line'
+import { offset } from './offset'
 import { pline } from './pline'
 import { rectang } from './rectang'
 import { copy, mirror, move, rotate, scale } from './transform'
@@ -24,6 +25,7 @@ export const BUILTIN_COMMANDS: Readonly<Record<string, Command>> = {
   ROTATE: rotate,
   MIRROR: mirror,
   SCALE: scale,
+  OFFSET: offset,
   TRIM: trim,
   EXTEND: extend,
   U: u,
