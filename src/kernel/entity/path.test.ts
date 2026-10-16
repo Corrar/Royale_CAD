@@ -64,6 +64,14 @@ describe('pathOf', () => {
     expect(on(s, 5 + 5 * Math.SQRT1_2, -5 * Math.SQRT1_2)).toBe(true)
   })
 
+  it('a sliced polyline keeps its widths: a tapered piece cut where it is cut, the last vertex none of its own', () => {
+    const taper: Polyline = { type: 'polyline', id: 6, layer: 0, pts: new Float64Array([0, 0, 10, 0, 10, 10]), bulges: null, closed: false, widths: new Float64Array([0, 2, 1, 1, 3, 3]) }
+    const s = pathOf(taper).slice(0.5, 1.5) as Polyline
+    expect(Array.from(s.pts)).toEqual([5, 0, 10, 0, 10, 5])
+    expect(Array.from(s.widths!)).toEqual([1, 2, 1, 1, 0, 0])
+    expect(pathOf(square).slice(0.5, 1.5)).not.toHaveProperty('widths')
+  })
+
   it('along: the length walked, an arc piece by its arc; slack at a vertex on either piece', () => {
     expect(r9(pathOf(line).along(0.5))).toBe(r9(Math.hypot(0.2, 0.5) / 2))
     expect(r9(pathOf(arc).along(Math.PI / 4))).toBe(r9((5 * Math.PI) / 4))

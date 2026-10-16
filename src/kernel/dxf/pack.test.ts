@@ -11,6 +11,8 @@ const DRAFTS: Draft[] = [
   { type: 'point', layer: 0, x: 7, y: 8 },
   { type: 'polyline', layer: 0, pts: new Float64Array([0, 0, 10, 0, 10, 10]), bulges: new Float64Array([0, 1, 0]), closed: true },
   { type: 'polyline', layer: 3, pts: new Float64Array([1, 2]), bulges: null, closed: false },
+  { type: 'polyline', layer: 0, pts: new Float64Array([0, 0, 10, 0]), bulges: null, closed: false, widths: new Float64Array([0.5, 0.5, 2, 0]), startWidth: 0.2, endWidth: 0.4 },
+  { type: 'polyline', layer: 0, pts: new Float64Array([0, 5, 10, 5]), bulges: null, closed: false, startWidth: 0.3, endWidth: 0.3 },
   { type: 'opaque', layer: 1, name: 'HATCH', raw: '  0\r\nHATCH\r\n' },
   { type: 'ellipse', layer: 2, color: 5, cx: 1, cy: 2, mx: 3, my: 4, ratio: 0.5, t0: 0.25, t1: 6 },
   { type: 'text', layer: 0, value: '%%c50 Ação', x: 1, y: 2, x2: 3, y2: 4, height: 2.5, rotation: 0.3, widthFactor: 0.8, oblique: 0.1, halign: 3, valign: 0, backward: true, upsideDown: false },

@@ -136,6 +136,18 @@ describe('polyline', () => {
     expect(round([b.minX, b.minY, b.maxX, b.maxY])).toEqual(round([0, 1 - Math.SQRT2, 1 + Math.SQRT2, 2]))
   })
 
+  it('widths: kept by a move, a turn or a mirror, scaled by a scale; one start and end width per vertex', () => {
+    const p: Polyline = { ...poly([0, 0, 10, 0], null), widths: new Float64Array([0.5, 1, 0, 0]), startWidth: 0.2, endWidth: 0.3 }
+    for (const m of [translation(3, 4), rotation({ x: 1, y: 2 }, 90), mirroring({ x: 0, y: 0 }, { x: 1, y: 1 })]) {
+      const q = typeOf(p).transform!(p, m) as Polyline
+      expect([Array.from(q.widths!), q.startWidth, q.endWidth]).toEqual([[0.5, 1, 0, 0], 0.2, 0.3])
+    }
+    const s = typeOf(p).transform!(p, scaling({ x: 5, y: 5 }, 3)) as Polyline
+    expect([Array.from(s.widths!), s.startWidth, s.endWidth]).toEqual([[1.5, 3, 0, 0], 0.2 * 3, 0.3 * 3])
+    expect(typeOf(p).transform!(poly([0, 0, 1, 1], null), scaling({ x: 0, y: 0 }, 2))).not.toHaveProperty('widths')
+    expect(typeOf(p).validate!({ ...p, widths: new Float64Array([1, 1]) })).toMatch(/width/)
+  })
+
   it('a single vertex has a point bbox, no pieces and a point distance', () => {
     const p = poly([3, 4], null)
     expect(typeOf(p).bbox(p)).toEqual({ minX: 3, minY: 4, maxX: 3, maxY: 4 })

@@ -43,6 +43,30 @@ const CIRCLE: G = [0, 'CIRCLE', 5, '21', 330, '1F', 100, 'AcDbEntity', 8, '0', 1
 const HATCH: G = [0, 'HATCH', 5, '22', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbHatch', 10, 0, 20, 0, 30, 0, 2, 'SOLID']
 const LWPOLY: G = [0, 'LWPOLYLINE', 5, '23', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbPolyline', 90, 2, 70, 0, 43, 0, 10, 0, 20, 0, 10, 4, 20, 0, 210, 0, 220, 0, 230, 1]
 
+/** An R12 file with only these entities; with $HANDLING 1 unless told otherwise. */
+const r12 = (entities: G, handling = true): string =>
+  lines([
+    0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1, 'AC1009', ...(handling ? [9, '$HANDLING', 70, 1, 9, '$HANDSEED', 5, '100'] : []), 0, 'ENDSEC',
+    0, 'SECTION', 2, 'ENTITIES', ...entities, 0, 'ENDSEC', 0, 'EOF',
+  ])
+
+/** A dashed 2D POLYLINE as ezdxf writes it: default widths 0.2, one vertex with a start width of its own; R13 or R12. */
+function oldPolyline(modern: boolean): G {
+  const m = (...g: G): G => (modern ? g : [])
+  const vertex = (handle: string, x: number, ...own: G): G => [
+    0, 'VERTEX', 5, handle, ...m(330, '2D', 100, 'AcDbEntity'), 8, '0', ...m(100, 'AcDbVertex', 100, 'AcDb2dVertex'), 10, x, 20, 0, 30, 0, ...own, 70, 0,
+  ]
+  return [
+    0, 'POLYLINE', 5, '2D', ...m(330, '1F', 100, 'AcDbEntity'), 8, '0', 6, 'DASHED', ...m(100, 'AcDb2dPolyline'), 66, 1, 10, 0, 20, 0, 30, 0, 70, 0, 40, 0.2, 41, 0.2,
+    ...vertex('2F', 0), ...vertex('30', 10, 40, 2), ...vertex('31', 12),
+    0, 'SEQEND', 5, '2E', ...m(330, '2D', 100, 'AcDbEntity'), 8, '0',
+  ]
+}
+
+/** Each vertex's start and end width, its own or the polyline's default. */
+const widthsOf = (p: Polyline): number[] =>
+  p.widths ? Array.from(p.widths) : Array.from({ length: p.pts.length }, (_, i) => (i % 2 === 0 ? p.startWidth : p.endWidth) ?? 0)
+
 /** Every handle the text defines (groups 5 and 105 outside the HEADER). */
 function handles(text: string): string[] {
   const p = tokenize(text)
@@ -116,6 +140,41 @@ describe('writeDxf', () => {
     // Still seen from -Z: the centre, from (-5, 1) to (-2, 5), is (2, 5) in its OCS.
     expect(out).toContain(lines([0, 'CIRCLE', 8, '0', 10, '2.0', 20, '5.0', 30, 0, 40, '1.0', 210, 0, 220, 0, 230, -1], '\n'))
     expect(handles(out)).toEqual([])
+  })
+
+  it('LWPOLYLINE widths survive MOVE and grow with SCALE: each vertex its 40/41, the constant width 43', () => {
+    const VARYING: G = [0, 'LWPOLYLINE', 5, '23', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbPolyline', 90, 2, 70, 0, 10, 0, 20, 0, 40, 0.5, 41, 1, 10, 10, 20, 0]
+    const CONSTANT: G = [0, 'LWPOLYLINE', 5, '24', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbPolyline', 90, 2, 70, 0, 43, 0.3, 10, 0, 20, 5, 10, 10, 20, 5]
+    const t = commandBench()
+    const d = drawingFrom(t.doc, parseDxf(file([...VARYING, ...CONSTANT])))
+    t.run('MOVE⏎ALL⏎⏎0,0⏎3,4⏎')
+    const moved = writeDxf(t.doc, d.source)
+    expect(moved).toContain(lines([90, 2, 70, 0, 10, '3.0', 20, '4.0', 40, 0.5, 41, '1.0', 10, '13.0', 20, '4.0', 0, 'LWPOLYLINE']))
+    expect(moved).toContain(lines([43, 0.3, 10, '3.0', 20, '9.0', 10, '13.0', 20, '9.0', 0, 'ENDSEC']))
+    t.run('SCALE⏎ALL⏎⏎0,0⏎2⏎')
+    const scaled = writeDxf(t.doc, d.source)
+    expect(scaled).toContain(lines([10, '6.0', 20, '8.0', 40, '1.0', 41, '2.0', 10, '26.0', 20, '8.0', 0, 'LWPOLYLINE']))
+    expect(scaled).toContain(lines([43, 0.6, 10, '6.0', 20, '18.0']))
+    expect(readDxf(scaled).warnings).toEqual(['2 polylines with width drawn thin (their widths are kept).'])
+  })
+
+  it('widths of LWPOLYLINE and 2D POLYLINE (R12, R2000, R2018) are kept through MOVE and scaled by SCALE', () => {
+    const LW: G = [0, 'LWPOLYLINE', 5, '23', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbPolyline', 90, 3, 70, 0, 10, 0, 20, 0, 40, 0.5, 41, 0.5, 10, 10, 20, 0, 40, 2, 41, 0, 10, 12, 20, 0]
+    const cases: [string, number[]][] = [
+      [file(LW), [0.5, 0.5, 2, 0, 0, 0]],
+      [r12(oldPolyline(false)), [0.2, 0.2, 2, 0.2, 0.2, 0.2]],
+      [file(oldPolyline(true)), [0.2, 0.2, 2, 0.2, 0.2, 0.2]],
+      [file(oldPolyline(true), 'AC1032'), [0.2, 0.2, 2, 0.2, 0.2, 0.2]],
+    ]
+    for (const [text, widths] of cases) {
+      const t = commandBench()
+      const d = drawingFrom(t.doc, parseDxf(text))
+      const saved = (): Polyline => [...readDxf(writeDxf(t.doc, d.source)).doc.entities()][0] as Polyline
+      t.run('MOVE⏎ALL⏎⏎0,0⏎3,4⏎')
+      expect(widthsOf(saved())).toEqual(widths)
+      t.run('SCALE⏎ALL⏎⏎0,0⏎2⏎')
+      expect(widthsOf(saved())).toEqual(widths.map((w) => 2 * w))
+    }
   })
 
   it('read, edit, write, read: the same document; opaque text identical; extra groups and OCS survive the edit', () => {

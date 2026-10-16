@@ -233,17 +233,46 @@ function asPolyline(e: Ellipse | Spline): Polyline {
   return { type: 'polyline', id: e.id, layer: e.layer, color: e.color, pts: new Float64Array(pts), bulges: null, closed } as Polyline
 }
 
+/**
+ * e's widths as an LWPOLYLINE holds them: one constant width (43), or each vertex's own (40, 41; null when all are
+ * 0). Default start and end widths that differ go to every vertex.
+ */
+function lwWidths(e: Polyline): { constant: number; widths: Float64Array | null } {
+  const s = e.startWidth ?? 0
+  const t = e.endWidth ?? 0
+  if (!e.widths && s === t) return { constant: s, widths: null }
+  return { constant: 0, widths: e.widths ?? Float64Array.from({ length: e.pts.length }, (_, i) => (i % 2 === 0 ? s : t)) }
+}
+
+/** An LWPOLYLINE's vertex groups, x by s (±1, its OCS): 10 and 20, then widths and bulge unless 0. */
+function lwVertices(e: Polyline, widths: Float64Array | null, s: number): [number, string][] {
+  const gs: [number, string][] = []
+  for (let k = 0; k < e.pts.length >> 1; k++) {
+    gs.push([10, real(s * e.pts[2 * k]!)], [20, real(e.pts[2 * k + 1]!)])
+    if (widths && (widths[2 * k] !== 0 || widths[2 * k + 1] !== 0)) gs.push([40, real(widths[2 * k]!)], [41, real(widths[2 * k + 1]!)])
+    const b = e.bulges?.[k] ?? 0
+    if (b !== 0) gs.push([42, real(s * b)])
+  }
+  return gs
+}
+
 function lwpolyline(c: Ctx, e: Polyline, handle: string | null): void {
   const { o } = c
+  const w = lwWidths(e)
   head(c, 'LWPOLYLINE', e, handle, 'AcDbPolyline')
   o.int(90, e.pts.length >> 1)
   o.int(70, e.closed ? 1 : 0)
-  for (let k = 0; k < e.pts.length >> 1; k++) {
-    o.real(10, e.pts[2 * k]!)
-    o.real(20, e.pts[2 * k + 1]!)
-    const b = e.bulges?.[k] ?? 0
-    if (b !== 0) o.real(42, b)
-  }
+  if (w.constant !== 0) o.real(43, w.constant)
+  for (const [code, v] of lwVertices(e, w.widths, 1)) o.str(code, v)
+}
+
+/** Vertex k's widths of its own (40, 41): those that differ from the polyline's defaults. */
+function vertexWidths(e: Polyline, k: number): [number, string][] {
+  const gs: [number, string][] = []
+  if (!e.widths) return gs
+  if (e.widths[2 * k] !== (e.startWidth ?? 0)) gs.push([40, real(e.widths[2 * k]!)])
+  if (e.widths[2 * k + 1] !== (e.endWidth ?? 0)) gs.push([41, real(e.widths[2 * k + 1]!)])
+  return gs
 }
 
 /** POLYLINE, its VERTEX records and the SEQEND, for files older than R14. */
@@ -255,6 +284,8 @@ function oldPolyline(c: Ctx, e: Polyline, handle: string | null): void {
   o.real(20, 0)
   o.real(30, 0)
   o.int(70, e.closed ? 1 : 0)
+  if (e.startWidth) o.real(40, e.startWidth)
+  if (e.endWidth) o.real(41, e.endWidth)
   const child = (type: string): void => {
     o.str(0, type)
     if (f.handles) o.str(5, c.ids.take())
@@ -273,6 +304,7 @@ function oldPolyline(c: Ctx, e: Polyline, handle: string | null): void {
     o.real(10, e.pts[2 * k]!)
     o.real(20, e.pts[2 * k + 1]!)
     o.real(30, 0)
+    for (const [code, v] of vertexWidths(e, k)) o.str(code, v)
     const b = e.bulges?.[k] ?? 0
     if (b !== 0) o.real(42, b)
     o.int(70, 0)
@@ -386,12 +418,8 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
       const first = gs.findIndex((g) => VERTEX.has(g[0]))
       if (first < 0) return null
       const rest = gs.filter((g) => !VERTEX.has(g[0]))
-      const vertices: [number, string][] = []
-      for (let k = 0; k < e.pts.length >> 1; k++) {
-        vertices.push([10, real(s * e.pts[2 * k]!)], [20, real(e.pts[2 * k + 1]!)])
-        const b = e.bulges?.[k] ?? 0
-        if (b !== 0) vertices.push([42, real(s * b)])
-      }
+      const w = lwWidths(e)
+      const vertices = lwVertices(e, w.widths, s)
       // The vertices go back where they were: after the groups that came before them.
       const before = gs.slice(0, first).filter((g) => !VERTEX.has(g[0])).length
       gs.splice(0, gs.length, ...rest.slice(0, before), ...vertices, ...rest.slice(before))
@@ -399,6 +427,10 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
       const flags = Number(gs[at(70)]?.[1] ?? 0)
       if (at(70) >= 0) set(70, String((flags & ~1) | (e.closed ? 1 : 0)))
       else if (e.closed) return null
+      // The constant width, as read when it did not change; after the flags (or the count) when the record had none.
+      const constant = at(43)
+      if (constant >= 0 && Number(gs[constant]![1]) !== w.constant) gs[constant]![1] = real(w.constant)
+      else if (constant < 0 && w.constant !== 0) gs.splice((at(70) >= 0 ? at(70) : at(90)) + 1, 0, [43, real(w.constant)])
       break
     }
   }
