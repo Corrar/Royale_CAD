@@ -71,7 +71,28 @@ describe('tokenize', () => {
   it('refuses binary DXF', () => {
     expect(() => tokenize('AutoCAD Binary DXF\r\n\u001a\u0000...')).toThrow('line 1: binary DXF is not supported')
   })
+
+  it('quotes at most 40 characters of a line: a file without line breaks is one long line', () => {
+    const long = ' 12345' + 'x'.repeat(100_000)
+    expect(messageOf(() => tokenize(long))).toBe(`line 1: invalid group code "${long.trim().slice(0, 40)}…"`)
+    expect(messageOf(() => sections(tokenizeList(dxf('0', 'y'.repeat(1000)))))).toBe(`line 1: expected 0/SECTION, found 0/${'y'.repeat(40)}…`)
+  })
+
+  it('refuses a file whose lines end in CR alone (classic Mac OS) in a short message', () => {
+    const cr = ['0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF'].join('\r') + '\r'
+    expect(messageOf(() => tokenize(cr))).toBe('line 1: lines end in CR alone (classic Mac OS), which is not supported')
+  })
 })
+
+/** The message of what f throws; '' when it does not. */
+function messageOf(f: () => unknown): string {
+  try {
+    f()
+  } catch (error) {
+    return (error as Error).message
+  }
+  return ''
+}
 
 describe('sections', () => {
   it('names each section and the range of its pairs, between the name and ENDSEC', () => {
