@@ -201,6 +201,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
           if (!scene.building && !index.building) performance.mark('royale:built')
         },
         currentLayer: () => doc.layers.get(interp.layer)!.name,
+        watch: (fn) => interp.onChange(fn),
         textSize: () => interp.vars.get('TEXTSIZE') as number | undefined,
       })
     : null

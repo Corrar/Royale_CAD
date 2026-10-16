@@ -111,6 +111,8 @@ export interface FilesOptions {
   replaced(currentLayer: string | null, textSize: number, extents?: BBox | null): void
   /** The current layer's name, which the file keeps ($CLAYER). */
   currentLayer(): string
+  /** Calls fn whenever the current layer may have changed (the interpreter's onChange); returns the unsubscribe. */
+  watch?(fn: () => void): () => void
   /** TEXT's default height, which the file keeps ($TEXTSIZE); without it the file's stays as it was. */
   textSize?(): number | undefined
 }
@@ -158,12 +160,22 @@ export function createFiles(o: FilesOptions): Files {
   const offLayers = doc.layers.onChange(() => {
     if (!quiet) edited()
   })
+  // Making another layer current is a change, as AutoCAD counts CLAYER (DBMOD): the file keeps it.
+  let clayer = o.currentLayer()
+  const offLayer = o.watch?.(() => {
+    const now = o.currentLayer()
+    if (now === clayer) return
+    clayer = now
+    if (!quiet) edited()
+  })
   const quietly = <T>(fn: () => T): T => {
     quiet = true
     try {
       return fn()
     } finally {
       quiet = false
+      // A table put in place may change the current layer's name without a word from the interpreter.
+      clayer = o.currentLayer()
     }
   }
 
@@ -183,7 +195,7 @@ export function createFiles(o: FilesOptions): Files {
   const replace = (fn: () => void): void => {
     quietly(fn)
     setDirty(false)
-    o.replaced(source?.header.get('$CLAYER') ?? null, textSizeOf(source?.header))
+    quietly(() => o.replaced(source?.header.get('$CLAYER') ?? null, textSizeOf(source?.header)))
   }
 
   /** Whether the file now holds the drawing: false when not saved, or when it changed while being written. */
@@ -273,7 +285,8 @@ export function createFiles(o: FilesOptions): Files {
       o.print(`Could not open ${f.name}: ${messageOf(error)}`)
       return
     }
-    o.replaced(source.header.get('$CLAYER') ?? null, textSizeOf(source.header), result.extents)
+    const { header } = source
+    quietly(() => o.replaced(header.get('$CLAYER') ?? null, textSizeOf(header), result.extents))
     performance.mark('royale:loaded', { detail: { objects: doc.size } })
     encoding = result.encoding
     patch({ name: f.name })
@@ -335,6 +348,7 @@ export function createFiles(o: FilesOptions): Files {
     dispose() {
       offDoc()
       offLayers()
+      offLayer?.()
       offClose()
     },
   }
