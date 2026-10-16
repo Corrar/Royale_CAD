@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
 import { createDocument, type Document } from '../document'
-import type { Arc, Circle, Ellipse, Entity, Insert, Line, MText, Polyline, Spline, Text } from '../entity/types'
+import { BY_BLOCK, type Arc, type Circle, type Ellipse, type Entity, type Insert, type Line, type MText, type Polyline, type Spline, type Text } from '../entity/types'
 import { typeOf } from '../entity/registry'
 import { rotation } from '../geom/vec'
 import { commandBench } from '../command/testing'
@@ -109,6 +109,15 @@ describe('real', () => {
   it('writes the shortest digits that read back the same, always with a point', () => {
     expect([5, -0, 0.1, 1 / 3, 1e-7, 1.5e21, -2.5e-12].map(real)).toEqual(['5.0', '0.0', '0.1', '0.3333333333333333', '1.0E-07', '1.5E+21', '-2.5E-12'])
     for (const x of [1 / 3, Math.PI, 7_400_000.123456789, 1e-300]) expect(Number(real(x))).toBe(x)
+  })
+})
+
+describe('nearestAci', () => {
+  it('gives the 62 AutoCAD writes beside a 420: black is 18 (dark red), not a gray, as in its own VISUALSTYLE objects', () => {
+    // AutoCAD's visual styles, as ezdxf copies them into a drawing it sets up, pair 420 0 with 62 18, 255 with 5,
+    // white with 7: AutoCAD's own nearest index, the hue included.
+    expect([0x000000, 0x0000ff, 0xffffff].map(nearestAci)).toEqual([18, 5, 7])
+    expect([0x101010, 0x404040, 0x808080].map(nearestAci)).toEqual([250, 250, 8])
   })
 })
 
@@ -289,6 +298,20 @@ describe('writeDxf', () => {
     expect(circleText).toContain(lines([10, '-8.0']))
     expect(circleText).toContain(lines([230, -1]))
     expect([...back.doc.entities()][2]!).toMatchObject({ type: 'opaque', raw: lines(HATCH) })
+  })
+
+  it('a ByBlock entity stays ByBlock: moved, its record keeps 62 0, and a copy of it is ByBlock too', () => {
+    const BYBLOCK: G = [0, 'LINE', 5, '20', 330, '1F', 100, 'AcDbEntity', 8, 'Walls', 62, 0, 100, 'AcDbLine', 10, 0, 20, 0, 30, 0, 11, 10, 21, 0, 31, 0]
+    const t = commandBench()
+    const d = drawingFrom(t.doc, parseDxf(file(BYBLOCK)))
+    t.run('MOVE⏎ALL⏎⏎0,0⏎0,5⏎')
+    t.run('COPY⏎ALL⏎⏎0,0⏎0,5⏎⏎')
+    const out = writeDxf(t.doc, d.source)
+    expect(out).toContain(lines([5, '20', 330, '1F', 100, 'AcDbEntity', 8, 'Walls', 62, 0, 100, 'AcDbLine', 10, '0.0', 20, '5.0']))
+    const records = out.split(/\r\n  0\r\nLINE\r\n/).slice(1)
+    expect(records).toHaveLength(2)
+    for (const r of records) expect(r).toContain(lines([8, 'Walls', 62, 0]))
+    expect([...readDxf(out).doc.entities()].map((e) => e.color)).toEqual([BY_BLOCK, BY_BLOCK])
   })
 
   it('new handles start at $HANDSEED, none repeats, and $HANDSEED moves past them', () => {

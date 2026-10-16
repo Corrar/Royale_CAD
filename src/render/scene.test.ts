@@ -578,6 +578,22 @@ describe('createScene', () => {
     expect(stretched.filter((i) => rgba(i) === aci(5)).length).toBeGreaterThan(8)
   })
 
+  it('ByBlock outside a block draws as 7: a model space line, and the ByBlock line of a ByBlock insert', () => {
+    const { doc, f, scene } = setup()
+    const walls = doc.layers.add({ name: 'Walls', color: 1, visible: true, locked: false })
+    const block: Block = { name: 'B', x: 0, y: 0, entities: [{ type: 'line', layer: 0, color: BY_BLOCK, x0: 0, y0: 1, x1: 1, y1: 1 }] }
+    doc.transact('draw', (tx) => {
+      tx.add(line(0, 0, 1, 0, { layer: walls, color: BY_BLOCK }))
+      tx.add({ type: 'insert', layer: walls, color: BY_BLOCK, block, x: 0, y: 0, sx: 1, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 })
+      tx.add(line(0, 2, 1, 2, { layer: walls }))
+    })
+    const rgba = (i: Instance): number => f.styles()[i.style * STYLE_WORDS]!
+    const is = drawn(f, scene.draws(view(0, 0, 10)))
+    const at = (y: number): Instance => is.find((i) => i.kind === 'segment' && i.v[1] === y)!
+    expect([rgba(at(0)), rgba(at(1))]).toEqual([DRAW, DRAW])
+    expect(rgba(at(2))).toBe(((colorRgb(1) << 8) | 0xff) >>> 0) // ByLayer on Walls: red
+  })
+
   it('text draws a glyph instance per letter from the atlas, highlighted on top, and inside a free insert too', () => {
     const doc = createDocument()
     const f = fakeBackend()

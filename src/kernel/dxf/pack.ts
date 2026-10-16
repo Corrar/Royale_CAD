@@ -12,7 +12,7 @@ export interface DraftPack {
   readonly n: number
   readonly kinds: Uint8Array
   readonly layers: Uint32Array
-  /** The color + 1; 0 is ByLayer (a block's ByBlock is color 0). */
+  /** The color + 1; 0 is ByLayer (ByBlock is color 0). */
   readonly colors: Uint32Array
   /**
    * The numbers, draft after draft: line x0 y0 x1 y1 · circle cx cy r · arc cx cy r a0 a1 · point x y · polyline

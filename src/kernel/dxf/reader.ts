@@ -100,14 +100,14 @@ interface Head {
 }
 
 /**
- * ACI 1–255, ByLayer (undefined), or a 420 true color. ByBlock is kept in a block (BY_BLOCK, the insert's color);
- * in model space it shows as 7, white.
+ * ACI 1–255, ByLayer (undefined), or a 420 true color. ByBlock is kept (BY_BLOCK): in a block it takes the insert's
+ * color, in model space it shows as 7, and an edit writes it back as ByBlock.
  */
-function colorOf(h: Head, inBlock = false): Color | undefined {
+function colorOf(h: Head): Color | undefined {
   if (h.trueColor !== undefined) return TRUE_COLOR | (h.trueColor & 0xffffff)
   if (h.aci === undefined) return undefined
   const a = Math.abs(h.aci)
-  if (a === 0) return inBlock ? BY_BLOCK : 7
+  if (a === 0) return BY_BLOCK
   return Number.isInteger(a) && a >= 1 && a <= 255 ? a : undefined
 }
 
@@ -857,7 +857,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
       // An attribute definition never shows in an insert: its values (ATTRIB) do.
       if (name === 'ATTDEF') continue
       try {
-        const d = resolve(read(name, a, rs.owns[k]!, rs.ends[k]!), true)
+        const d = resolve(read(name, a, rs.owns[k]!, rs.ends[k]!))
         if (d) entities.push(d as BlockEntity)
         else blockKept++
         if (d && isWide(d)) wide++
@@ -875,15 +875,15 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
    * drawn (a type not read, paper space, invisible). Throws Unsupported as the parsers do, and for what the
    * document would refuse.
    */
-  function resolve(parsed: Parsed | null, inBlock: boolean): Draft | null {
+  function resolve(parsed: Parsed | null): Draft | null {
     if (!parsed || head.paper || head.invisible) return null
     const layer = layers.of(head.layer)
-    const color = colorOf(head, inBlock)
+    const color = colorOf(head)
     let d: Draft
     if (parsed.type === 'insert') {
       const { blockName, attribs, ...rest } = parsed as PendingInsert
       const shown = attribs?.map(({ layerName, aci, trueColor, ...a }): Attrib => {
-        const c = colorOf({ ...head, aci, trueColor }, true)
+        const c = colorOf({ ...head, aci, trueColor })
         return { ...a, layer: layers.of(layerName), ...(c !== undefined && { color: c }) }
       })
       d = { ...rest, layer, block: blockOf(blockName), ...(shown && shown.length > 0 && { attribs: shown }) }
@@ -913,7 +913,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
       if (!parsed) keep(name)
       else if (head.paper) keep('paper space')
       else if (head.invisible) keep('invisible')
-      else draft = resolve(parsed, false)
+      else draft = resolve(parsed)
       if (draft && isWide(draft)) wide++
     } catch (error) {
       if (!(error instanceof Unsupported)) throw error
