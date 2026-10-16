@@ -65,6 +65,8 @@ interface Head {
   aci: number | undefined
   trueColor: number | undefined
   paper: boolean
+  /** Group 60 = 1: not drawn, like paper space. */
+  invisible: boolean
   /** Extrusion direction (210/220/230), (0, 0, 1) when absent. */
   ex: number
   ey: number
@@ -109,7 +111,7 @@ type PendingInsert = Omit<Draft<Insert>, 'layer' | 'color' | 'block'> & { blockN
  */
 function parser(pairs: PairList) {
   const codes = pairs.codes
-  const head: Head = { handle: null, layer: '0', aci: undefined, trueColor: undefined, paper: false, ex: 0, ey: 0, ez: 1 }
+  const head: Head = { handle: null, layer: '0', aci: undefined, trueColor: undefined, paper: false, invisible: false, ex: 0, ey: 0, ez: 1 }
 
   const num = (i: number): number => numberAt(pairs, i)
 
@@ -131,6 +133,9 @@ function parser(pairs: PairList) {
       case 67:
         head.paper = num(i) === 1
         return true
+      case 60:
+        head.invisible = num(i) === 1
+        return true
       case 210:
         head.ex = num(i)
         return true
@@ -150,6 +155,7 @@ function parser(pairs: PairList) {
     head.aci = undefined
     head.trueColor = undefined
     head.paper = false
+    head.invisible = false
     head.ex = 0
     head.ey = 0
     head.ez = 1
@@ -535,9 +541,9 @@ const PROGRESS_EVERY = 16384
 /**
  * Reads an ASCII DXF: HEADER (kept whole, read for a few variables), the LAYER table, and the model space
  * entities of the ENTITIES section. LINE, POINT, CIRCLE, ARC, LWPOLYLINE and 2D POLYLINE become drafts;
- * everything else, and what these hold that the document cannot (paper space, a tilted extrusion, a bad number),
- * stays as Opaque, written back unchanged. Throws DxfError for a malformed file. `progress` hears the fraction
- * done, now and then.
+ * everything else, and what these hold that the document cannot (paper space, invisible, a tilted extrusion, a
+ * bad number), stays as Opaque, written back unchanged. Throws DxfError for a malformed file. `progress` hears
+ * the fraction done, now and then.
  */
 export function parseDxf(text: string, progress?: (done: number) => void): ParsedDxf {
   const pairs = tokenize(text)
@@ -592,10 +598,10 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
   }
   /**
    * A parsed entity with its layer and color from the head, and an insert's block found: null when it is not
-   * drawn (a type not read, paper space). Throws Unsupported as the parsers do.
+   * drawn (a type not read, paper space, invisible). Throws Unsupported as the parsers do.
    */
   function resolve(parsed: Parsed | null, inBlock: boolean): Draft | null {
-    if (!parsed || head.paper) return null
+    if (!parsed || head.paper || head.invisible) return null
     const layer = layers.of(head.layer)
     const color = colorOf(head, inBlock)
     let d: Draft
@@ -621,6 +627,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
       const parsed = read(name, a, own, end)
       if (!parsed) keep(name)
       else if (head.paper) keep('paper space')
+      else if (head.invisible) keep('invisible')
       else draft = resolve(parsed, false)
     } catch (error) {
       if (!(error instanceof Unsupported)) throw error
@@ -642,7 +649,10 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
     drafts[k] = draft
   }
   for (const [key, n] of kept) {
-    warnings.push(key === 'paper space' ? `${n} ${n === 1 ? 'entity' : 'entities'} in paper space kept as is (not drawn).` : `${n} ${key} kept as is (not drawn).`)
+    const entities = n === 1 ? 'entity' : 'entities'
+    if (key === 'paper space') warnings.push(`${n} ${entities} in paper space kept as is (not drawn).`)
+    else if (key === 'invisible') warnings.push(`${n} invisible ${entities} kept as is (not drawn).`)
+    else warnings.push(`${n} ${key} kept as is (not drawn).`)
   }
   if (blockKept > 0) warnings.push(`${blockKept} ${blockKept === 1 ? 'entity' : 'entities'} in blocks not drawn.`)
 

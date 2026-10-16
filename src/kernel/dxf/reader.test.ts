@@ -97,6 +97,23 @@ describe('readDxf', () => {
     expect(d.warnings).toEqual(['line 43: INSERT kept as is: block DOOR is not defined.', '1 HATCH kept as is (not drawn).', '1 entity in paper space kept as is (not drawn).'])
   })
 
+  it('invisible entities (60 = 1) are kept as is, not drawn, in model space and in blocks', () => {
+    const line: G = [0, 'LINE', 8, '0', 60, 1, 10, 0, 20, 0, 11, 1, 21, 1]
+    const circle: G = [0, 'CIRCLE', 8, '0', 60, 1, 10, 0, 20, 0, 40, 1]
+    const shown: G = [0, 'LINE', 8, '0', 60, 0, 10, 0, 20, 0, 11, 1, 21, 1]
+    const insert: G = [0, 'INSERT', 8, '0', 2, 'B', 10, 0, 20, 0]
+    const d = readDxf(lines([
+      0, 'SECTION', 2, 'BLOCKS', 0, 'BLOCK', 8, '0', 2, 'B', 70, 0, 10, 0, 20, 0, ...circle, ...shown, 0, 'ENDBLK', 0, 'ENDSEC',
+      0, 'SECTION', 2, 'ENTITIES', ...line, ...circle, ...shown, ...insert, 0, 'ENDSEC', 0, 'EOF',
+    ]))
+    const [l, c, s, i] = all(d) as [Opaque, Opaque, Line, Insert]
+    expect(l).toMatchObject({ type: 'opaque', name: 'LINE', raw: lines(line) })
+    expect(c).toMatchObject({ type: 'opaque', name: 'CIRCLE', raw: lines(circle) })
+    expect(s.type).toBe('line')
+    expect(i.block.entities.map((e) => e.type)).toEqual(['line'])
+    expect(d.warnings).toEqual(['2 invisible entities kept as is (not drawn).', '1 entity in blocks not drawn.'])
+  })
+
   it('ELLIPSE: in WCS; an extrusion of (0, 0, -1) runs it the other way; 0 to 2π is the whole ellipse', () => {
     const e: G = [0, 'ELLIPSE', 8, '0', 10, 10, 20, 20, 30, 0, 11, 6, 21, 8, 31, 0, 40, 0.5, 41, 0.5, 42, 4]
     const mirrored: G = [...e, 210, 0, 220, 0, 230, -1]
