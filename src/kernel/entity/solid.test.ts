@@ -50,6 +50,21 @@ describe('solid', () => {
     expect(tris(other)).toEqual([[10, 10, 10, 0, 5, 5], [5, 5, 0, 10, 0, 0]])
   })
 
+  it('its outline 1-2-4-3 comes after the triangles, as edges; the outline distance is to them, inside too', () => {
+    const edges = (e: Entity): number[][] => {
+      const out: number[][] = []
+      typeOf(e).primitives(e, 0, { segment() {}, arc() {}, tri: () => out.push([]), edge: (...a) => out.push(a) })
+      return out
+    }
+    expect(edges(square)).toEqual([[], [], [0, 0, 10, 0], [10, 0, 10, 10], [10, 10, 0, 10], [0, 10, 0, 0]])
+    expect(edges(solid(0, 0, 4, 0, 2, 3, 2, 3))).toEqual([[], [0, 0, 4, 0], [4, 0, 2, 3], [2, 3, 0, 0]])
+    expect(typeOf(square).outlineDistance!(square, { x: 3, y: 6 })).toBe(3)
+    expect(typeOf(square).outlineDistance!(square, { x: 5, y: -3 })).toBe(3)
+    const dot = solid(1, 1, 1, 1, 1, 1, 1, 1)
+    expect(edges(dot)).toEqual([[]])
+    expect(typeOf(dot).outlineDistance!(dot, { x: 4, y: 5 })).toBe(5)
+  })
+
   it('a dent at corner 1 or 4 splits along 1-4, which stays inside', () => {
     const dent = solid(0, 0, 10, 0, 0, 10, 4, 4)
     expect(tris(dent)).toEqual([[0, 0, 10, 0, 4, 4], [0, 0, 4, 4, 0, 10]])

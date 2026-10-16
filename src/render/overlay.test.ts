@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { typeOf } from '../kernel/entity/registry'
+import type { Solid } from '../kernel/entity/types'
 import type { ViewState } from '../kernel/view'
 import { CAP_PER_EM } from '../kernel/text/font'
 import { commandBench } from '../kernel/command/testing'
@@ -64,6 +66,17 @@ describe('drawOverlay', () => {
     expect(f.named('moveTo')[0]).toEqual(['moveTo', 100, 50])
     expect(f.named('lineTo')[0]).toEqual(['lineTo', 150, 50])
     expect(f.named('arc')).toEqual([['arc', 100, 50, 20, -0, -Math.PI / 2, true]])
+  })
+
+  it('a moved solid is ghosted by its outline, without the diagonal that splits it', () => {
+    const f = fakeContext()
+    const square: Solid = { type: 'solid', id: 1, layer: 0, x0: 0, y0: 0, x1: 2, y1: 0, x2: 0, y2: 2, x3: 2, y3: 2 }
+    drawOverlay(f.ctx, state({ cursor: { x: 150, y: 50 }, preview: (_c, out) => typeOf(square).primitives(square, 0, out) }), THEME, 5)
+    // World (0, 0) is (100, 50) on screen, 10 px a unit, y up: the outline 1-2-4-3.
+    expect(f.named('moveTo').slice(0, 4)).toEqual([['moveTo', 100, 50], ['moveTo', 120, 50], ['moveTo', 120, 30], ['moveTo', 100, 30]])
+    expect(f.named('lineTo').slice(0, 4)).toEqual([['lineTo', 120, 50], ['lineTo', 120, 30], ['lineTo', 100, 30], ['lineTo', 100, 50]])
+    // Then the crosshair's.
+    expect(f.named('moveTo')[4]).toEqual(['moveTo', 150.5 - CROSSHAIR_PX, 50.5])
   })
 
   it('draws the glyphs of a preview in the text font, turned and scaled into place', () => {

@@ -233,6 +233,27 @@ describe('snap', () => {
     expect([hit.p.x, hit.p.y, hit.id]).toEqual([0, 12, ids[1]])
   })
 
+  it('NEA and PER on a solid find its outline within the aperture; a line over it, the line', () => {
+    const fill: Draft = { type: 'solid', layer: 0, x0: 0, y0: 0, x1: 20, y1: 0, x2: 0, y2: 20, x3: 20, y3: 20 }
+    const { doc, index, ids } = setup([line(2, 10, 18, 10), fill])
+    // Near the outline, on it; deep inside, off the line and the outline, nothing.
+    const edge = snap(doc, index, { x: 19.6, y: 5 }, VIEW, SNAP.NEA, 10)!
+    expect([edge.p.x, edge.p.y, edge.id]).toEqual([20, 5, ids[1]])
+    expect(snap(doc, index, { x: 6, y: 4 }, VIEW, SNAP.NEA, 10)).toBeNull()
+    // Not the diagonal (20, 0)-(0, 20) that splits the fill.
+    expect(snap(doc, index, { x: 13, y: 7.4 }, VIEW, SNAP.NEA, 10)).toBeNull()
+    const over = snap(doc, index, { x: 7, y: 10.5 }, VIEW, SNAP.NEA, 10)!
+    expect([over.p.x, over.p.y, over.id]).toEqual([7, 10, ids[0]])
+    // In a block too.
+    const block = { name: 'S', x: 0, y: 0, entities: [{ ...fill, layer: 0 }] }
+    const ins = setup([{ type: 'insert', layer: 0, block, x: 100, y: 0, sx: 1, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 } as Draft])
+    expect(snap(ins.doc, ins.index, { x: 110, y: 19.5 }, VIEW, SNAP.NEA, 10)).toMatchObject({ p: { x: 110, y: 20 } })
+    // PER: feet on the outline edges under the cursor, not on the diagonal.
+    const per = snap(doc, index, { x: 19.8, y: 6 }, VIEW, SNAP.PER, 10, { x: 30, y: 4 })!
+    expect([per.p.x, per.p.y, per.mode]).toEqual([20, 4, SNAP.PER])
+    expect(snap(doc, index, { x: 13, y: 7.4 }, VIEW, SNAP.PER, 10, { x: 30, y: 4 })).toBeNull()
+  })
+
   it('no modes, no snap', () => {
     const { doc, index } = setup([line(0, 0, 10, 0)])
     expect(snap(doc, index, { x: 0, y: 0 }, VIEW, 0, 10)).toBeNull()

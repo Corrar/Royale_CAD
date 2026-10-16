@@ -34,16 +34,19 @@ function feet(e: Entity, b: Vec2, cursor: Vec2, r: number, out: (x: number, y: n
   const foot = (x: number, y: number): void => {
     if (Math.hypot(x - b.x, y - b.y) > same) out(x, y)
   }
+  const segment = (x0: number, y0: number, x1: number, y1: number): void => {
+    if (segmentDistance(cursor.x, cursor.y, x0, y0, x1, y1) > r) return
+    const dx = x1 - x0
+    const dy = y1 - y0
+    const len2 = dx * dx + dy * dy
+    if (len2 === 0) return
+    const t = ((b.x - x0) * dx + (b.y - y0) * dy) / len2
+    if (t >= 0 && t <= 1) foot(x0 + t * dx, y0 + t * dy)
+  }
   typeOf(e).primitives(e, 0, {
-    segment(x0, y0, x1, y1) {
-      if (segmentDistance(cursor.x, cursor.y, x0, y0, x1, y1) > r) return
-      const dx = x1 - x0
-      const dy = y1 - y0
-      const len2 = dx * dx + dy * dy
-      if (len2 === 0) return
-      const t = ((b.x - x0) * dx + (b.y - y0) * dy) / len2
-      if (t >= 0 && t <= 1) foot(x0 + t * dx, y0 + t * dy)
-    },
+    segment,
+    // A fill's feet are on its outline.
+    edge: segment,
     arc(cx, cy, radius, a0, sweep) {
       if (arcDistance(cursor.x, cursor.y, cx, cy, radius, a0, sweep) > r) return
       // Along the line through the centre and b, on both sides; b at the centre is perpendicular everywhere.
@@ -91,14 +94,17 @@ function nearest(e: Entity, p: Vec2): Vec2 {
       bestD = d
     }
   }
+  const segment = (x0: number, y0: number, x1: number, y1: number): void => {
+    const dx = x1 - x0
+    const dy = y1 - y0
+    const len2 = dx * dx + dy * dy
+    const t = len2 > 0 ? Math.min(1, Math.max(0, ((p.x - x0) * dx + (p.y - y0) * dy) / len2)) : 0
+    take(x0 + t * dx, y0 + t * dy)
+  }
   typeOf(e).primitives(e, 0, {
-    segment(x0, y0, x1, y1) {
-      const dx = x1 - x0
-      const dy = y1 - y0
-      const len2 = dx * dx + dy * dy
-      const t = len2 > 0 ? Math.min(1, Math.max(0, ((p.x - x0) * dx + (p.y - y0) * dy) / len2)) : 0
-      take(x0 + t * dx, y0 + t * dy)
-    },
+    segment,
+    // A fill's nearest point is on its outline: inside, the cursor is no point of a curve.
+    edge: segment,
     arc(cx, cy, r, a0, sweep) {
       const d = Math.hypot(p.x - cx, p.y - cy)
       if (d > 0 && onArc(Math.atan2(p.y - cy, p.x - cx), a0, sweep)) take(cx + ((p.x - cx) * r) / d, cy + ((p.y - cy) * r) / d)
@@ -143,7 +149,9 @@ export function snap(doc: Document, index: SpatialIndex, cursor: Vec2, view: Vie
   for (const id of index.query({ minX: cursor.x - r, minY: cursor.y - r, maxX: cursor.x + r, maxY: cursor.y + r })) {
     const e = doc.get(id)
     if (!e || doc.layers.get(e.layer)?.visible !== true) continue
-    const d = typeOf(e).distance(e, cursor)
+    // A fill is over the cursor by its outline: deep inside, what lies on it is what one points at.
+    const t = typeOf(e)
+    const d = t.outlineDistance ? t.outlineDistance(e, cursor) : t.distance(e, cursor)
     if (d <= r) over.push({ e, d })
     if (pointModes) {
       snapPointsOf(e, pointModes, (x, y, mode) => {

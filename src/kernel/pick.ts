@@ -9,18 +9,26 @@ import { advanceOf, DESCENT } from './text/font'
 /** Entities on hidden layers cannot be selected. Locked ones can; commands filter them. */
 const selectable = (doc: Document, e: Entity): boolean => doc.layers.get(e.layer)?.visible === true
 
-/** The nearest selectable entity within tol (world units) of p, or null. A tie goes to the later entity. */
+/**
+ * The nearest selectable entity within tol (world units) of p, or null. A tie goes to the later entity. A fill is as
+ * near as its outline: inside it, off the outline, it comes after anything within tol, as fills draw under the rest.
+ */
 export function pick(doc: Document, index: SpatialIndex, p: Vec2, tol: number): number | null {
   let best: number | null = null
   let bestD = Infinity
   for (const id of index.query({ minX: p.x - tol, minY: p.y - tol, maxX: p.x + tol, maxY: p.y + tol })) {
     const e = doc.get(id)
     if (!e || !selectable(doc, e)) continue
-    const d = typeOf(e).distance(e, p)
-    if (d > tol) continue
-    if (d < bestD || (d === bestD && id > best!)) {
+    const t = typeOf(e)
+    const d = t.distance(e, p)
+    // The outline is never nearer than the fill: past the best, it cannot win.
+    if (d > tol || d > bestD) continue
+    const o = t.outlineDistance ? t.outlineDistance(e, p) : d
+    // Only the inside reaches p: as far as anything can be, so that the later of such fills wins the tie.
+    const key = o <= tol ? o : Infinity
+    if (best === null || key < bestD || (key === bestD && id > best)) {
       best = id
-      bestD = d
+      bestD = key
     }
   }
   return best

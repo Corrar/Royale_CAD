@@ -700,7 +700,11 @@ describe('createScene', () => {
     expect(drawn(f, scene.draws(view(500, 500, 10)))).toEqual([])
     scene.setHighlight([id])
     const all = drawn(f, scene.draws(v))
-    expect(all.slice(-2).map((i) => [i.kind, i.style])).toEqual([['tri', 1], ['tri', 1]])
+    // Highlighted by its outline: what lies on the fill still shows.
+    expect(all.filter((i) => i.style === 1).map((i) => [i.kind, ...i.v]).sort()).toEqual([
+      ['segment', 0, 0, 10, 0], ['segment', 0, 10, 0, 0], ['segment', 10, 0, 10, 10], ['segment', 10, 10, 0, 10],
+    ])
+    expect(all.slice(-4).every((i) => i.style === 1)).toBe(true)
     doc.transact('erase', (tx) => tx.remove(id))
     expect(drawn(f, scene.draws(v))).toEqual([])
   })
@@ -716,21 +720,66 @@ describe('createScene', () => {
     expect(drawn(f, scene.draws(v)).filter((i) => i.v[1]! >= 0).map((i) => i.kind)).toEqual(['tri', 'tri', 'segment'])
   })
 
-  it('a big load packs solids along the Hilbert curve, culled bucket by bucket', () => {
+  it('a big load packs solids in drawing order, the later on top; culled bucket by bucket', () => {
     const { doc, f, scene } = setup()
     const rand = rng(4)
     const drafts: Draft[] = []
-    for (let i = 0; i < 20_000; i++) {
-      const x = rand() * 100
-      const y = rand() * 100
-      drafts.push(solid([x, y, x + 1, y, x, y + 1, x + 1, y + 1]), solid([1e5 + x, 1e5 + y, 1e5 + x + 1, 1e5 + y, 1e5 + x, 1e5 + y + 1, 1e5 + x, 1e5 + y + 1]))
+    for (const o of [0, 1e5]) {
+      for (let i = 0; i < 20_000; i++) {
+        const x = o + rand() * 100
+        const y = o + rand() * 100
+        drafts.push(o ? solid([x, y, x + 1, y, x, y + 1, x, y + 1]) : solid([x, y, x + 1, y, x, y + 1, x + 1, y + 1]))
+      }
     }
     doc.append(drafts)
     const both = drawn(f, scene.draws(view(5e4, 5e4, 600 / 2e5)))
     expect(both).toHaveLength(3 * 20_000)
+    // Not along the Hilbert curve: in the order they were drawn.
+    expect(both.filter((_, k) => k % 2 === 0).slice(0, 5).map((i) => i.v[0])).toEqual(drafts.slice(0, 5).map((d) => (d as { x0: number }).x0))
     const near = drawn(f, scene.draws(view(50, 50, 4)))
     expect(near.filter((i) => i.v[0]! < 1000)).toHaveLength(2 * 20_000)
     expect(near.filter((i) => i.v[0]! > 1000).length).toBeLessThan(2048)
+  })
+
+  it('overlapping fills draw in drawing order, later on top, through adds, erases, edits, undo and rebuilds', () => {
+    const { doc, f, scene } = setup()
+    const v = view(5, 5, 10)
+    const square = (x: number, color: number): Draft => solid([x, 0, x + 10, 0, x, 10, x + 10, 10], { color })
+    /** The colors of the fills, in the order they draw. */
+    const order = (): number[] => {
+      const out: number[] = []
+      for (const i of drawn(f, scene.draws(v)).filter((i) => i.kind === 'tri')) {
+        const c = f.styles()[i.style * STYLE_WORDS]! >>> 8
+        if (out.at(-1) !== c) out.push(c)
+      }
+      return out
+    }
+    const [red, yellow, green, cyan] = [1, 2, 3, 4].map((c) => colorRgb(c))
+    const ids: number[] = []
+    doc.transact('a', (tx) => {
+      ids.push(tx.add(square(0, 1)).id)
+      ids.push(tx.add(square(2, 2)).id)
+    })
+    expect(order()).toEqual([red, yellow])
+    // A freed slot is not taken again: the new fill goes on top.
+    doc.transact('b', (tx) => tx.remove(ids[0]!))
+    doc.transact('c', (tx) => void tx.add(square(1, 3)))
+    expect(order()).toEqual([yellow, green])
+    doc.undo()
+    doc.undo()
+    expect(order()).toEqual([red, yellow])
+    // An edited fill keeps its place under the later ones.
+    doc.transact('d', (tx) => tx.replace({ ...doc.get(ids[0]!)!, color: 4 } as Entity))
+    expect(order()).toEqual([cyan, yellow])
+    // In a free insert too: its fill draws in its own place, not under every other.
+    const block = { name: 'B', x: 0, y: 0, entities: [square(0, 3), { type: 'ellipse', layer: 0, cx: 0, cy: 0, mx: 1, my: 0, ratio: 0.5, t0: 0, t1: 0 }] } as unknown as Block
+    doc.transact('e', (tx) => void tx.add({ type: 'insert', layer: 0, block, x: 1, y: 0, sx: 1, sy: 0.5, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }))
+    expect(order()).toEqual([cyan, yellow, green])
+    doc.transact('f', (tx) => void tx.add(square(3, 1)))
+    expect(order()).toEqual([cyan, yellow, green, red])
+    // A rebuild keeps it.
+    doc.append(Array.from({ length: 20_000 }, (_, k) => line(k, -10, k, -11)))
+    expect(order()).toEqual([cyan, yellow, green, red])
   })
 
   it('a solid in a free insert shows through the free layer, highlighted too', () => {
@@ -746,8 +795,31 @@ describe('createScene', () => {
     expect(tris.map((i) => i.v)).toEqual([[100, 0, 104, 0, 100, 2]])
     expect(f.styles()[tris[0]!.style * STYLE_WORDS]).toBe(0x00ff00ff)
     scene.setHighlight([id])
-    const top = drawn(f, scene.draws(v)).filter((i) => i.kind === 'tri')
-    expect(top.map((i) => i.style === 1)).toEqual([false, true])
+    const all = drawn(f, scene.draws(v))
+    expect(all.filter((i) => i.kind === 'tri').map((i) => i.style === 1)).toEqual([false])
+    // Its outline, in the highlight style (the ellipse's chords end off the integers).
+    expect(all.filter((i) => i.style === 1 && i.v.every(Number.isInteger)).map((i) => i.v).sort()).toEqual([[100, 0, 104, 0], [100, 2, 100, 0], [104, 0, 100, 2]])
+  })
+
+  it('re-emits fills too big for f32 clipped to the view, in f64, the later ones over them still on top', () => {
+    const { doc, f, scene } = setup()
+    doc.transact('a', (tx) => {
+      tx.add(solid([-1e4, -1e4, 1e4, -1e4, -1e4, 1e4, 1e4, 1e4], { color: 1 }))
+      tx.add(solid([0, 0, 0.1, 0, 0, 0.1, 0.1, 0.1], { color: 3 }))
+    })
+    const v = view(0, 0, 1000, 1000, 800)
+    const inView = (x: number, y: number): boolean => Math.abs(x) < 0.51 && Math.abs(y) < 0.41
+    const tris = drawn(f, scene.draws(v)).filter((i) => i.kind === 'tri')
+    const clipped = tris.filter((i) => [0, 2, 4].every((k) => inView(i.v[k]!, i.v[k + 1]!)))
+    const red = clipped.filter((i) => f.styles()[i.style * STYLE_WORDS] === 0xff0000ff)
+    // The view's part of the big fill, whole: its area is the view's, margin included (2 px a side).
+    const area = (i: Instance): number => Math.abs((i.v[2]! - i.v[0]!) * (i.v[5]! - i.v[1]!) - (i.v[4]! - i.v[0]!) * (i.v[3]! - i.v[1]!)) / 2
+    expect(red.reduce((a, i) => a + area(i), 0)).toBeCloseTo((2 * 0.502) * (2 * 0.402), 9)
+    // The small fill drawn after the big one's copy.
+    const last = tris.findLastIndex((i) => f.styles()[i.style * STYLE_WORDS] === 0x00ff00ff)
+    expect(last).toBeGreaterThan(tris.lastIndexOf(red.at(-1)!))
+    // At a normal zoom nothing is re-emitted.
+    expect(drawn(f, scene.draws(view(0, 0, 0.01))).filter((i) => i.kind === 'tri')).toHaveLength(4)
   })
 
   it('a highlighted primitive too big for f32 is re-emitted on top, in the highlight style', () => {

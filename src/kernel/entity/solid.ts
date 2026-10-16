@@ -1,7 +1,8 @@
-import { applyAffine, triangleDistance } from '../geom/vec'
+import { applyAffine, segmentDistance, triangleDistance } from '../geom/vec'
 import { SNAP, type EntityType, type Solid } from './types'
 
 type TriSink = (x0: number, y0: number, x1: number, y1: number, x2: number, y2: number) => void
+type EdgeSink = (x0: number, y0: number, x1: number, y1: number) => void
 
 /** Twice the signed area of (a, b, c): positive when c lies left of a → b. */
 const turn = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number => (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
@@ -51,17 +52,36 @@ function fill(e: Solid, out: TriSink): void {
   out(x1, y1, x3, y3, x2, y2)
 }
 
+/** The outline 1-2-4-3, edge by edge: a triangle's has three, its repeated corner making none. */
+function outline(e: Solid, out: EdgeSink): void {
+  const xs = [e.x0, e.x1, e.x3, e.x2]
+  const ys = [e.y0, e.y1, e.y3, e.y2]
+  for (let i = 0; i < 4; i++) {
+    const j = (i + 1) % 4
+    if (xs[i] !== xs[j] || ys[i] !== ys[j]) out(xs[i]!, ys[i]!, xs[j]!, ys[j]!)
+  }
+}
+
 export const solidType: EntityType<Solid> = {
   type: 'solid',
   bbox: (e) => ({
     minX: Math.min(e.x0, e.x1, e.x2, e.x3), minY: Math.min(e.y0, e.y1, e.y2, e.y3),
     maxX: Math.max(e.x0, e.x1, e.x2, e.x3), maxY: Math.max(e.y0, e.y1, e.y2, e.y3),
   }),
-  primitives: (e, _tol, out) => fill(e, (...c) => out.tri?.(...c)),
+  primitives(e, _tol, out) {
+    fill(e, (...c) => out.tri?.(...c))
+    outline(e, (...s) => out.edge?.(...s))
+  },
   // 0 inside the triangles; outside, the nearest of them is as near as the outline 1-2-4-3.
   distance(e, p) {
     let d = Infinity
     fill(e, (...c) => void (d = Math.min(d, triangleDistance(p.x, p.y, ...c))))
+    return d
+  },
+  outlineDistance(e, p) {
+    // Corner 1 too: corners all in one place make no edge.
+    let d = Math.hypot(p.x - e.x0, p.y - e.y0)
+    outline(e, (x0, y0, x1, y1) => void (d = Math.min(d, segmentDistance(p.x, p.y, x0, y0, x1, y1))))
     return d
   },
   transform(e, m) {
