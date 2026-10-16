@@ -88,11 +88,17 @@ function benchSetup(parse: Parse = parseHere) {
   }
   const t = commandBench(undefined, { files: host })
   // As the controller does when a drawing is put in place.
-  const replaced = (): void => {
+  const replaced = (currentLayer: string | null): void => {
     t.selection.clear()
     t.interp.newDrawing()
+    const i = currentLayer === null ? -1 : t.doc.layers.indexOf(currentLayer)
+    t.interp.layer = i >= 0 ? i : 0
   }
-  files = createFiles({ api: fake.api, doc: t.doc, parse, print: (l) => t.interp.print(l), replaced, currentLayer: () => '0' })
+  files = createFiles({
+    api: fake.api, doc: t.doc, parse, print: (l) => t.interp.print(l), replaced,
+    currentLayer: () => t.doc.layers.get(t.interp.layer)!.name,
+    watch: (fn) => t.interp.onChange(fn),
+  })
   const settle = () => new Promise((r) => setTimeout(r, 0))
   /** The entities of the file saved k-th, read back. */
   const savedSize = (k: number): number => readDxf(decodeDxf(fake.saved[k]!).text).doc.size
@@ -395,6 +401,31 @@ describe('createFiles while the drawing changes', () => {
   })
 })
 
+describe('the current layer and the file', () => {
+  it('making another layer current is a change, as AutoCAD counts CLAYER: closing asks, and a save keeps it', async () => {
+    const t = benchSetup()
+    // A file whose current layer is Ação: putting it in place sets that one, which is no change.
+    t.fake.answers.opened = { token: 3, name: 'Plant.dxf', size: 0, bytes: latin1(PLANT.replace('$DWGCODEPAGE', '$CLAYER\r\n  8\r\nA\xe7\xe3o\r\n  9\r\n$DWGCODEPAGE')) }
+    t.run('OPEN⏎')
+    for (let k = 0; k < 10 && t.files.state.get().busy !== null; k++) await t.settle()
+    expect(t.doc.layers.get(t.interp.layer)!.name).toBe('Ação')
+    expect(t.files.dirty()).toBe(false)
+    t.run('-LAYER⏎S⏎0⏎⏎')
+    expect(t.files.dirty()).toBe(true)
+    expect(t.fake.calls.at(-1)).toBe('dirty true')
+    t.run('QSAVE⏎')
+    await t.settle()
+    expect(t.files.dirty()).toBe(false)
+    expect(decodeDxf(t.fake.saved[0]!).text).toMatch(/\$CLAYER\r\n {2}8\r\n0\r\n/)
+    // The same layer made current again changes nothing.
+    t.interp.layer = 0
+    expect(t.files.dirty()).toBe(false)
+    t.run('NEW⏎')
+    await t.settle()
+    expect(t.files.dirty()).toBe(false)
+  })
+})
+
 describe('commands while a file operation is under way', () => {
   it('none starts while a file is read, as AutoCAD holds the drawing while it opens one: the open completes', async () => {
     const held = heldParse()
@@ -442,6 +473,41 @@ describe('commands while a file operation is under way', () => {
     expect(t.interp.history).toEqual(['Command: OPEN', 'Command: L', 'Wait: Reading Big.dxf… 90%', 'Opened Big.dxf: 2000 objects.'])
     expect(t.files.state.get()).toEqual({ name: 'Big.dxf', dirty: false, busy: null })
     expect(t.doc.size).toBe(2000)
+  })
+
+  it("the current layer is one of the file's as soon as its layers are in, not an index into the table before", async () => {
+    const t = benchSetup(async (bytes, progress) => {
+      const r = await parseHere(bytes, progress)
+      const lines = Array.from({ length: 2000 }, (_, k) => ({ type: 'line' as const, layer: 0, x0: k, y0: 0, x1: k, y1: 1 }))
+      return { ...r, pack: packDrafts(lines) }
+    })
+    t.doc.layers.add({ name: 'X', color: 1, visible: true, locked: false })
+    t.doc.layers.add({ name: 'Y', color: 1, visible: true, locked: false })
+    t.interp.layer = 2
+    // Plant.dxf has two layers, 0 and Ação: the layer panel, which shows the current one, renders while it comes in.
+    t.fake.answers.opened = { token: 4, name: 'Plant.dxf', size: 0, bytes: latin1(PLANT) }
+    const seen: (string | undefined)[] = []
+    const offLayers = t.doc.layers.onChange(() => seen.push(t.doc.layers.get(t.interp.layer)?.name))
+    let clock = 0
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => (clock += 10))
+    try {
+      const off = t.doc.onChange((c) => {
+        if (!c.bulk) return
+        off()
+        seen.push(t.doc.layers.get(t.interp.layer)?.name)
+        // A key pressed meanwhile (refused) is no change to the drawing coming in.
+        t.run('L⏎')
+      })
+      t.run('OPEN⏎N⏎')
+      for (let k = 0; k < 20 && t.files.state.get().busy !== null; k++) await t.settle()
+    } finally {
+      now.mockRestore()
+      offLayers()
+    }
+    expect(t.interp.history.at(-1)).toBe('Opened Plant.dxf: 2000 objects.')
+    expect(seen.length).toBeGreaterThan(1)
+    expect(seen).not.toContain(undefined)
+    expect(t.files.state.get()).toEqual({ name: 'Plant.dxf', dirty: false, busy: null })
   })
 
   it('nor while the drawing is saved before NEW: the new drawing begins', async () => {

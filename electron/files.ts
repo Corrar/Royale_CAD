@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { app, dialog, ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { MAX_BYTES, atomicWrite, safeName, withDxf } from './atomic'
@@ -54,9 +54,24 @@ export function registerFiles(win: BrowserWindow, initialPath: string | null, in
       title: 'Save Drawing As',
       defaultPath: join(current ? dirname(current) : app.getPath('documents'), safeName(suggested)),
       filters: [{ name: 'DXF', extensions: ['dxf'] }],
+      // Windows and macOS ask before a name that exists; GTK only when told to.
+      properties: ['showOverwriteConfirmation'],
     })
     if (r.canceled || !r.filePath) return null
-    return saveTo(withDxf(r.filePath), bytes)
+    const path = withDxf(r.filePath)
+    // The dialog asked about the name as typed (GTK returns it without the extension): with .dxf added it may name
+    // another file, which nobody was asked about.
+    if (path !== r.filePath && (await stat(path).then(() => true, () => false))) {
+      const { response } = await dialog.showMessageBox(win, {
+        type: 'warning',
+        buttons: ['Replace', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        message: `${basename(path)} already exists. Do you want to replace it?`,
+      })
+      if (response !== 0) return null
+    }
+    return saveTo(path, bytes)
   }
 
   const handle = (channel: string, fn: (...args: unknown[]) => Promise<unknown>): void => {
