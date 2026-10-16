@@ -1,6 +1,6 @@
 import { isColor, type Color } from './color'
 import { typeOf } from './entity/registry'
-import type { Entity } from './entity/types'
+import { BY_BLOCK, type Entity } from './entity/types'
 import { bboxEmpty, bboxFinite, bboxUnion, type BBox } from './geom/vec'
 
 /** An entity before the document gives it an id. */
@@ -234,7 +234,7 @@ export function createDocument(): Document {
   function validate(e: Entity, layerCount = layers.size): void {
     const t = typeOf(e)
     if (!(Number.isInteger(e.layer) && e.layer >= 0 && e.layer < layerCount)) throw new Error(`layer ${e.layer} does not exist`)
-    if (e.color !== undefined && !isColor(e.color)) throw new Error(`invalid color ${e.color}`)
+    if (e.color !== undefined && e.color !== BY_BLOCK && !isColor(e.color)) throw new Error(`invalid color ${e.color}`)
     const problem = t.validate?.(e)
     if (problem) throw new Error(problem)
     const b = t.bbox(e)

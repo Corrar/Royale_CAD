@@ -199,7 +199,8 @@ describe('createDocument', () => {
     })
     const cases: Array<[string, (tx: Tx) => void]> = [
       ['layer', (tx) => tx.add({ ...L(0, 0, 1, 0), layer: 3 })],
-      ['color', (tx) => tx.add({ ...L(0, 0, 1, 0), color: 0 })],
+      // 0 is ByBlock; 256 is ByLayer in a file, which the document says by leaving the color out.
+      ['color', (tx) => tx.add({ ...L(0, 0, 1, 0), color: 256 })],
       ['color', (tx) => tx.add({ ...L(0, 0, 1, 0), color: TRUE_COLOR * 2 })],
       ['finite', (tx) => tx.add(L(0, 0, NaN, 0))],
       ['finite', (tx) => tx.add({ type: 'circle', layer: 0, cx: 0, cy: 0, r: Infinity })],

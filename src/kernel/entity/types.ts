@@ -8,7 +8,7 @@ import type { Affine, BBox, Vec2 } from '../geom/vec'
 export interface Base {
   readonly id: number
   readonly layer: number
-  /** Absent: ByLayer. */
+  /** Absent: ByLayer; BY_BLOCK: ByBlock. */
   readonly color?: Color
 }
 
@@ -104,7 +104,10 @@ export interface Spline extends Base {
   readonly closed: boolean
 }
 
-/** ByBlock, in a block's entities only: the color of the insert that shows them. */
+/**
+ * ByBlock: in a block, the color of the insert that shows it. Outside any block it is drawn as 7, as AutoCAD does,
+ * and kept so that a file gets ByBlock back.
+ */
 export const BY_BLOCK = 0
 
 /**

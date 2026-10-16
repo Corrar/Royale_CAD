@@ -1,7 +1,7 @@
 import { ACI_DEFAULT, colorRgb, type Color } from '../kernel/color'
 import type { Change, Document } from '../kernel/document'
 import { typeOf } from '../kernel/entity/registry'
-import type { Entity, PrimSink } from '../kernel/entity/types'
+import { BY_BLOCK, type Entity, type PrimSink } from '../kernel/entity/types'
 import { arcSpansInBox, clipSegment } from '../kernel/geom/clip'
 import { arcBBox } from '../kernel/geom/curve'
 import { hilbertOrder } from '../kernel/geom/hilbert'
@@ -231,6 +231,8 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   }
 
   function styleIn(st: Styles, layer: number, color: Color | undefined): number {
+    // ByBlock outside any block (an inserted one resolves to its insert's color) draws as 7, as in AutoCAD.
+    if (color === BY_BLOCK) color = ACI_DEFAULT
     // Colors fit in 25 bits and 0 is not a color, so it stands for ByLayer.
     const key = layer * 2 ** 25 + (color ?? 0)
     let id = st.byKey.get(key)

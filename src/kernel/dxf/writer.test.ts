@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
 import { createDocument, type Document } from '../document'
-import type { Arc, Circle, Ellipse, Entity, Insert, Line, MText, Polyline, Spline, Text } from '../entity/types'
+import { BY_BLOCK, type Arc, type Circle, type Ellipse, type Entity, type Insert, type Line, type MText, type Polyline, type Spline, type Text } from '../entity/types'
 import { typeOf } from '../entity/registry'
 import { rotation } from '../geom/vec'
 import { commandBench } from '../command/testing'
@@ -289,6 +289,20 @@ describe('writeDxf', () => {
     expect(circleText).toContain(lines([10, '-8.0']))
     expect(circleText).toContain(lines([230, -1]))
     expect([...back.doc.entities()][2]!).toMatchObject({ type: 'opaque', raw: lines(HATCH) })
+  })
+
+  it('a ByBlock entity stays ByBlock: moved, its record keeps 62 0, and a copy of it is ByBlock too', () => {
+    const BYBLOCK: G = [0, 'LINE', 5, '20', 330, '1F', 100, 'AcDbEntity', 8, 'Walls', 62, 0, 100, 'AcDbLine', 10, 0, 20, 0, 30, 0, 11, 10, 21, 0, 31, 0]
+    const t = commandBench()
+    const d = drawingFrom(t.doc, parseDxf(file(BYBLOCK)))
+    t.run('MOVE⏎ALL⏎⏎0,0⏎0,5⏎')
+    t.run('COPY⏎ALL⏎⏎0,0⏎0,5⏎⏎')
+    const out = writeDxf(t.doc, d.source)
+    expect(out).toContain(lines([5, '20', 330, '1F', 100, 'AcDbEntity', 8, 'Walls', 62, 0, 100, 'AcDbLine', 10, '0.0', 20, '5.0']))
+    const records = out.split(/\r\n  0\r\nLINE\r\n/).slice(1)
+    expect(records).toHaveLength(2)
+    for (const r of records) expect(r).toContain(lines([8, 'Walls', 62, 0]))
+    expect([...readDxf(out).doc.entities()].map((e) => e.color)).toEqual([BY_BLOCK, BY_BLOCK])
   })
 
   it('new handles start at $HANDSEED, none repeats, and $HANDSEED moves past them', () => {

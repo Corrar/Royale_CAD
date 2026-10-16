@@ -391,10 +391,10 @@ describe('readDxf', () => {
     ])
   })
 
-  it('colors: 256 is ByLayer, ByBlock (0) shows white, 420 true color wins over 62', () => {
+  it('colors: 256 is ByLayer, ByBlock (0) is kept in model space too (it shows white), 420 true color wins over 62', () => {
     const line = (...extra: G): G => [0, 'LINE', 8, '0', ...extra, 10, 0, 20, 0, 11, 1, 21, 1]
     const d = readDxf(file([...line(62, 256), ...line(62, 0), ...line(62, 1, 420, 0x00ff80), ...line()]))
-    expect(all(d).map((e) => e.color)).toEqual([undefined, 7, TRUE_COLOR | 0x00ff80, undefined])
+    expect(all(d).map((e) => e.color)).toEqual([undefined, BY_BLOCK, TRUE_COLOR | 0x00ff80, undefined])
   })
 
   it('keeps the text, handles and header the writer needs', () => {
