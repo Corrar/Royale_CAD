@@ -70,13 +70,19 @@ describe('intersect', () => {
     const square = solid(0, 0, 10, 0, 0, 10, 10, 10)
     expect(sorted(intersect(square, line(-5, 3, 15, 3)))).toEqual([[0, 3], [10, 3]])
     expect(sorted(intersect(line(4, -5, 4, 5), solid(0, 0, 8, 0, 4, 4, 4, 4)))).toEqual([[4, 0], [4, 4]])
-    // Two solids of a block side by side: their common edge is inside the fill too.
-    const B: Block = {
-      name: 'B', x: 0, y: 0,
-      entities: [{ type: 'solid', layer: 0, x0: 0, y0: 0, x1: 5, y1: 0, x2: 0, y2: 5, x3: 5, y3: 5 }, { type: 'solid', layer: 0, x0: 5, y0: 0, x1: 10, y1: 0, x2: 5, y2: 5, x3: 10, y3: 5 }],
-    }
-    const pair: Insert = { type: 'insert', id: id++, layer: 0, block: B, x: 0, y: 0, sx: 1, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }
-    expect(sorted(intersect(pair, line(-1, 2, 11, 2)))).toEqual([[0, 2], [10, 2]])
+  })
+
+  it('solids of a block keep their own outlines, side by side, duplicated or overlapping: only each diagonal goes', () => {
+    const square = (x: number, w: number): Block['entities'][number] => ({ type: 'solid', layer: 0, x0: x, y0: 0, x1: x + w, y1: 0, x2: x, y2: w, x3: x + w, y3: w })
+    const of = (...entities: Block['entities']): Insert =>
+      ({ type: 'insert', id: id++, layer: 0, block: { name: 'B', x: 0, y: 0, entities }, x: 0, y: 0, sx: 1, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 })
+    const across = line(-1, 2, 21, 2)
+    // Each solid is its own boundary, as two lines on one place are two lines.
+    expect(sorted(intersect(of(square(0, 5), square(5, 5)), across))).toEqual([[0, 2], [5, 2], [10, 2]])
+    expect(sorted(intersect(of(square(0, 10), square(0, 10)), across))).toEqual([[0, 2], [10, 2]])
+    expect(sorted(intersect(of(square(0, 10), square(5, 10)), across))).toEqual([[0, 2], [5, 2], [10, 2], [15, 2]])
+    // Nor the diagonal of either: (2, 2) and (7, 2) lie on 2-3 of the squares, (0, 10)-(10, 0) and (5, 10)-(15, 0).
+    expect(sorted(intersect(of(square(0, 10), square(5, 10)), line(-1, 8, 21, 8)))).toEqual([[0, 8], [5, 8], [10, 8], [15, 8]])
   })
 
   it('stays exact at UTM magnitudes', () => {

@@ -8,8 +8,8 @@ import { bboxIntersects, type BBox, type Vec2 } from './vec'
 type Prim = { kind: 'seg'; x0: number; y0: number; x1: number; y1: number } | { kind: 'arc'; cx: number; cy: number; r: number; a0: number; sweep: number }
 
 /**
- * The primitives of e, moved by (−ox, −oy); with near, only those whose box reaches it. A filled triangle is its
- * edges, less those two triangles share: the diagonal that splits a quad lies inside the fill.
+ * The primitives of e, moved by (−ox, −oy); with near, only those whose box reaches it. A fill is its outline edges,
+ * not its triangles: the diagonal that splits a quad lies inside the fill, but each solid keeps its whole boundary.
  */
 function primsOf(e: Entity, ox: number, oy: number, near: BBox | undefined): Prim[] {
   const out: Prim[] = []
@@ -19,24 +19,13 @@ function primsOf(e: Entity, ox: number, oy: number, near: BBox | undefined): Pri
       out.push({ kind: 'seg', x0: x0 - ox, y0: y0 - oy, x1: x1 - ox, y1: y1 - oy })
     }
   }
-  // Each edge by its ends in either order; met twice, it is shared.
-  const edges = new Map<string, [number, number, number, number]>()
-  const edge = (x0: number, y0: number, x1: number, y1: number): void => {
-    const key = x0 < x1 || (x0 === x1 && y0 <= y1) ? `${x0} ${y0} ${x1} ${y1}` : `${x1} ${y1} ${x0} ${y0}`
-    if (!edges.delete(key)) edges.set(key, [x0, y0, x1, y1])
-  }
   typeOf(e).primitives(e, 0, {
     segment,
     arc(cx, cy, r, a0, sweep) {
       if (reaches(arcBBox(cx, cy, r, a0, sweep))) out.push({ kind: 'arc', cx: cx - ox, cy: cy - oy, r, a0, sweep })
     },
-    tri(x0, y0, x1, y1, x2, y2) {
-      edge(x0, y0, x1, y1)
-      edge(x1, y1, x2, y2)
-      edge(x2, y2, x0, y0)
-    },
+    edge: segment,
   }, near)
-  for (const s of edges.values()) segment(...s)
   return out
 }
 
