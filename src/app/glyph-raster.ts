@@ -7,6 +7,8 @@ export const TEXT_FAMILY = "'Inter Variable'"
 /** Capital height glyphs are drawn at in the atlas, px, and how far their distance fields reach. */
 export const GLYPH_CAP_PX = 48
 export const GLYPH_SPREAD_PX = 6
+/** Raster px per atlas px: the distances come from a finer drawing, so curves stay smooth at any zoom. */
+export const GLYPH_SUPERSAMPLE = 4
 
 /** The CSS font for a capital height of capPx. */
 export const textFont = (capPx: number): string => `${capPx / CAP_PER_EM}px ${TEXT_FAMILY}`

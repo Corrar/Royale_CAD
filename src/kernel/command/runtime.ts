@@ -60,6 +60,8 @@ export interface TextRequest extends Ask {
   kind: 'text'
   /** What Enter answers, shown as <…>; without it Enter answers the empty text. */
   default?: string
+  /** Space types a space and only Enter ends it (the words of a TEXT); the text is kept untrimmed. */
+  spaces?: boolean
 }
 
 export type Request = PointRequest | NumberRequest | KeywordRequest | SelectionRequest | TextRequest
@@ -194,12 +196,14 @@ export function formatPrompt(r: Request | null): string {
   return `${r.prompt}${keywords}${def}:`
 }
 
-/** The keyword a typed word stands for: exact match first, then a unique prefix. */
+/** The keyword a typed word stands for: exact match first, then its capitals (AutoCAD's abbreviation), then a unique prefix. */
 export function matchKeyword(word: string, keywords: readonly string[] | undefined): string | undefined {
   if (!keywords) return undefined
   const w = word.toLowerCase()
   const exact = keywords.find((k) => k.toLowerCase() === w)
   if (exact) return exact
+  const short = keywords.filter((k) => /^[A-Z]+/.exec(k)?.[0].toLowerCase() === w)
+  if (short.length === 1) return short[0]
   const hits = keywords.filter((k) => k.toLowerCase().startsWith(w))
   return hits.length === 1 ? hits[0] : undefined
 }
@@ -455,6 +459,7 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
         return refuse(echo, 'Invalid option keyword.')
       }
       case 'text': {
+        if (r.spaces) return answer({ kind: 'text', text: text === '' ? (r.default ?? '') : text }, text)
         if (t.kind === 'empty') return answer({ kind: 'text', text: r.default ?? '' }, '')
         return answer({ kind: 'text', text: echo }, echo)
       }

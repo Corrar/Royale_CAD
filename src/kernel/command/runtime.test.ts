@@ -20,6 +20,9 @@ describe('formatPrompt and matchKeyword', () => {
     expect(matchKeyword('ce', k)).toBe('Center')
     expect(matchKeyword('x', k)).toBeUndefined()
     expect(matchKeyword('c', ['Close', 'Center'])).toBeUndefined() // ambiguous
+    // A keyword's capitals are its abbreviation, as AutoCAD writes them: M is Middle among MC and ML.
+    expect(matchKeyword('m', ['Middle', 'ML', 'MC'])).toBe('Middle')
+    expect(matchKeyword('mi', ['Middle', 'ML', 'MC'])).toBe('Middle')
   })
 })
 

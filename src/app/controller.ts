@@ -12,7 +12,7 @@ import { createGlyphAtlas } from '../render/glyphs'
 import { createScene } from '../render/scene'
 import { createWebGL2Backend } from '../render/webgl2/backend'
 import { createFiles, type FileState } from './files'
-import { canvasRaster, GLYPH_CAP_PX, GLYPH_SPREAD_PX } from './glyph-raster'
+import { canvasRaster, GLYPH_CAP_PX, GLYPH_SPREAD_PX, GLYPH_SUPERSAMPLE } from './glyph-raster'
 import { attachInput, attachKeyboard } from './input'
 import { parseInWorker } from './parse-worker'
 import { createStore, derivedStore, type Store } from './stores'
@@ -122,8 +122,11 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     snap: token('--snap'),
   }
   const doc = createDocument()
-  // Glyphs are drawn the first time a text needs them: the text font should have loaded by then (App waits for it).
-  const glyphs = createGlyphAtlas({ raster: canvasRaster(GLYPH_CAP_PX), capPx: GLYPH_CAP_PX, spread: GLYPH_SPREAD_PX })
+  // Glyphs are drawn between frames (glyphsBetweenFrames), in the text font: App waits for it to load. Printable ASCII
+  // is drawn from the start, so most text shows at once.
+  const raster = canvasRaster(GLYPH_CAP_PX * GLYPH_SUPERSAMPLE)
+  const glyphs = createGlyphAtlas({ raster, capPx: GLYPH_CAP_PX, spread: GLYPH_SPREAD_PX, supersample: GLYPH_SUPERSAMPLE })
+  for (let cp = 0x21; cp < 0x7f; cp++) glyphs.index(cp)
   const scene = createScene(doc, backend, {
     drawColor: packRgba(readCssColor(canvas, '--draw')),
     highlightColor: packRgba(readCssColor(canvas, '--accent')),
@@ -138,6 +141,8 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
   let sceneDirty = true
   /** Tasks are working on the scene's rebuild or the index's between frames (buildBetweenFrames). */
   let building = false
+  /** Tasks are drawing glyphs into the atlas between frames (glyphsBetweenFrames). */
+  let drawingGlyphs = false
 
   const host: InterpreterHost = {
     getView: () => view!,
@@ -182,6 +187,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
         sceneDirty = false
         backend.frame(view, scene.draws(view))
         if (scene.building || index.building) buildBetweenFrames()
+        if (glyphs.pending) glyphsBetweenFrames()
       }
       const r = interp.request
       const tracked = interp.tracked
@@ -228,6 +234,20 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
       building = false
       performance.mark('royale:built')
       redrawScene()
+    }
+    setTimeout(step, 0)
+  }
+  /** Draws the glyphs text asked for, a task at a time; each task's glyphs show in the next frame. */
+  function glyphsBetweenFrames(): void {
+    if (drawingGlyphs) return
+    drawingGlyphs = true
+    const step = (): void => {
+      if (view === null) return // disposed
+      const end = performance.now() + BUILD_TASK_MS
+      glyphs.work(() => performance.now() < end)
+      redrawScene()
+      if (glyphs.pending) setTimeout(step, 0)
+      else drawingGlyphs = false
     }
     setTimeout(step, 0)
   }
@@ -334,6 +354,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     toggleHistory,
     toggle,
     run,
+    literalSpace: () => interp.request?.kind === 'text' && interp.request.spaces === true,
   })
 
   const measure = (entries?: ResizeObserverEntry[]): void => {

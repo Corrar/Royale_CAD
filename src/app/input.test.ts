@@ -137,7 +137,7 @@ describe('attachInput', () => {
   })
 })
 
-function keyboard() {
+function keyboard(literalSpace = false) {
   const target = new EventTarget()
   let buffer = ''
   const calls: string[] = []
@@ -152,6 +152,7 @@ function keyboard() {
     toggleHistory: () => calls.push('history'),
     toggle: (k) => calls.push(k),
     run: (c) => calls.push(`run ${c}`),
+    literalSpace: () => literalSpace,
   }
   const dispose = attachKeyboard(target, host)
   const key = (k: string, mods: Partial<Record<'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey', boolean>> = {}, from: object = {}): Event => {
@@ -176,6 +177,14 @@ describe('attachKeyboard', () => {
     t.key(' ')
     expect(t.calls).toEqual(['submit L', 'submit 10,20'])
     expect(t.buffer()).toBe('')
+  })
+
+  it('Space types a space where the command takes words (TEXT); Enter still submits', () => {
+    const t = keyboard(true)
+    t.type('two words ')
+    expect(t.buffer()).toBe('two words ')
+    t.key('Enter')
+    expect(t.calls).toEqual(['submit two words '])
   })
 
   it('Backspace edits, Esc clears and cancels', () => {

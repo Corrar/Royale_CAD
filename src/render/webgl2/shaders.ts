@@ -161,17 +161,25 @@ void main() {
 }
 `
 
-// The edge is where the distance field crosses 0.5; fwidth antialiases it over about a pixel at any size.
+// The edge is where the distance field crosses 0.5; fwidth antialiases it over about a pixel at any size. Small
+// text has strokes thinner than a pixel, which one sample per pixel would miss: four more samples, at the corners of
+// a box half a pixel wide, are averaged in.
 export const GLYPH_FRAG = `#version 300 es
 precision highp float;
 in vec4 vColor;
 in vec2 vUv;
 uniform sampler2D atlas;
 out vec4 outColor;
+float cover(vec2 uv, float w) {
+  return smoothstep(0.5 - w, 0.5 + w, texture(atlas, uv).r);
+}
 void main() {
   float d = texture(atlas, vUv).r;
   float w = max(fwidth(d) * 0.7, 1e-4);
   float a = smoothstep(0.5 - w, 0.5 + w, d);
+  vec2 du = 0.354 * (dFdx(vUv) + dFdy(vUv));
+  vec2 dv = 0.354 * (dFdx(vUv) - dFdy(vUv));
+  a = (a + 0.5 * (cover(vUv + du, w) + cover(vUv - du, w) + cover(vUv + dv, w) + cover(vUv - dv, w))) / 3.0;
   if (a <= 0.0) discard;
   outColor = vec4(vColor.rgb, vColor.a * a);
 }

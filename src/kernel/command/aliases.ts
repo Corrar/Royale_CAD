@@ -21,6 +21,8 @@ export const DEFAULT_ALIASES: Readonly<Record<string, string>> = {
   Z: 'ZOOM',
   P: 'PAN',
   LA: 'LAYER',
+  DT: 'TEXT',
+  DTEXT: 'TEXT',
   '-LA': '-LAYER',
   // AutoCAD's SAVE asks for a name on a drawing never saved and saves in place otherwise: QSAVE does both.
   SAVE: 'QSAVE',

@@ -9,6 +9,7 @@ import { line } from './line'
 import { offset } from './offset'
 import { pline } from './pline'
 import { rectang } from './rectang'
+import { text } from './text'
 import { copy, mirror, move, rotate, scale } from './transform'
 import { trim } from './trim'
 import { redo, u, undo } from './undo'
@@ -33,6 +34,7 @@ export const BUILTIN_COMMANDS: Readonly<Record<string, Command>> = {
   OFFSET: offset,
   TRIM: trim,
   EXTEND: extend,
+  TEXT: text,
   U: u,
   UNDO: undo,
   REDO: redo,

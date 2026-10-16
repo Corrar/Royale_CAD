@@ -93,6 +93,8 @@ export interface KeyboardHost {
   toggle(setting: 'osnap' | 'grid' | 'ortho'): void
   /** Ctrl+O, Ctrl+S, Ctrl+Shift+S and Ctrl+N: OPEN, QSAVE, SAVEAS and NEW. */
   run(command: string): void
+  /** Space is a character, not Enter: the command waits for words (TEXT's). */
+  literalSpace?(): boolean
 }
 
 /** A field that takes typing itself: keys pressed there are not commands. */
@@ -102,10 +104,10 @@ function editable(t: EventTarget | null): boolean {
 }
 
 /**
- * Typing goes to the command line wherever the focus is, as in AutoCAD: Space and Enter submit, Esc cancels,
- * Backspace edits; Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) undo and redo; Ctrl+O, Ctrl+S, Ctrl+Shift+S and Ctrl+N open,
- * save, save as and begin a drawing; Del erases the selection; F2 shows the history;
- * F3, F7 and F8 toggle object snap, grid and ortho.
+ * Typing goes to the command line wherever the focus is, as in AutoCAD: Space and Enter submit (Space types a space
+ * where the command takes words), Esc cancels, Backspace edits; Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) undo and redo;
+ * Ctrl+O, Ctrl+S, Ctrl+Shift+S and Ctrl+N open, save, save as and begin a drawing; Del erases the selection; F2 shows
+ * the history; F3, F7 and F8 toggle object snap, grid and ortho.
  */
 export function attachKeyboard(target: EventTarget, host: KeyboardHost): () => void {
   const onKey = (ev: Event): void => {
@@ -122,6 +124,10 @@ export function attachKeyboard(target: EventTarget, host: KeyboardHost): () => v
         else if (k === 's') host.run(e.shiftKey ? 'SAVEAS' : 'QSAVE')
         else if (k === 'n') host.run('NEW')
         else return false
+        return true
+      }
+      if (e.key === ' ' && host.literalSpace?.()) {
+        host.setBuffer(host.buffer() + ' ')
         return true
       }
       switch (e.key) {
