@@ -5,7 +5,7 @@ import { typeOf } from '../kernel/entity/registry'
 import { BY_BLOCK, type Block, type Ellipse, type Entity } from '../kernel/entity/types'
 import { segmentDistance } from '../kernel/geom/vec'
 import type { ViewState } from '../kernel/view'
-import { ARC_STRIDE, GLYPH_STRIDE, SEGMENT_STRIDE, STYLE_WORDS, arcSubdiv, type Draw, type RenderBackend } from './backend'
+import { ARC_STRIDE, GLYPH_STRIDE, SEGMENT_STRIDE, STYLE_WORDS, TRI_STRIDE, arcSubdiv, type Draw, type RenderBackend } from './backend'
 import { createScene } from './scene'
 
 const DRAW = 0xf2f4f5ff
@@ -13,9 +13,10 @@ const HIGHLIGHT = 0x67e8f9ff
 // Rebuilds all at once unless a test asks for slices.
 const OPTS = { drawColor: DRAW, highlightColor: HIGHLIGHT, sliceFrom: Infinity }
 
-type Kind = 'segment' | 'arc' | 'glyph'
+type Kind = 'segment' | 'arc' | 'glyph' | 'tri'
 interface FakeBatch { kind: Kind; capacity: number; bytes: Uint8Array }
-const strideOf = (k: Kind): number => (k === 'segment' ? SEGMENT_STRIDE : k === 'arc' ? ARC_STRIDE : GLYPH_STRIDE)
+const STRIDE: Record<Kind, number> = { segment: SEGMENT_STRIDE, arc: ARC_STRIDE, glyph: GLYPH_STRIDE, tri: TRI_STRIDE }
+const strideOf = (k: Kind): number => STRIDE[k]
 
 /** Keeps every batch's bytes like the GPU would, and logs the calls. */
 function fakeBackend() {
@@ -84,7 +85,9 @@ function decode(b: FakeBatch, first = 0, count = b.capacity): Instance[] {
         ? { kind: 'segment', v: [hilo(0), hilo(2), hilo(4), hilo(6)], style: u32[w + 8]! }
         : b.kind === 'arc'
           ? { kind: 'arc', v: [hilo(0), hilo(2), f32[w + 4]!, f32[w + 5]!, f32[w + 6]!], style: u32[w + 7]! }
-          : { kind: 'glyph', v: [hilo(0), hilo(2), f32[w + 4]!, f32[w + 5]!, f32[w + 6]!, f32[w + 7]!, u32[w + 8]!], style: u32[w + 9]! },
+          : b.kind === 'tri'
+            ? { kind: 'tri', v: [hilo(0), hilo(2), hilo(4), hilo(6), hilo(8), hilo(10)], style: u32[w + 12]! }
+            : { kind: 'glyph', v: [hilo(0), hilo(2), f32[w + 4]!, f32[w + 5]!, f32[w + 6]!, f32[w + 7]!, u32[w + 8]!], style: u32[w + 9]! },
     )
   }
   return out
@@ -98,6 +101,9 @@ const FAR = view(-1e9, -1e9, 1e-3) // sees nothing of the test data, so nothing 
 
 const line = (x0: number, y0: number, x1: number, y1: number, extra: Partial<Draft> = {}): Draft =>
   ({ type: 'line', layer: 0, x0, y0, x1, y1, ...extra }) as Draft
+/** A SOLID by its corners in DXF order. */
+const solid = (c: readonly number[], extra: Partial<Draft> = {}): Draft =>
+  ({ type: 'solid', layer: 0, x0: c[0]!, y0: c[1]!, x1: c[2]!, y1: c[3]!, x2: c[4]!, y2: c[5]!, x3: c[6]!, y3: c[7]!, ...extra }) as Draft
 
 function rng(seed: number): () => number {
   let a = seed >>> 0
@@ -351,6 +357,7 @@ describe('createScene', () => {
       if (k < 0.5) return line(x, y, x + rand() * 10, y + rand() * 10, { layer: rand() < 0.3 ? 1 : 0 })
       if (k < 0.7) return { type: 'circle', layer: 0, cx: x, cy: y, r: 0.1 + rand() * 50, ...(rand() < 0.2 ? { color: 3 } : {}) }
       if (k < 0.85) return { type: 'arc', layer: 1, cx: x, cy: y, r: 0.1 + rand() * 50, a0: rand() * 6, a1: rand() * 6 }
+      if (k < 0.9) return solid([x, y, x + rand() * 9, y, x, y + rand() * 9, x + rand() * 9, y + rand() * 9], { layer: rand() < 0.5 ? 1 : 0 })
       const n = 2 + Math.floor(rand() * 4)
       const pts = new Float64Array(2 * n).map((_, i) => (i % 2 ? y : x) + rand() * 20)
       const bulges = rand() < 0.5 ? new Float64Array(n).map(() => (rand() < 0.5 ? 0 : rand() * 2 - 1)) : null
@@ -381,6 +388,7 @@ describe('createScene', () => {
           segment: (...v) => want.push(`${head('segment')} ${v.map((x) => x.toFixed(3)).join(' ')}`),
           arc: (cx, cy, r, a0, sweep) =>
             want.push(`${head('arc')} ${[cx, cy, Math.fround(r), Math.fround(a0), Math.fround(sweep)].map((x) => x.toFixed(3)).join(' ')}`),
+          tri: (...v) => want.push(`${head('tri')} ${v.map((x) => x.toFixed(3)).join(' ')}`),
         })
       }
       expect(got.sort()).toEqual(want.sort())
@@ -605,6 +613,67 @@ describe('createScene', () => {
     expect(inside.some((i) => i.v[0] === 110 && i.v[1] === 20)).toBe(true)
   })
 
+  it('a solid draws its triangles filled in its style, highlighted on top; out of view they are culled', () => {
+    const { doc, f, scene } = setup()
+    let id = 0
+    doc.transact('s', (tx) => void (id = tx.add(solid([0, 0, 10, 0, 0, 10, 10, 10], { color: 1 })).id))
+    const v = view(5, 5, 10)
+    const is = drawn(f, scene.draws(v))
+    expect(is.map((i) => i.v)).toEqual([[0, 0, 10, 0, 0, 10], [10, 0, 10, 10, 0, 10]])
+    expect(is.every((i) => i.kind === 'tri' && f.styles()[i.style * STYLE_WORDS] === 0xff0000ff)).toBe(true)
+    expect(drawn(f, scene.draws(view(500, 500, 10)))).toEqual([])
+    scene.setHighlight([id])
+    const all = drawn(f, scene.draws(v))
+    expect(all.slice(-2).map((i) => [i.kind, i.style])).toEqual([['tri', 1], ['tri', 1]])
+    doc.transact('erase', (tx) => tx.remove(id))
+    expect(drawn(f, scene.draws(v))).toEqual([])
+  })
+
+  it('fills draw first, under the lines added before them, live and after a rebuild', () => {
+    const { doc, f, scene } = setup()
+    doc.transact('a', (tx) => void tx.add(line(0, 5, 10, 5)))
+    const v = view(5, 5, 10)
+    scene.draws(v)
+    doc.transact('b', (tx) => void tx.add(solid([0, 0, 10, 0, 0, 10, 10, 10])))
+    expect(drawn(f, scene.draws(v)).map((i) => i.kind)).toEqual(['tri', 'tri', 'segment'])
+    doc.append(Array.from({ length: 20_000 }, (_, k) => line(k, -10, k, -11)))
+    expect(drawn(f, scene.draws(v)).filter((i) => i.v[1]! >= 0).map((i) => i.kind)).toEqual(['tri', 'tri', 'segment'])
+  })
+
+  it('a big load packs solids along the Hilbert curve, culled bucket by bucket', () => {
+    const { doc, f, scene } = setup()
+    const rand = rng(4)
+    const drafts: Draft[] = []
+    for (let i = 0; i < 20_000; i++) {
+      const x = rand() * 100
+      const y = rand() * 100
+      drafts.push(solid([x, y, x + 1, y, x, y + 1, x + 1, y + 1]), solid([1e5 + x, 1e5 + y, 1e5 + x + 1, 1e5 + y, 1e5 + x, 1e5 + y + 1, 1e5 + x, 1e5 + y + 1]))
+    }
+    doc.append(drafts)
+    const both = drawn(f, scene.draws(view(5e4, 5e4, 600 / 2e5)))
+    expect(both).toHaveLength(3 * 20_000)
+    const near = drawn(f, scene.draws(view(50, 50, 4)))
+    expect(near.filter((i) => i.v[0]! < 1000)).toHaveLength(2 * 20_000)
+    expect(near.filter((i) => i.v[0]! > 1000).length).toBeLessThan(2048)
+  })
+
+  it('a solid in a free insert shows through the free layer, highlighted too', () => {
+    const { doc, f, scene } = setup()
+    const block = {
+      name: 'B', x: 0, y: 0,
+      entities: [solid([0, 0, 2, 0, 0, 2, 0, 2], { color: 3 }), { type: 'ellipse', layer: 0, cx: 0, cy: 0, mx: 1, my: 0, ratio: 0.5, t0: 0, t1: 0 }],
+    } as unknown as Block
+    let id = 0
+    doc.transact('i', (tx) => void (id = tx.add({ type: 'insert', layer: 0, block, x: 100, y: 0, sx: 2, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }).id))
+    const v = view(101, 1, 10)
+    const tris = drawn(f, scene.draws(v)).filter((i) => i.kind === 'tri')
+    expect(tris.map((i) => i.v)).toEqual([[100, 0, 104, 0, 100, 2]])
+    expect(f.styles()[tris[0]!.style * STYLE_WORDS]).toBe(0x00ff00ff)
+    scene.setHighlight([id])
+    const top = drawn(f, scene.draws(v)).filter((i) => i.kind === 'tri')
+    expect(top.map((i) => i.style === 1)).toEqual([false, true])
+  })
+
   it('a highlighted primitive too big for f32 is re-emitted on top, in the highlight style', () => {
     const { doc, f, scene } = setup()
     let id = 0
@@ -632,6 +701,7 @@ describe('createScene', () => {
     doc.transact('more', (tx) => {
       tx.add({ type: 'circle', layer: 0, cx: 1, cy: 1, r: 1 })
       tx.add(line(0, 0, 5, 5))
+      tx.add(solid([50, 50, 52, 50, 50, 52, 52, 52]))
     })
     scene.setHighlight([1])
     const v = view(50, 50, 4)
@@ -642,9 +712,11 @@ describe('createScene', () => {
 
   it('dispose destroys every batch and stops listening', () => {
     const { doc, f, scene } = setup()
+    const block = { name: 'B', x: 0, y: 0, entities: [solid([0, 0, 1, 0, 0, 1, 0, 1]), { type: 'ellipse', layer: 0, cx: 0, cy: 0, mx: 1, my: 0, ratio: 0.5, t0: 0, t1: 0 }] } as unknown as Block
     doc.transact('a', (tx) => {
       tx.add(line(0, 0, 1, 1))
       tx.add({ type: 'circle', layer: 0, cx: 0, cy: 0, r: 1 })
+      tx.add({ type: 'insert', layer: 0, block, x: 1, y: 0, sx: 1, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 })
     })
     scene.setHighlight([1, 2])
     const draws = scene.draws(view(1, 0, 1e6)) // on the circle's edge, with a radius of 1e6 px: it gets clipped

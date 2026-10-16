@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ViewState } from '../../kernel/view'
-import { ARC_STRIDE, MAX_ARC_SUBDIV, SEGMENT_STRIDE, STYLE_WORDS, type BackendTheme } from '../backend'
+import { ARC_STRIDE, MAX_ARC_SUBDIV, SEGMENT_STRIDE, STYLE_WORDS, TRI_STRIDE, type BackendTheme } from '../backend'
 import { createWebGL2Backend } from './backend'
 
 const THEME: BackendTheme = { bg: [0.1, 0.2, 0.3, 1], gridMinor: [0, 1, 1, 0.1], gridMajor: [0, 1, 1, 0.25] }
@@ -197,7 +197,7 @@ describe('createWebGL2Backend', () => {
     t.clear()
     t.restore()
     expect(t.named('bufferData').map((call) => call.args[1])).toEqual([2 * SEGMENT_STRIDE, SEGMENT_STRIDE])
-    expect(t.named('createProgram')).toHaveLength(4) // grid, segment, arc, glyph
+    expect(t.named('createProgram')).toHaveLength(5) // grid, segment, arc, glyph, tri
     const images = t.named('texImage2D').map((call) => call.args[8])
     const uploads = images.filter((d) => d instanceof Uint32Array).map((d) => Array.from((d as Uint32Array).subarray(0, styles.length)))
     expect(uploads).toEqual([Array.from(styles)]) // the style table survives
@@ -213,6 +213,21 @@ describe('createWebGL2Backend', () => {
     t.backend.writeBatch(c, 0, bytes(SEGMENT_STRIDE, 9))
     t.backend.frame(VIEW, [{ batch: a, first: 0, count: 2 }, { batch: c, first: 0, count: 1 }])
     expect(t.named('drawArraysInstanced').map((call) => call.args[3])).toEqual([2, 1])
+  })
+
+  it('a tri batch draws three vertices an instance, the corners from three hi/lo attributes', () => {
+    const t = setup()
+    const id = t.backend.createBatch('tri', 4)
+    expect(t.named('bufferData').at(-1)!.args[1]).toBe(4 * TRI_STRIDE)
+    t.backend.writeBatch(id, 1, bytes(2 * TRI_STRIDE, 0))
+    expect(() => t.backend.writeBatch(id, 0, bytes(SEGMENT_STRIDE, 0))).toThrow(RangeError)
+    t.clear()
+    t.backend.frame(VIEW, [{ batch: id, first: 1, count: 3 }])
+    expect(t.named('drawArraysInstanced').map((c) => c.args)).toEqual([['TRIANGLES', 0, 3, 3]])
+    const o = TRI_STRIDE
+    const pointers = t.named('vertexAttribPointer').map((c) => c.args)
+    expect(pointers).toEqual([[0, 4, 'FLOAT', false, TRI_STRIDE, o], [1, 4, 'FLOAT', false, TRI_STRIDE, o + 16], [3, 4, 'FLOAT', false, TRI_STRIDE, o + 32]])
+    expect(t.named('vertexAttribIPointer').map((c) => c.args)).toEqual([[2, 1, 'UNSIGNED_INT', TRI_STRIDE, o + TRI_STRIDE - 4]])
   })
 
   it('frame with the context lost does not draw', () => {

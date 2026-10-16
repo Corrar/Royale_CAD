@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ARC_STRIDE, MAX_ARC_SUBDIV, SEGMENT_STRIDE, arcSubdiv, writeArc, writeSegment, writeStyle } from './backend'
+import { ARC_STRIDE, MAX_ARC_SUBDIV, SEGMENT_STRIDE, TRI_STRIDE, arcSubdiv, writeArc, writeSegment, writeStyle, writeTri } from './backend'
 import { splitDouble } from './hilo'
 
 describe('writeSegment', () => {
@@ -47,6 +47,23 @@ describe('writeArc', () => {
     expect([...f32.subarray(12, 15)]).toEqual([Math.fround(0.0015), 0.5, -1.25])
     expect(u32[15]).toBe(9)
     expect([...u32.subarray(0, 8)]).toEqual([0, 0, 0, 0, 0, 0, 0, 0])
+  })
+})
+
+describe('writeTri', () => {
+  it('writes the three corners as hi/lo pairs and styleId at instance 1, leaving instance 0 intact', () => {
+    const buf = new ArrayBuffer(2 * TRI_STRIDE)
+    const f32 = new Float32Array(buf)
+    const u32 = new Uint32Array(buf)
+    const words = TRI_STRIDE / 4
+    u32.fill(0xdeadbeef, 0, words)
+    const corners = [7_400_000.001, 9_100_000.001, 7_400_000.005, 9_100_000.004, -3.25, 0.1]
+    writeTri(f32, u32, 1, corners[0]!, corners[1]!, corners[2]!, corners[3]!, corners[4]!, corners[5]!, 7)
+    const expected = new Float32Array(12)
+    corners.forEach((v, k) => splitDouble(v, expected, 2 * k))
+    expect(Array.from(f32.subarray(words, words + 12))).toEqual(Array.from(expected))
+    expect(u32[2 * words - 1]).toBe(7)
+    expect(Array.from(u32.subarray(0, words))).toEqual(new Array(words).fill(0xdeadbeef))
   })
 })
 
