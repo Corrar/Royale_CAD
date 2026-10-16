@@ -150,7 +150,9 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
   // Glyphs are drawn between frames (glyphsBetweenFrames), in the text font: App waits for it to load. Printable ASCII
   // is drawn from the start, so most text shows at once.
   const raster = canvasRaster(GLYPH_CAP_PX * GLYPH_SUPERSAMPLE)
-  const glyphs = createGlyphAtlas({ raster, capPx: GLYPH_CAP_PX, spread: GLYPH_SPREAD_PX, supersample: GLYPH_SUPERSAMPLE })
+  const glyphs = createGlyphAtlas({
+    raster, capPx: GLYPH_CAP_PX, spread: GLYPH_SPREAD_PX, supersample: GLYPH_SUPERSAMPLE, maxSize: backend.maxTextureSize,
+  })
   for (let cp = 0x21; cp < 0x7f; cp++) glyphs.index(cp)
   const scene = createScene(doc, backend, {
     drawColor: packRgba(readCssColor(canvas, '--draw')),

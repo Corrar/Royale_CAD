@@ -215,6 +215,21 @@ describe('createWebGL2Backend', () => {
     expect(t.named('drawArraysInstanced').map((call) => call.args[3])).toEqual([2, 1])
   })
 
+  it('says its texture limit, and keeps the glyph atlas it has rather than upload one past it', () => {
+    const t = setup()
+    expect(t.backend.maxTextureSize).toBe(MAX_TEXTURE_SIZE)
+    const atlas = { width: 4, height: 2, data: Uint8Array.of(1, 2, 3, 4, 5, 6, 7, 8), table: new Float32Array(8).fill(0.5) }
+    t.backend.setGlyphs(atlas)
+    t.clear()
+    const big = MAX_TEXTURE_SIZE * 2
+    t.backend.setGlyphs({ width: 4, height: big, data: new Uint8Array(4 * big), table: new Float32Array(16) })
+    // An upload GL would refuse would leave no atlas at all: every glyph would vanish.
+    expect(t.named('texImage2D').filter((c) => c.args[8] instanceof Uint8Array)).toEqual([])
+    t.lose()
+    t.restore()
+    expect(t.named('texImage2D').map((c) => c.args[8]).filter((d) => d instanceof Uint8Array)).toEqual([atlas.data])
+  })
+
   it('a tri batch draws three vertices an instance, the corners from three hi/lo attributes', () => {
     const t = setup()
     const id = t.backend.createBatch('tri', 4)

@@ -19,6 +19,11 @@ export interface GlyphAtlasOptions {
   spread: number
   /** Atlas width in px; the height grows by doubling. */
   width?: number
+  /**
+   * The GPU's largest texture side (MAX_TEXTURE_SIZE): past it the upload fails and every glyph vanishes. Once the
+   * atlas is this tall it doubles its width instead; once both are, further glyphs stay undrawn.
+   */
+  maxSize?: number
 }
 
 /** What to upload: the atlas (one byte per px, 0.5·255 on the edges) and 8 floats per glyph (bounds, uv). */
@@ -131,13 +136,15 @@ export function sdf(r: Raster, spread: number, ss = 1): { width: number; height:
 }
 
 export function createGlyphAtlas(o: GlyphAtlasOptions): GlyphWorks {
-  const width = o.width ?? 1024
+  const maxSize = o.maxSize ?? Infinity
+  let width = Math.min(o.width ?? 1024, maxSize)
   let height = 0
   let data = new Uint8Array(0)
   const indexOf = new Map<number, number>()
   // 8 numbers a glyph: bounds l b r t (capital heights), then its cell in px: left, bottom row, right, top row.
   const glyphs: number[] = []
-  // Shelf packing: rows of glyph cells, left to right.
+  // Shelf packing: rows of glyph cells, left to right, from column left (where the last widening began).
+  let left = 0
   let rowY = 0
   let rowH = 0
   let x = 0
@@ -146,37 +153,63 @@ export function createGlyphAtlas(o: GlyphAtlasOptions): GlyphWorks {
   const queue: number[] = []
   const cps: number[] = []
 
-  function grow(atLeast: number): void {
-    let h = Math.max(height, width)
-    while (h < atLeast) h *= 2
-    if (h === height) return
-    const next = new Uint8Array(width * h)
-    next.set(data)
+  function resize(w: number, h: number): void {
+    const next = new Uint8Array(w * h)
+    for (let y = 0; y < height; y++) next.set(data.subarray(y * width, (y + 1) * width), y * w)
     data = next
+    width = w
     height = h
+  }
+
+  /** At least as tall as the width (or maxSize), and atLeast if maxSize lets it. */
+  function grow(atLeast: number): void {
+    let h = Math.max(height, Math.min(width, maxSize))
+    while (h < atLeast && h < maxSize) h = Math.min(h * 2, maxSize)
+    if (h !== height) resize(width, h)
+  }
+
+  /** Where a w × h cell goes, its top left, the shelves moved on; null if the atlas is full at maxSize. */
+  function place(w: number, h: number): { x: number; y: number } | null {
+    for (;;) {
+      const newRow = x + w > width
+      const px = newRow ? left : x
+      const py = newRow ? rowY + rowH : rowY
+      grow(py + h)
+      if (px + w <= width && py + h <= height) {
+        if (newRow) {
+          rowY = py
+          rowH = 0
+        }
+        x = px + w
+        rowH = Math.max(rowH, h)
+        return { x: px, y: py }
+      }
+      if (width >= maxSize) return null
+      // As tall as it may be: a new column as wide as the atlas was, packed from its top.
+      left = width
+      x = width
+      rowY = 0
+      rowH = 0
+      resize(Math.min(width * 2, maxSize), height)
+    }
   }
 
   function draw(index: number): void {
     const r = o.raster(cps[index]!)
     const ss = o.supersample ?? 1
     const cell = sdf(r, o.spread, ss)
-    if (x + cell.width > width) {
-      rowY += rowH
-      rowH = 0
-      x = 0
-    }
-    grow(rowY + cell.height)
-    for (let y = 0; y < cell.height; y++) data.set(cell.data.subarray(y * cell.width, (y + 1) * cell.width), (rowY + y) * width + x)
+    const at = place(cell.width, cell.height)
+    // No room: the glyph keeps no size and shows nothing, and the glyphs drawn before still show.
+    if (!at) return
+    for (let y = 0; y < cell.height; y++) data.set(cell.data.subarray(y * cell.width, (y + 1) * cell.width), (at.y + y) * width + at.x)
     // The cell's edges from the baseline-left, in capital heights (raster px first); up is up (rows grow downwards).
     const s = o.spread * ss
     const k = 1 / (o.capPx * ss)
     glyphs.splice(
       8 * index, 8,
       -(r.left + s) * k, -(cell.height * ss - r.baseline - s) * k, (cell.width * ss - r.left - s) * k, (r.baseline + s) * k,
-      x, rowY + cell.height, x + cell.width, rowY,
+      at.x, at.y + cell.height, at.x + cell.width, at.y,
     )
-    x += cell.width
-    rowH = Math.max(rowH, cell.height)
     changed = true
   }
 
