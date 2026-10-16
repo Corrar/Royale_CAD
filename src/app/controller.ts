@@ -1,5 +1,5 @@
 import { BUILTIN_COMMANDS } from '../kernel/command/commands'
-import { createInterpreter } from '../kernel/command/runtime'
+import { createInterpreter, type InterpreterHost } from '../kernel/command/runtime'
 import { createDocument, docExtents } from '../kernel/document'
 import type { Vec2 } from '../kernel/geom/vec'
 import { pick, pickBox } from '../kernel/pick'
@@ -10,7 +10,9 @@ import { FIT_MARGIN_PX, fit, screenToWorld, type ViewState } from '../kernel/vie
 import { drawOverlay, type OverlayTheme } from '../render/overlay'
 import { createScene } from '../render/scene'
 import { createWebGL2Backend } from '../render/webgl2/backend'
+import { createFiles, type FileState } from './files'
 import { attachInput, attachKeyboard } from './input'
+import { parseInWorker } from './parse-worker'
 import { createStore, derivedStore, type Store } from './stores'
 import { packRgba, readBackendTheme, readCssColor } from './theme'
 
@@ -45,6 +47,8 @@ export interface StatusState {
 export interface AppSession {
   commandLine: Store<CommandLineState>
   status: Store<StatusState>
+  /** The drawing's file; null where there are no files (a plain browser). */
+  file: Store<FileState> | null
   toggleHistory(): void
   toggle(setting: Setting): void
   dispose(): void
@@ -104,18 +108,32 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
   let cursor: Vec2 | null = null // CSS px over the viewport
   let sceneDirty = true
 
-  const interp = createInterpreter(doc, selection, {
-    commands: BUILTIN_COMMANDS,
-    host: {
-      getView: () => view!,
-      setView: (v) => setView(v),
-      extents: () => docExtents(doc),
-      pick: (p) => pick(doc, index, p, PICKBOX_PX / view!.scale),
-      pickBox: (b, crossing) => pickBox(doc, index, b, crossing),
-      snap: (p, base) => snap(doc, index, p, view!, SNAP_MODES, APERTURE_PX, base),
-      query: (b) => index.query(b),
-    },
-  })
+  const host: InterpreterHost = {
+    getView: () => view!,
+    setView: (v) => setView(v),
+    extents: () => docExtents(doc),
+    pick: (p) => pick(doc, index, p, PICKBOX_PX / view!.scale),
+    pickBox: (b, crossing) => pickBox(doc, index, b, crossing),
+    snap: (p, base) => snap(doc, index, p, view!, SNAP_MODES, APERTURE_PX, base),
+    query: (b) => index.query(b),
+  }
+  const interp = createInterpreter(doc, selection, { commands: BUILTIN_COMMANDS, host })
+  const frame = (): void => {
+    if (view) setView(fit(view, docExtents(doc) ?? DEFAULT_EXTENTS, FIT_MARGIN_PX))
+  }
+  const files = window.royale
+    ? createFiles({
+        api: window.royale,
+        doc,
+        parse: parseInWorker,
+        print: (line) => interp.print(line),
+        replaced: () => {
+          selection.clear()
+          frame()
+        },
+      })
+    : null
+  if (files) host.files = files
 
   const loop = createFrameLoop(
     (cb) => requestAnimationFrame(cb),
@@ -200,6 +218,11 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     interp.feedText(text)
   }
   const idle = (): boolean => interp.command === null
+  /** A command from a shortcut: it ends the one under way, as picking from a menu does in AutoCAD. */
+  const run = (name: string): void => {
+    if (!idle()) interp.cancel()
+    interp.feedText(name)
+  }
   const detachKeyboard = attachKeyboard(window, {
     buffer: buffer.get,
     setBuffer: buffer.set,
@@ -210,6 +233,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     erase: () => idle() && selection.ids.size > 0 && interp.feedText('ERASE'),
     toggleHistory,
     toggle,
+    run,
   })
 
   const measure = (entries?: ResizeObserverEntry[]): void => {
@@ -228,6 +252,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
   const observer = new ResizeObserver((entries) => measure(entries))
   observer.observe(canvas, { box: 'device-pixel-content-box' })
   measure()
+  void files?.openInitial()
 
   const detachInput = attachInput(canvas, {
     getView: () => view!,
@@ -246,6 +271,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
   return {
     commandLine,
     status,
+    file: files?.state ?? null,
     toggleHistory,
     toggle,
     dispose() {
@@ -261,6 +287,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
       offLayers()
       offRestore()
       offSelection()
+      files?.dispose()
       index.dispose()
       scene.dispose()
       backend.dispose()

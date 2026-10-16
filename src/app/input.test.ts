@@ -151,6 +151,7 @@ function keyboard() {
     erase: () => calls.push('erase'),
     toggleHistory: () => calls.push('history'),
     toggle: (k) => calls.push(k),
+    run: (c) => calls.push(`run ${c}`),
   }
   const dispose = attachKeyboard(target, host)
   const key = (k: string, mods: Partial<Record<'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey', boolean>> = {}, from: object = {}): Event => {
@@ -198,6 +199,14 @@ describe('attachKeyboard', () => {
     t.type('x')
     t.key('Delete') // with text typed, Del does not erase
     expect(t.calls).toEqual(['undo', 'redo', 'redo', 'undo', 'erase', 'history'])
+  })
+
+  it('Ctrl+O, Ctrl+S, Ctrl+Shift+S and Ctrl+N run the file commands', () => {
+    const t = keyboard()
+    for (const [k, shiftKey] of [['o', false], ['s', false], ['S', true], ['n', false]] as const) {
+      expect(t.key(k, { ctrlKey: true, shiftKey }).defaultPrevented).toBe(true)
+    }
+    expect(t.calls).toEqual(['run OPEN', 'run QSAVE', 'run SAVEAS', 'run NEW'])
   })
 
   it('F3, F7 and F8 toggle object snap, grid and ortho', () => {

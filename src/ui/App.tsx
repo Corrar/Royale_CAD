@@ -3,6 +3,7 @@ import { runBench, runBenchG2 } from '../app/bench'
 import { startApp, type AppSession } from '../app/controller'
 import { CommandLine } from './CommandLine'
 import { StatusBar } from './StatusBar'
+import { TitleBar } from './TitleBar'
 import './App.css'
 
 export function App() {
@@ -32,7 +33,7 @@ export function App() {
     <>
       <canvas id="viewport" aria-label="Drawing viewport" />
       <canvas id="overlay" aria-hidden="true" />
-      <header className="titlebar">Royale CAD</header>
+      {session?.file ? <TitleBar store={session.file} /> : <header className="titlebar">Royale CAD</header>}
       {session && <CommandLine store={session.commandLine} onToggleHistory={session.toggleHistory} />}
       {session && <StatusBar store={session.status} onToggle={session.toggle} />}
     </>

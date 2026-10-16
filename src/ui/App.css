@@ -21,6 +21,11 @@
   -webkit-app-region: drag;
 }
 
+.titlebar-busy {
+  margin-left: 16px;
+  color: var(--accent);
+}
+
 #overlay {
   position: fixed;
   inset: 0;

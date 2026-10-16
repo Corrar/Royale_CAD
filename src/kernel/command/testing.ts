@@ -6,10 +6,10 @@ import { createSelection } from '../selection'
 import { createSpatialIndex } from '../spatial'
 import type { ViewState } from '../view'
 import { BUILTIN_COMMANDS } from './commands'
-import { createInterpreter, runScript, type Command, type InterpreterHost } from './runtime'
+import { createInterpreter, runScript, type Command, type FileHost, type InterpreterHost } from './runtime'
 
 /** A document, a selection and an interpreter wired like the app, with a fake view; for tests. */
-export function commandBench(commands: Readonly<Record<string, Command>> = BUILTIN_COMMANDS, opts: { snapModes?: number } = {}) {
+export function commandBench(commands: Readonly<Record<string, Command>> = BUILTIN_COMMANDS, opts: { snapModes?: number; files?: FileHost } = {}) {
   const snapModes = opts.snapModes ?? (SNAP.END | SNAP.MID | SNAP.CEN)
   const doc = createDocument()
   const selection = createSelection()
@@ -25,6 +25,7 @@ export function commandBench(commands: Readonly<Record<string, Command>> = BUILT
     pickBox: (b, crossing) => pickBox(doc, index, b, crossing),
     snap: (p, base) => snap(doc, index, p, view, snapModes, 10, base),
     query: (b) => index.query(b),
+    ...(opts.files && { files: opts.files }),
   }
   const interp = createInterpreter(doc, selection, { commands, host })
   const round = (v: number): number => Math.round(v * 1e9) / 1e9 + 0

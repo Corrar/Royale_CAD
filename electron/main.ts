@@ -1,11 +1,14 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { app, BrowserWindow, Menu, type KeyboardInputEvent, type MouseInputEvent, type MouseWheelInputEvent } from 'electron'
+import { app, BrowserWindow, Menu, session, type KeyboardInputEvent, type MouseInputEvent, type MouseWheelInputEvent } from 'electron'
+import { registerFiles } from './files'
 
 const smoke = app.commandLine.hasSwitch('smoke')
 const shot = app.commandLine.getSwitchValue('shot')
 const loseContext = app.commandLine.hasSwitch('lose-context')
 const play = app.commandLine.getSwitchValue('play')
+// A DXF to open at start: for smoke runs now, for file associations later.
+const openPath = app.commandLine.getSwitchValue('open') || null
 // BG, SYMBOL and BAR_H mirror --bg, --text and --titlebar-h in src/ui/tokens.css.
 const BG = '#1B1D20'
 const SYMBOL = '#E6E8EA'
@@ -133,6 +136,7 @@ function createWindow(): void {
     },
   })
   const wc = win.webContents
+  if (!bench) registerFiles(win, openPath)
 
   win.once('ready-to-show', () => win.show())
   wc.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -258,5 +262,10 @@ function createWindow(): void {
 // Default menu shortcuts (Ctrl+R reload, Ctrl+W close) would discard an unsaved drawing.
 if (!dev) Menu.setApplicationMenu(null)
 
-void app.whenReady().then(createWindow)
+void app.whenReady().then(() => {
+  // No camera, microphone, notifications, geolocation…: a CAD needs none of them.
+  session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
+  session.defaultSession.setPermissionCheckHandler(() => false)
+  createWindow()
+})
 app.on('window-all-closed', () => app.quit())

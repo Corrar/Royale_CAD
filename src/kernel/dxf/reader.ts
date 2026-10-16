@@ -1,5 +1,5 @@
 import { TRUE_COLOR, type Color } from '../color'
-import { createDocument, type Document, type Draft } from '../document'
+import { createDocument, type Document, type Draft, type Layer } from '../document'
 import type { Entity } from '../entity/types'
 import { normAngle } from '../geom/tol'
 import { entryEnd, findTable, layerEntry } from './tables'
@@ -327,20 +327,24 @@ interface Layers {
   of(name: string): number
 }
 
-function layerTable(doc: Document, pairs: PairList, start: number, end: number, warnings: string[]): Layers {
+function layerTable(list: Layer[], pairs: PairList, start: number, end: number, warnings: string[]): Layers {
   const byName = new Map<string, number>()
+  const taken = new Set(list.map((l) => l.name.toLowerCase()))
   const add = (name: string, color: Color, visible: boolean, locked: boolean): number => {
     const key = name.toLowerCase()
     const known = byName.get(key)
     if (known !== undefined) return known
     let clean = name.replace(INVALID_NAME, '_').trim() || '_'
     if (clean !== name) warnings.push(`Layer "${name}" renamed "${clean}": its name has characters layers cannot have.`)
-    while (doc.layers.indexOf(clean) !== -1 && clean.toLowerCase() !== '0') clean += '_'
+    while (taken.has(clean.toLowerCase()) && clean !== '0') clean += '_'
     let index: number
     if (clean === '0') {
       index = 0
-      doc.layers.update(0, { color, visible, locked })
-    } else index = doc.layers.add({ name: clean, color, visible, locked })
+      list[0] = { name: '0', color, visible, locked }
+    } else {
+      index = list.push({ name: clean, color, visible, locked }) - 1
+      taken.add(clean.toLowerCase())
+    }
     byName.set(key, index)
     return index
   }
@@ -366,31 +370,55 @@ function readHeader(pairs: PairList, start: number, end: number): Map<string, st
 }
 
 /**
- * The drawing in an ASCII DXF: HEADER (kept whole, read for a few variables), the LAYER table, and the model
- * space entities of the ENTITIES section. LINE, POINT, CIRCLE, ARC, LWPOLYLINE and 2D POLYLINE become entities;
- * everything else, and what these hold that the document cannot (paper space, a tilted extrusion, a bad number),
- * stays as Opaque, written back unchanged. Blocks and the other sections are kept in the source for the writer.
- * Throws DxfError for a malformed file.
+ * A DXF read into plain data, as a worker can hand it over: the layers, the drafts in file order with the span of
+ * text each came from, and what the writer needs of the file.
  */
-export function readDxf(text: string): DxfDrawing {
+export interface ParsedDxf {
+  readonly text: string
+  readonly newline: '\r\n' | '\n'
+  readonly header: ReadonlyMap<string, string>
+  readonly handseed: number
+  readonly sections: readonly { readonly name: string; readonly start: number; readonly end: number }[]
+  /** Layer 0 first. */
+  readonly layers: readonly Layer[]
+  readonly drafts: readonly Draft[]
+  /** Draft k came from the text [spans[2k], spans[2k + 1]). */
+  readonly spans: Uint32Array
+  readonly warnings: readonly string[]
+}
+
+/** How often, in entities, parseDxf reports progress. */
+const PROGRESS_EVERY = 16384
+
+/**
+ * Reads an ASCII DXF: HEADER (kept whole, read for a few variables), the LAYER table, and the model space
+ * entities of the ENTITIES section. LINE, POINT, CIRCLE, ARC, LWPOLYLINE and 2D POLYLINE become drafts;
+ * everything else, and what these hold that the document cannot (paper space, a tilted extrusion, a bad number),
+ * stays as Opaque, written back unchanged. Throws DxfError for a malformed file. `progress` hears the fraction
+ * done, now and then.
+ */
+export function parseDxf(text: string, progress?: (done: number) => void): ParsedDxf {
   const pairs = tokenize(text)
+  progress?.(0.3)
   const ranges = sections(pairs)
   const warnings: string[] = []
-  const doc = createDocument()
   const find = (name: string) => ranges.find((s) => s.name === name)
 
   const hs = find('HEADER')
   const header = hs ? readHeader(pairs, hs.start, hs.end) : new Map<string, string>()
   const tables = find('TABLES')
-  const layers = layerTable(doc, pairs, tables?.start ?? 0, tables?.end ?? 0, warnings)
+  const layerList: Layer[] = [{ name: '0', color: 7, visible: true, locked: false }]
+  const layers = layerTable(layerList, pairs, tables?.start ?? 0, tables?.end ?? 0, warnings)
 
   const ents = find('ENTITIES')
   const recs = ents ? records(pairs, ents.start, ents.end) : { n: 0, starts: new Int32Array(0), owns: new Int32Array(0), ends: new Int32Array(0) }
   const { head, read, scanHead } = parser(pairs)
   const drafts: Draft[] = new Array(recs.n)
+  const spans = new Uint32Array(2 * recs.n)
   const kept = new Map<string, number>()
   const keep = (key: string): void => void kept.set(key, (kept.get(key) ?? 0) + 1)
   for (let k = 0; k < recs.n; k++) {
+    if (progress && k % PROGRESS_EVERY === 0) progress(0.3 + (0.7 * k) / recs.n)
     const a = recs.starts[k]!
     const own = recs.owns[k]!
     const end = recs.ends[k]!
@@ -411,6 +439,8 @@ export function readDxf(text: string): DxfDrawing {
       if (!(error instanceof Unsupported)) throw error
       warnings.push(`line ${error.line ?? 2 * a + 1}: ${name} kept as is: ${error.message}.`)
     }
+    spans[2 * k] = pairs.offset(a)
+    spans[2 * k + 1] = pairs.offset(end)
     if (!draft) {
       // Kept as is: its head read leniently, for the layer and color it shows under.
       try {
@@ -419,27 +449,13 @@ export function readDxf(text: string): DxfDrawing {
         // A bad color or flag: what was read so far stands.
       }
       const color = colorOf(head)
-      draft = { type: 'opaque', layer: layers.of(head.layer), name, raw: text.slice(pairs.offset(a), pairs.offset(end)) }
+      draft = { type: 'opaque', layer: layers.of(head.layer), name, raw: text.slice(spans[2 * k]!, spans[2 * k + 1]!) }
       if (color !== undefined) (draft as { color?: Color }).color = color
     }
     drafts[k] = draft
   }
   for (const [key, n] of kept) {
     warnings.push(key === 'paper space' ? `${n} ${n === 1 ? 'entity' : 'entities'} in paper space kept as is (not drawn).` : `${n} ${key} kept as is (not drawn).`)
-  }
-
-  const originals: Entity[] = []
-  if (drafts.length > 0) {
-    doc.transact('OPEN', (tx) => {
-      for (const d of drafts) originals.push(tx.add(d))
-    })
-  }
-  doc.clearHistory()
-  const firstId = originals[0]?.id ?? 1
-  const loaded = (id: number): LoadedSpan | null => {
-    const k = id - firstId
-    if (!(k >= 0 && k < originals.length)) return null
-    return { entity: originals[k]!, start: pairs.offset(recs.starts[k]!), end: pairs.offset(recs.ends[k]!) }
   }
 
   let handseed = parseInt(header.get('$HANDSEED') ?? '0', 16) || 0
@@ -451,17 +467,41 @@ export function readDxf(text: string): DxfDrawing {
     const h = parseInt(pairs.value(i).trim(), 16)
     if (h >= handseed) handseed = h + 1
   }
+  progress?.(1)
 
   const lf = text.indexOf('\n')
   return {
-    doc,
+    text,
+    newline: lf > 0 && text.charCodeAt(lf - 1) === 13 ? '\r\n' : '\n',
+    header,
+    handseed,
+    sections: ranges.map((s) => ({ name: s.name, start: pairs.offset(s.start - 2), end: pairs.offset(s.end + 1) })),
+    layers: layerList,
+    drafts,
+    spans,
     warnings,
+  }
+}
+
+/** Puts a parsed file in place of doc's drawing (Document.replace) and returns what the writer needs of it. */
+export function drawingFrom(doc: Document, parsed: ParsedDxf): DxfDrawing {
+  const originals = doc.replace(parsed.layers, parsed.drafts)
+  const firstId = originals[0]?.id ?? 1
+  const { text, spans } = parsed
+  const loaded = (id: number): LoadedSpan | null => {
+    const k = id - firstId
+    if (!(k >= 0 && k < originals.length)) return null
+    return { entity: originals[k]!, start: spans[2 * k]!, end: spans[2 * k + 1]! }
+  }
+  return {
+    doc,
+    warnings: [...parsed.warnings],
     source: {
       text,
-      newline: lf > 0 && text.charCodeAt(lf - 1) === 13 ? '\r\n' : '\n',
-      header,
-      handseed,
-      sections: ranges.map((s) => ({ name: s.name, start: pairs.offset(s.start - 2), end: pairs.offset(s.end + 1) })),
+      newline: parsed.newline,
+      header: parsed.header,
+      handseed: parsed.handseed,
+      sections: parsed.sections,
       loaded,
       handleOf(id) {
         const span = loaded(id)
@@ -472,4 +512,9 @@ export function readDxf(text: string): DxfDrawing {
       },
     },
   }
+}
+
+/** parseDxf and drawingFrom in one go, into a new document. */
+export function readDxf(text: string): DxfDrawing {
+  return drawingFrom(createDocument(), parseDxf(text))
 }

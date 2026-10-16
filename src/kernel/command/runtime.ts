@@ -80,6 +80,23 @@ export interface InterpreterHost {
   snap?(p: Vec2, base?: Vec2): SnapHit | null
   /** The entities whose bbox meets b (the spatial index); a superset is fine. */
   query?(b: BBox): number[]
+  /** Files: the app runs the dialogs and the reading and writing after the command has ended. */
+  files?: FileHost
+}
+
+export interface FileHost {
+  /** The drawing's file name, for prompts. */
+  name(): string
+  /** Whether the drawing changed since it was opened, saved or begun. */
+  dirty(): boolean
+  /** Asks for a file and opens it; saves the current drawing first when told to. */
+  open(saveFirst: boolean): void
+  /** Begins an empty drawing; saves the current one first when told to. */
+  create(saveFirst: boolean): void
+  /** Saves to the drawing's file, or asks for one when it has none. */
+  save(): void
+  /** Asks for a file and saves there; the drawing then goes by that name. */
+  saveAs(): void
 }
 
 export interface CommandContext {
@@ -113,6 +130,8 @@ export interface Interpreter {
   ortho: boolean
   /** Where a click at the cursor would land now, and the snap that put it there; null without a cursor. */
   readonly tracked: { p: Vec2; snap: SnapHit | null } | null
+  /** A line in the history from outside a command: what the app has to say (a file saved, a load failed). */
+  print(line: string): void
   feedText(text: string): void
   /** A click. At a selection prompt or idle it picks, or opens and closes a window. */
   feedPoint(p: Vec2, shift?: boolean): void
@@ -383,6 +402,10 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     },
     get tracked() {
       return cursor && resolve(cursor)
+    },
+    print(line) {
+      say(line)
+      emit()
     },
     feedText(text) {
       onText(text)

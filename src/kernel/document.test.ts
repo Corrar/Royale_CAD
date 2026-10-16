@@ -409,6 +409,44 @@ describe('docExtents', () => {
   })
 })
 
+describe('replace', () => {
+  it('puts in another drawing: layers, then entities with fresh ids, one change, nothing to undo', () => {
+    const doc = createDocument()
+    doc.layers.add({ name: 'Old', color: 1, visible: true, locked: false })
+    doc.transact('a', (tx) => void tx.add({ ...L(0, 0, 1, 1), layer: 1 }))
+    const changes: Change[] = []
+    const layerEvents: number[] = []
+    doc.onChange((c) => changes.push(c))
+    doc.layers.onChange((i) => layerEvents.push(i))
+    const added = doc.replace(
+      [{ name: '0', color: 3, visible: true, locked: false }, { name: 'New', color: 5, visible: false, locked: true }],
+      [{ ...L(5, 5, 6, 6), layer: 1 }, { type: 'circle', layer: 0, cx: 0, cy: 0, r: 1 }],
+    )
+    expect(added.map((e) => e.id)).toEqual([2, 3])
+    expect([...doc.entities()]).toEqual(added)
+    expect(doc.layers.size).toBe(2)
+    expect(doc.layers.get(1)).toEqual({ name: 'New', color: 5, visible: false, locked: true })
+    expect(doc.layers.indexOf('Old')).toBe(-1)
+    expect(changes).toHaveLength(1)
+    expect(changes[0]!.removed.map((e) => e.id)).toEqual([1])
+    expect(changes[0]!.added).toEqual(added)
+    expect(layerEvents).toEqual([0, 1])
+    expect(doc.undo()).toBeUndefined()
+  })
+
+  it('an invalid layer or draft changes nothing', () => {
+    const doc = createDocument()
+    doc.transact('a', (tx) => void tx.add(L(0, 0, 1, 1)))
+    const zero = { name: '0', color: 7, visible: true, locked: false }
+    expect(() => doc.replace([{ ...zero, name: 'A' }], [])).toThrow(/layer 0/)
+    expect(() => doc.replace([zero, { ...zero, name: 'a/b' }], [])).toThrow(/invalid layer name/)
+    expect(() => doc.replace([zero], [{ ...L(0, 0, 1, 1), layer: 1 }])).toThrow(/layer 1 does not exist/)
+    expect(() => doc.replace([zero], [{ type: 'circle', layer: 0, cx: 0, cy: 0, r: -1 }])).toThrow()
+    expect(doc.size).toBe(1)
+    expect([...doc.entities()][0]!.id).toBe(1)
+  })
+})
+
 describe('clearHistory', () => {
   it('leaves nothing to undo or redo, and is refused inside a group', () => {
     const doc = createDocument()

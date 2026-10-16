@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
 import type { Arc, Circle, Entity, Line, Opaque, Point, Polyline } from '../entity/types'
-import { readDxf } from './reader'
+import { createDocument } from '../document'
+import { drawingFrom, parseDxf, readDxf } from './reader'
 
 type G = (string | number)[]
 
@@ -150,5 +151,21 @@ describe('readDxf', () => {
     expect(d.source.newline).toBe('\n')
     expect(d.source.handleOf(1)).toBeNull()
     expect(readDxf(lines([0, 'EOF'])).doc.size).toBe(0)
+  })
+
+  it('parses to plain data a worker can post, then loads it into an existing document', () => {
+    const text = file([0, 'LINE', 5, '2A', 8, 'Walls', 10, 0, 20, 0, 11, 1, 21, 1, 0, 'HATCH', 5, '2B', 8, '0'], LAYER_TABLE([2, 'Walls', 70, 0, 62, 3]))
+    const seen: number[] = []
+    const parsed = structuredClone(parseDxf(text, (f) => seen.push(f)))
+    expect(seen.at(-1)).toBe(1)
+    expect(seen).toEqual([...seen].sort((a, b) => a - b))
+    const doc = createDocument()
+    doc.transact('old', (tx) => void tx.add({ type: 'circle', layer: 0, cx: 0, cy: 0, r: 1 }))
+    const d = drawingFrom(doc, parsed)
+    expect(d.doc).toBe(doc)
+    expect([...doc.entities()].map((e) => e.type)).toEqual(['line', 'opaque'])
+    expect(d.source.handleOf(2)).toBe('2A')
+    expect(doc.layers.get(1)!.name).toBe('Walls')
+    expect(doc.undo()).toBeUndefined()
   })
 })

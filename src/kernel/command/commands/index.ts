@@ -3,6 +3,7 @@ import { arc } from './arc'
 import { circle } from './circle'
 import { erase } from './erase'
 import { extend } from './extend'
+import { create, open, qsave, saveas } from './file'
 import { line } from './line'
 import { offset } from './offset'
 import { pline } from './pline'
@@ -33,4 +34,8 @@ export const BUILTIN_COMMANDS: Readonly<Record<string, Command>> = {
   REDO: redo,
   ZOOM: zoom,
   PAN: pan,
+  OPEN: open,
+  NEW: create,
+  QSAVE: qsave,
+  SAVEAS: saveas,
 }

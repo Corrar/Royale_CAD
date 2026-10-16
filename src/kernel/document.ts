@@ -49,6 +49,12 @@ export interface Document {
   onChange(fn: (c: Change) => void): () => void
   /** Forgets every undo and redo step: a drawing just read starts with nothing to undo. Not inside a group. */
   clearHistory(): void
+  /**
+   * Puts another drawing in place of this one (a file opened, a new drawing): the layers, then the entities with
+   * fresh ids, in one change that cannot be undone, the history cleared. Layer 0 must come first, named "0". If
+   * a layer or a draft is invalid, it throws and nothing changes. Returns the entities added, in order.
+   */
+  replace(layers: readonly Layer[], drafts: readonly Draft[]): Entity[]
   readonly layers: LayerTable
 }
 
@@ -107,8 +113,8 @@ function subscribe<T>(listeners: Set<(x: T) => void>, fn: (x: T) => void): () =>
 
 const INVALID_NAME = /[<>/\\":;?*|,=`]/
 
-function createLayerTable(): LayerTable {
-  const layers: Layer[] = [{ name: '0', color: 7, visible: true, locked: false }]
+function createLayerTable(): LayerTable & { reset(list: readonly Layer[]): void; check(list: readonly Layer[]): void } {
+  let layers: Layer[] = [{ name: '0', color: 7, visible: true, locked: false }]
   const listeners = new Set<(index: number) => void>()
 
   const indexOf = (name: string): number => {
@@ -145,6 +151,22 @@ function createLayerTable(): LayerTable {
       emit(listeners, index)
     },
     onChange: (fn) => subscribe(listeners, fn),
+    /** Throws unless list is a valid table: layer 0 first, names valid and distinct. */
+    check(list) {
+      if (list[0]?.name !== '0') throw new Error('the first layer must be layer 0')
+      const seen = new Set<string>()
+      for (const l of list) {
+        if (typeof l.name !== 'string' || l.name.trim() === '' || INVALID_NAME.test(l.name)) throw new Error(`invalid layer name "${l.name}"`)
+        if (seen.has(l.name.toLowerCase())) throw new Error(`layer "${l.name}" already exists`)
+        seen.add(l.name.toLowerCase())
+        if (!isColor(l.color)) throw new Error(`invalid layer color ${l.color}`)
+      }
+    },
+    /** Takes list (checked) in place of every layer, then tells the listeners about each index. */
+    reset(list) {
+      layers = list.map((l) => ({ name: l.name, color: l.color, visible: l.visible, locked: l.locked }))
+      for (let i = 0; i < layers.length; i++) emit(listeners, i)
+    },
   }
 }
 
@@ -185,9 +207,9 @@ export function createDocument(): Document {
     return true
   }
 
-  function validate(e: Entity): void {
+  function validate(e: Entity, layerCount = layers.size): void {
     const t = typeOf(e)
-    if (!layers.get(e.layer)) throw new Error(`layer ${e.layer} does not exist`)
+    if (!(Number.isInteger(e.layer) && e.layer >= 0 && e.layer < layerCount)) throw new Error(`layer ${e.layer} does not exist`)
     if (e.color !== undefined && !isColor(e.color)) throw new Error(`invalid color ${e.color}`)
     const problem = t.validate?.(e)
     if (problem) throw new Error(problem)
@@ -353,6 +375,27 @@ export function createDocument(): Document {
         after: merged.after.filter((_, k) => keep[k]),
       }
       if (net.ids.length > 0) undoStack.push(net)
+    },
+    replace(list, drafts) {
+      if (open || groupDepth > 0) throw new Error('replace cannot run inside a transaction or a group')
+      layers.check(list)
+      const added: Entity[] = new Array(drafts.length)
+      for (let k = 0; k < drafts.length; k++) {
+        const e = { ...drafts[k]!, id: nextId + k } as Entity
+        validate(e, list.length)
+        added[k] = e
+      }
+      const removed = [...items.values()] as Entity[]
+      items.clear()
+      for (const e of added) items.set(e.id, e)
+      nextId += added.length
+      count = added.length
+      undoStack.length = 0
+      redoStack.length = 0
+      // The new layers before the change goes out: a listener that reads the layer of an added entity finds it.
+      layers.reset(list)
+      deliver({ added, removed, changed: [] })
+      return added
     },
     onChange: (fn) => subscribe(listeners, fn),
     layers,
