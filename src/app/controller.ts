@@ -2,10 +2,10 @@ import { createDocument, docExtents, type Document } from '../kernel/document'
 import { pick } from '../kernel/pick'
 import { createSelection } from '../kernel/selection'
 import { createSpatialIndex } from '../kernel/spatial'
-import { fit, screenToWorld, type ViewState } from '../kernel/view'
+import { FIT_MARGIN_PX, fit, screenToWorld, type ViewState } from '../kernel/view'
 import { createScene } from '../render/scene'
 import { createWebGL2Backend } from '../render/webgl2/backend'
-import { attachInput, FIT_MARGIN_PX } from './input'
+import { attachInput } from './input'
 import { packRgba, readBackendTheme, readCssColor } from './theme'
 
 /** Half side of the pick box, CSS px. */

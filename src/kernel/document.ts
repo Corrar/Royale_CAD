@@ -39,6 +39,13 @@ export interface Document {
   /** Returns the label of the step undone, or undefined when there is none. */
   undo(): string | undefined
   redo(): string | undefined
+  /**
+   * Until the matching endGroup, committed transactions merge into one undo step labelled `label` (a command).
+   * Inside a group, undo stops at the group's start, and what it takes back cannot be redone after the group.
+   * Groups nest; only the outermost pair counts.
+   */
+  beginGroup(label: string): void
+  endGroup(): void
   onChange(fn: (c: Change) => void): () => void
   readonly layers: LayerTable
 }
@@ -155,6 +162,11 @@ export function createDocument(): Document {
   // Ids from txStart on were created by the transaction, so their original value is known to be absent.
   let open: Map<number, Entity | undefined> | null = null
   let txStart = 0
+  // The open undo group: its depth, label, first step in undoStack, and how many steps it moved to redoStack.
+  let groupDepth = 0
+  let groupLabel = ''
+  let groupStart = 0
+  let groupUndone = 0
 
   const read = (id: number): Entity | undefined => {
     const e = items.get(id)
@@ -236,6 +248,10 @@ export function createDocument(): Document {
 
   function move(from: Step[], to: Step[], name: 'undo' | 'redo'): string | undefined {
     if (open) throw new Error(`${name} cannot run inside a transaction`)
+    if (groupDepth > 0) {
+      if (name === 'undo' ? undoStack.length <= groupStart : groupUndone === 0) return undefined
+      groupUndone += name === 'undo' ? 1 : -1
+    }
     const s = from.pop()
     if (!s) return undefined
     to.push(s)
@@ -287,10 +303,49 @@ export function createDocument(): Document {
       if (step.ids.length === 0) return
       undoStack.push(step)
       redoStack.length = 0
+      groupUndone = 0
       deliver(c)
     },
     undo: () => move(undoStack, redoStack, 'undo'),
     redo: () => move(redoStack, undoStack, 'redo'),
+    beginGroup(label) {
+      if (open) throw new Error('beginGroup cannot run inside a transaction')
+      if (groupDepth++ > 0) return
+      groupLabel = label
+      groupStart = undoStack.length
+      groupUndone = 0
+    },
+    endGroup() {
+      if (groupDepth === 0) throw new Error('endGroup: no group is open')
+      if (--groupDepth > 0) return
+      // What was undone inside the group sits on top of the redo stack; it only made sense inside the command.
+      redoStack.length -= groupUndone
+      groupUndone = 0
+      const steps = undoStack.splice(groupStart)
+      // Net change per entity, in first-touch order: the earliest before against the latest after.
+      const merged: Step = { label: groupLabel, ids: [], before: [], after: [] }
+      const slot = new Map<number, number>()
+      for (const s of steps) {
+        for (let k = 0; k < s.ids.length; k++) {
+          const id = s.ids[k]!
+          const at = slot.get(id)
+          if (at === undefined) {
+            slot.set(id, merged.ids.length)
+            merged.ids.push(id)
+            merged.before.push(s.before[k])
+            merged.after.push(s.after[k])
+          } else merged.after[at] = s.after[k]
+        }
+      }
+      const keep = merged.ids.map((_, k) => merged.before[k] !== merged.after[k])
+      const net: Step = {
+        label: groupLabel,
+        ids: merged.ids.filter((_, k) => keep[k]),
+        before: merged.before.filter((_, k) => keep[k]),
+        after: merged.after.filter((_, k) => keep[k]),
+      }
+      if (net.ids.length > 0) undoStack.push(net)
+    },
     onChange: (fn) => subscribe(listeners, fn),
     layers,
   }

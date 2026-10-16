@@ -1,5 +1,5 @@
 import type { BBox } from '../kernel/geom/vec'
-import { fit, panBy, zoomAt, type ViewState } from '../kernel/view'
+import { FIT_MARGIN_PX, fit, panBy, zoomAt, type ViewState } from '../kernel/view'
 
 export interface InputHost {
   getView(): ViewState
@@ -8,8 +8,6 @@ export interface InputHost {
   /** Left button press at (sx, sy), CSS px relative to the target. */
   pick(sx: number, sy: number, shift: boolean): void
 }
-
-export const FIT_MARGIN_PX = 64
 
 export const wheelFactor = (deltaY: number): number => Math.exp(-deltaY * 0.0015)
 

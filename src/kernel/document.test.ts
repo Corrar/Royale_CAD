@@ -277,6 +277,78 @@ describe('createDocument', () => {
   })
 })
 
+describe('undo groups', () => {
+  it('merges the transactions of a group into one undo step with the group label', () => {
+    const { doc, events } = setup()
+    doc.beginGroup('LINE')
+    doc.transact('seg', (tx) => void tx.add(L(0, 0, 1, 0)))
+    doc.transact('seg', (tx) => void tx.add(L(1, 0, 1, 1)))
+    doc.endGroup()
+    expect(events).toHaveLength(2) // each transaction still notifies at once
+    expect(doc.size).toBe(2)
+    expect(doc.undo()).toBe('LINE')
+    expect(doc.size).toBe(0)
+    expect(events.at(-1)!.removed).toHaveLength(2)
+    expect(doc.redo()).toBe('LINE')
+    expect(doc.size).toBe(2)
+  })
+
+  it('undo inside a group stops at the group start, and what it took back cannot be redone after', () => {
+    const { doc } = setup()
+    doc.transact('before', (tx) => void tx.add(L(5, 5, 6, 6)))
+    doc.beginGroup('LINE')
+    doc.transact('seg', (tx) => void tx.add(L(0, 0, 1, 0)))
+    doc.transact('seg', (tx) => void tx.add(L(1, 0, 1, 1)))
+    expect(doc.undo()).toBe('seg')
+    expect(doc.undo()).toBe('seg')
+    expect(doc.undo()).toBeUndefined() // 'before' belongs to the previous command
+    expect(doc.size).toBe(1)
+    doc.endGroup()
+    expect(doc.redo()).toBeUndefined()
+    expect(doc.undo()).toBe('before')
+  })
+
+  it('nets the changes of the group per entity, and an empty group leaves no step', () => {
+    const { doc } = setup()
+    let a!: Entity
+    doc.transact('setup', (tx) => {
+      a = tx.add(L(0, 0, 1, 0))
+    })
+    doc.beginGroup('EMPTY')
+    doc.endGroup()
+    doc.beginGroup('NET')
+    let b!: Entity
+    doc.transact('add', (tx) => {
+      b = tx.add(L(9, 9, 9, 9))
+    })
+    doc.transact('move', (tx) => tx.replace({ ...a, x1: 2 } as Line))
+    doc.transact('move', (tx) => tx.replace({ ...a, x1: 3 } as Line))
+    doc.transact('erase', (tx) => tx.remove(b.id))
+    doc.endGroup()
+    expect(doc.undo()).toBe('NET')
+    expect(doc.get(a.id)).toBe(a)
+    expect(doc.undo()).toBe('setup')
+  })
+
+  it('nests: only the outermost pair counts', () => {
+    const { doc } = setup()
+    doc.beginGroup('OUTER')
+    doc.transact('one', (tx) => void tx.add(L(0, 0, 1, 0)))
+    doc.beginGroup('INNER')
+    doc.transact('two', (tx) => void tx.add(L(0, 0, 2, 0)))
+    doc.endGroup()
+    doc.endGroup()
+    expect(doc.undo()).toBe('OUTER')
+    expect(doc.size).toBe(0)
+  })
+
+  it('refuses unbalanced or misplaced calls', () => {
+    const { doc } = setup()
+    expect(() => doc.endGroup()).toThrow(/no group/)
+    expect(() => doc.transact('t', () => doc.beginGroup('x'))).toThrow(/inside a transaction/)
+  })
+})
+
 describe('layers', () => {
   it('adds layers with unique case-insensitive names and finds them', () => {
     const doc = createDocument()

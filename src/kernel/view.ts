@@ -2,6 +2,9 @@ import type { BBox, Vec2 } from './geom/vec'
 
 export interface ViewState { cx: number; cy: number; scale: number; width: number; height: number; dpr: number }
 
+/** Margin around the drawing when a view frames it (zoom extents), CSS px. */
+export const FIT_MARGIN_PX = 64
+
 export const MIN_SCALE = 1e-6
 export const MAX_SCALE = 1e6
 
