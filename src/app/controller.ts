@@ -441,7 +441,12 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     getView: () => view!,
     setView,
     extents: () => docExtents(doc),
-    click: (sx, sy, shift) => interp.feedPoint(screenToWorld(view!, sx, sy), shift),
+    click: (sx, sy, shift) => {
+      // DTEXT: a click ends the line being typed where it is, then the next one starts at the click.
+      const r = interp.request
+      if (r?.kind === 'text' && r.acceptPoint === true && buffer.get() !== '') submit()
+      interp.feedPoint(screenToWorld(view!, sx, sy), shift)
+    },
     enter: submit,
     hover: (p) => {
       // Off the viewport (over the command line, the status bar) the crosshair goes, but the last point stays for

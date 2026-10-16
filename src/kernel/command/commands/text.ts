@@ -78,14 +78,21 @@ export const text: Command = function* (ctx) {
   const [halign, valign] = option === 'Align' ? [3, 0] : option === 'Fit' ? [5, 0] : PLACES[option]!
   // Down the page, one line: both points move together.
   const down = { x: Math.sin(rotation) * height * LINE_GAP, y: -Math.cos(rotation) * height * LINE_GAP }
-  for (let line = 0; ; line++) {
-    const r: Input = yield { kind: 'text', prompt: 'Enter text', spaces: true } satisfies Request
+  let [a, b] = [p0, p1]
+  for (;;) {
+    const r: Input = yield { kind: 'text', prompt: 'Enter text', spaces: true, acceptPoint: true } satisfies Request
+    if (r.kind === 'point') {
+      // A click starts the next line there, as DTEXT does; Align's and Fit's second point keeps its place from the first.
+      ;[a, b] = [r.p, { x: r.p.x + b.x - a.x, y: r.p.y + b.y - a.y }]
+      continue
+    }
     if (r.kind !== 'text' || r.text === '') return
     const value = r.text
-    const [x, y, x2, y2] = [p0.x + line * down.x, p0.y + line * down.y, p1.x + line * down.x, p1.y + line * down.y]
+    const [x, y, x2, y2] = [a.x, a.y, b.x, b.y]
     ctx.doc.transact('TEXT', (tx) => void tx.add({
       type: 'text', layer: ctx.layer, value, x, y, x2, y2, height, rotation, widthFactor: 1, oblique: 0,
       halign, valign, backward: false, upsideDown: false,
     }))
+    ;[a, b] = [{ x: a.x + down.x, y: a.y + down.y }, { x: b.x + down.x, y: b.y + down.y }]
   }
 }

@@ -77,6 +77,18 @@ describe('TEXT', () => {
     expect(texts(t).map((e) => [e.halign, e.valign])).toEqual([[1, 2], [1, 0], [3, 0]])
   })
 
+  it('a click while the words are asked starts the next line there, as DTEXT does', () => {
+    const t = commandBench()
+    t.run('TEXT⏎0,0⏎2⏎0⏎A⏎')
+    t.click(50, 40)
+    expect(t.interp.history.at(-1)).toBe('Enter text:')
+    expect(t.interp.prompt).toBe('Enter text:')
+    t.run('B⏎C⏎⏎')
+    const [, b, c] = texts(t)
+    expect([b!.value, b!.x, b!.y]).toEqual(['B', 50, 40])
+    expect([round(c!.x), round(c!.y)]).toEqual([50, round(40 - (2 * 5) / 3)])
+  })
+
   it('refuses a second endpoint on the first', () => {
     const t = commandBench()
     t.run('TEXT⏎J⏎A⏎0,0⏎0,0⏎')

@@ -64,6 +64,8 @@ export interface TextRequest extends Ask {
   default?: string
   /** Space types a space and only Enter ends it (the words of a TEXT); the text is kept untrimmed. */
   spaces?: boolean
+  /** A click answers { kind: 'point' } instead of being refused: DTEXT starts its next line there. */
+  acceptPoint?: boolean
 }
 
 export type Request = PointRequest | NumberRequest | KeywordRequest | SelectionRequest | TextRequest
@@ -534,6 +536,7 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     const p = resolve(raw).p
     if (r.kind === 'point') return answer({ kind: 'point', p }, '')
     if (r.kind === 'number' && r.base) return answerNumber(r, measure(r, p), '')
+    if (r.kind === 'text' && r.acceptPoint) return answer({ kind: 'point', p }, '')
     refuse('', r.kind === 'number' ? 'Requires a number.' : r.kind === 'text' ? 'Requires a name.' : 'Invalid option keyword.')
   }
 
