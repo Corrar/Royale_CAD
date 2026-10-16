@@ -1,0 +1,83 @@
+import type { PrimSink } from '../kernel/entity/types'
+import type { Vec2 } from '../kernel/geom/vec'
+import { screenToWorld, worldToScreen, type ViewState } from '../kernel/view'
+
+/** Arm length of the crosshair, CSS px. */
+export const CROSSHAIR_PX = 40
+
+export interface OverlayState {
+  view: ViewState
+  /** The cursor, CSS px from the viewport's top left; null when it is outside. */
+  cursor: Vec2 | null
+  /** Show the pick box: a click would select. */
+  pickbox: boolean
+  /** Rubber band of the waiting request, in world coordinates. */
+  preview: ((cursor: Vec2, out: PrimSink) => void) | null
+  /** First corner of a selection window, world. */
+  corner: Vec2 | null
+}
+
+export interface OverlayTheme { crosshair: string; preview: string; window: string; windowFill: string; crossingFill: string }
+
+/**
+ * Everything that follows the cursor, drawn with Canvas 2D over the GL view: selection window, rubber band,
+ * crosshair and pick box. Cheap enough to redraw on every mouse move without touching the GPU scene.
+ */
+export function drawOverlay(ctx: CanvasRenderingContext2D, s: OverlayState, theme: OverlayTheme, pickboxPx: number): void {
+  const { view } = s
+  ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0)
+  ctx.clearRect(0, 0, view.width, view.height)
+  if (!s.cursor) return
+  // Odd widths are crisp on pixel centres.
+  const px = (v: number): number => Math.floor(v) + 0.5
+  ctx.lineWidth = 1
+
+  if (s.corner) {
+    const a = worldToScreen(view, s.corner.x, s.corner.y)
+    const b = s.cursor
+    // Left to right: window. Right to left: crossing, dashed, as in AutoCAD.
+    const crossing = b.x < a.x
+    const x = Math.min(a.x, b.x)
+    const y = Math.min(a.y, b.y)
+    const w = Math.abs(b.x - a.x)
+    const h = Math.abs(b.y - a.y)
+    ctx.fillStyle = crossing ? theme.crossingFill : theme.windowFill
+    ctx.fillRect(x, y, w, h)
+    ctx.strokeStyle = theme.window
+    ctx.setLineDash(crossing ? [6, 4] : [])
+    ctx.strokeRect(px(x), px(y), Math.round(w), Math.round(h))
+    ctx.setLineDash([])
+  }
+
+  if (s.preview) {
+    const p = screenToWorld(view, s.cursor.x, s.cursor.y)
+    ctx.beginPath()
+    s.preview(p, {
+      segment(x0, y0, x1, y1) {
+        const a = worldToScreen(view, x0, y0)
+        const b = worldToScreen(view, x1, y1)
+        ctx.moveTo(a.x, a.y)
+        ctx.lineTo(b.x, b.y)
+      },
+      arc(cx, cy, r, a0, sweep) {
+        const c = worldToScreen(view, cx, cy)
+        // The screen's Y points down: a counter-clockwise sweep in the world is anticlockwise on the canvas.
+        ctx.moveTo(c.x + r * view.scale * Math.cos(a0), c.y - r * view.scale * Math.sin(a0))
+        ctx.arc(c.x, c.y, r * view.scale, -a0, -(a0 + sweep), sweep > 0)
+      },
+    })
+    ctx.strokeStyle = theme.preview
+    ctx.stroke()
+  }
+
+  const x = px(s.cursor.x)
+  const y = px(s.cursor.y)
+  ctx.beginPath()
+  ctx.moveTo(x - CROSSHAIR_PX, y)
+  ctx.lineTo(x + CROSSHAIR_PX, y)
+  ctx.moveTo(x, y - CROSSHAIR_PX)
+  ctx.lineTo(x, y + CROSSHAIR_PX)
+  ctx.strokeStyle = theme.crosshair
+  ctx.stroke()
+  if (s.pickbox) ctx.strokeRect(x - pickboxPx, y - pickboxPx, 2 * pickboxPx, 2 * pickboxPx)
+}

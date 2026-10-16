@@ -11,6 +11,8 @@
   --grid-major: rgb(103 232 249 / 0.25);
   --draw: #f2f4f5;
   --snap: #fbbf24;
+  --window-fill: rgb(103 232 249 / 0.1);
+  --crossing-fill: rgb(103 232 249 / 0.05);
   --radius: 8px;
   --titlebar-h: 32px;
   --font-ui: 'Inter Variable', system-ui, sans-serif;

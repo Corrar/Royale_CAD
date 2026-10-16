@@ -1,11 +1,16 @@
-import { createDocument, docExtents, type Document } from '../kernel/document'
-import { pick } from '../kernel/pick'
+import { BUILTIN_COMMANDS } from '../kernel/command/commands'
+import { createInterpreter } from '../kernel/command/runtime'
+import { createDocument, docExtents } from '../kernel/document'
+import type { Vec2 } from '../kernel/geom/vec'
+import { pick, pickBox } from '../kernel/pick'
 import { createSelection } from '../kernel/selection'
 import { createSpatialIndex } from '../kernel/spatial'
 import { FIT_MARGIN_PX, fit, screenToWorld, type ViewState } from '../kernel/view'
+import { drawOverlay, type OverlayTheme } from '../render/overlay'
 import { createScene } from '../render/scene'
 import { createWebGL2Backend } from '../render/webgl2/backend'
-import { attachInput } from './input'
+import { attachInput, attachKeyboard } from './input'
+import { createStore, derivedStore, type Store } from './stores'
 import { packRgba, readBackendTheme, readCssColor } from './theme'
 
 /** Half side of the pick box, CSS px. */
@@ -14,17 +19,21 @@ export const PICKBOX_PX = 5
 /** What an empty drawing frames: an A3 sheet in millimetres, like AutoCAD's metric limits. */
 const DEFAULT_EXTENTS = { minX: 0, minY: 0, maxX: 420, maxY: 297 }
 
-// Temporary demo drawing until the command line can draw (T19): shapes a few millimetres wide at UTM coordinates.
-function seedDemo(doc: Document): void {
-  const a = { x: 7_400_000.001, y: 9_100_000.001 }
-  const b = { x: 7_400_000.005, y: 9_100_000.001 }
-  const c = { x: 7_400_000.003, y: 9_100_000.004 }
-  doc.transact('demo', (tx) => {
-    for (const [p, q] of [[a, b], [b, c], [c, a]] as const) tx.add({ type: 'line', layer: 0, x0: p.x, y0: p.y, x1: q.x, y1: q.y })
-    tx.add({ type: 'circle', layer: 0, cx: 7_400_000.003, cy: 9_100_000.0025, r: 0.0015 })
-    tx.add({ type: 'arc', layer: 0, cx: a.x, cy: a.y, r: 0.002, a0: 0, a1: Math.PI / 2 })
-    tx.add({ type: 'arc', layer: 0, cx: b.x, cy: b.y, r: 0.002, a0: Math.PI / 2, a1: Math.PI })
-  })
+/** Lines of history the command line can show. */
+const HISTORY_KEEP = 200
+
+export interface CommandLineState {
+  prompt: string
+  /** Typed and not yet submitted. */
+  buffer: string
+  history: readonly string[]
+  expanded: boolean
+}
+
+export interface AppSession {
+  commandLine: Store<CommandLineState>
+  toggleHistory(): void
+  dispose(): void
 }
 
 export function createFrameLoop(
@@ -53,10 +62,19 @@ export function createFrameLoop(
   }
 }
 
-export function startApp(canvas: HTMLCanvasElement): () => void {
+export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement): AppSession {
   const backend = createWebGL2Backend(canvas, readBackendTheme(canvas))
+  const overlayCtx = overlay.getContext('2d')
+  if (!overlayCtx) throw new Error('the overlay canvas has no 2D context')
+  const token = (name: string): string => getComputedStyle(canvas).getPropertyValue(name).trim()
+  const overlayTheme: OverlayTheme = {
+    crosshair: token('--text'),
+    preview: token('--accent'),
+    window: token('--accent'),
+    windowFill: token('--window-fill'),
+    crossingFill: token('--crossing-fill'),
+  }
   const doc = createDocument()
-  seedDemo(doc)
   const scene = createScene(doc, backend, {
     drawColor: packRgba(readCssColor(canvas, '--draw')),
     highlightColor: packRgba(readCssColor(canvas, '--accent')),
@@ -65,27 +83,90 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
   const selection = createSelection()
 
   let view: ViewState | null = null
+  let cursor: Vec2 | null = null // CSS px over the viewport
+  let sceneDirty = true
+
+  const interp = createInterpreter(doc, selection, {
+    commands: BUILTIN_COMMANDS,
+    host: {
+      getView: () => view!,
+      setView: (v) => setView(v),
+      extents: () => docExtents(doc),
+      pick: (p) => pick(doc, index, p, PICKBOX_PX / view!.scale),
+      pickBox: (b, crossing) => pickBox(doc, index, b, crossing),
+    },
+  })
+
   const loop = createFrameLoop(
     (cb) => requestAnimationFrame(cb),
     () => {
-      if (view) backend.frame(view, scene.draws(view))
+      if (!view) return
+      if (sceneDirty) {
+        sceneDirty = false
+        backend.frame(view, scene.draws(view))
+      }
+      const r = interp.request
+      drawOverlay(
+        overlayCtx,
+        {
+          view,
+          cursor,
+          pickbox: !r || r.kind === 'selection',
+          preview: r && (r.kind === 'point' || r.kind === 'number') ? (r.preview ?? null) : null,
+          corner: interp.corner,
+        },
+        overlayTheme,
+        PICKBOX_PX,
+      )
     },
   )
+  const redrawScene = (): void => {
+    sceneDirty = true
+    loop.invalidate()
+  }
+  function setView(v: ViewState): void {
+    view = v
+    interp.cursor = cursor && screenToWorld(v, cursor.x, cursor.y)
+    redrawScene()
+  }
+
   const offDoc = doc.onChange((c) => {
     if (c.removed.length > 0) selection.remove(c.removed.map((e) => e.id))
-    loop.invalidate()
+    redrawScene()
   })
-  const offLayers = doc.layers.onChange(() => loop.invalidate())
-  const offRestore = backend.onRestore(() => loop.invalidate())
+  const offLayers = doc.layers.onChange(redrawScene)
+  const offRestore = backend.onRestore(redrawScene)
   const offSelection = selection.onChange(() => {
     scene.setHighlight(selection.ids)
-    loop.invalidate()
+    redrawScene()
   })
-  // Temporary until the input router (T19) owns the keyboard.
-  const onKey = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') selection.clear()
+  const offInterp = interp.onChange(() => loop.invalidate())
+
+  const buffer = createStore('')
+  const expanded = createStore(false)
+  const commandLine = derivedStore(
+    () => ({ prompt: interp.prompt, buffer: buffer.get(), history: interp.history.slice(-HISTORY_KEEP), expanded: expanded.get() }),
+    { subscribe: (fn) => interp.onChange(fn) },
+    buffer,
+    expanded,
+  )
+  const toggleHistory = (): void => expanded.set(!expanded.get())
+  const submit = (): void => {
+    const text = buffer.get()
+    buffer.set('')
+    interp.feedText(text)
   }
-  window.addEventListener('keydown', onKey)
+  const idle = (): boolean => interp.command === null
+  const detachKeyboard = attachKeyboard(window, {
+    buffer: buffer.get,
+    setBuffer: buffer.set,
+    submit: (text) => interp.feedText(text),
+    cancel: () => interp.cancel(),
+    undo: () => idle() && interp.feedText('U'),
+    redo: () => idle() && interp.feedText('REDO'),
+    erase: () => idle() && selection.ids.size > 0 && interp.feedText('ERASE'),
+    toggleHistory,
+  })
 
   const measure = (entries?: ResizeObserverEntry[]): void => {
     const dpr = window.devicePixelRatio
@@ -94,11 +175,10 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
     const width = box ? box.inlineSize / dpr : canvas.clientWidth
     const height = box ? box.blockSize / dpr : canvas.clientHeight
     backend.resize(width, height, dpr)
-    view = view
-      ? { ...view, width, height, dpr }
-      : fit({ cx: 0, cy: 0, scale: 1, width, height, dpr }, docExtents(doc) ?? DEFAULT_EXTENTS, FIT_MARGIN_PX)
-    // Resizing the buffer clears the canvas, so draw in the same task or it flashes.
-    loop.invalidate()
+    overlay.width = Math.max(1, Math.round(width * dpr))
+    overlay.height = Math.max(1, Math.round(height * dpr))
+    setView(view ? { ...view, width, height, dpr } : fit({ cx: 0, cy: 0, scale: 1, width, height, dpr }, docExtents(doc) ?? DEFAULT_EXTENTS, FIT_MARGIN_PX))
+    // Resizing a canvas clears it, so draw in the same task or it flashes.
     loop.flush()
   }
   const observer = new ResizeObserver((entries) => measure(entries))
@@ -107,31 +187,34 @@ export function startApp(canvas: HTMLCanvasElement): () => void {
 
   const detachInput = attachInput(canvas, {
     getView: () => view!,
-    setView: (v) => {
-      view = v
-      loop.invalidate()
-    },
+    setView,
     extents: () => docExtents(doc),
-    pick: (sx, sy, shift) => {
-      const v = view!
-      const id = pick(doc, index, screenToWorld(v, sx, sy), PICKBOX_PX / v.scale)
-      if (id === null) return
-      if (shift) selection.remove([id])
-      else selection.add([id])
+    click: (sx, sy, shift) => interp.feedPoint(screenToWorld(view!, sx, sy), shift),
+    enter: submit,
+    hover: (p) => {
+      cursor = p
+      interp.cursor = p && screenToWorld(view!, p.x, p.y)
+      loop.invalidate()
     },
   })
 
-  return () => {
-    view = null // a frame still pending must not draw on a disposed backend
-    detachInput()
-    observer.disconnect()
-    window.removeEventListener('keydown', onKey)
-    offDoc()
-    offLayers()
-    offRestore()
-    offSelection()
-    index.dispose()
-    scene.dispose()
-    backend.dispose()
+  return {
+    commandLine,
+    toggleHistory,
+    dispose() {
+      view = null // a frame still pending must not draw on a disposed backend
+      detachInput()
+      detachKeyboard()
+      observer.disconnect()
+      commandLine.dispose()
+      offInterp()
+      offDoc()
+      offLayers()
+      offRestore()
+      offSelection()
+      index.dispose()
+      scene.dispose()
+      backend.dispose()
+    },
   }
 }
