@@ -1,7 +1,7 @@
 import type { Document } from './document'
 import { typeOf } from './entity/registry'
 import type { Entity } from './entity/types'
-import { arcSpansInBox, clipSegment } from './geom/clip'
+import { arcTouchesBox, clipSegment } from './geom/clip'
 import { bboxContains, type BBox, type Vec2 } from './geom/vec'
 import type { SpatialIndex } from './spatial'
 
@@ -33,7 +33,7 @@ function touches(e: Entity, b: BBox): boolean {
       hit ||= clipSegment(b, x0, y0, x1, y1) !== null
     },
     arc(cx, cy, r, a0, sweep) {
-      hit ||= arcSpansInBox(b, cx, cy, r, a0, sweep).length > 0
+      hit ||= arcTouchesBox(b, cx, cy, r, a0, sweep)
     },
   })
   return hit

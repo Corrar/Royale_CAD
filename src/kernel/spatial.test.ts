@@ -131,6 +131,61 @@ describe('createSpatialIndex', () => {
     expect(index.coldBuilds).toBe(index.rebuilds)
   })
 
+  it('stays exact after the document is emptied and refilled (no tree shares arrays with the spare)', () => {
+    const doc = createDocument()
+    const index = createSpatialIndex(doc, { maxDirty: 4 })
+    const lines = (n: number, dx: number): Draft[] =>
+      Array.from({ length: n }, (_, i) => ({ type: 'line', layer: 0, x0: dx + i, y0: i % 50, x1: dx + i + 0.5, y1: (i % 50) + 0.5 }))
+    const all = { minX: -1e9, minY: -1e9, maxX: 1e9, maxY: 1e9 }
+    const check = (b: BBox): void => expect(sorted(index.query(b))).toEqual(brute(doc, b))
+    doc.transact('load', (tx) => {
+      for (const d of lines(100, 0)) tx.add(d)
+    })
+    check(all)
+    doc.transact('erase all', (tx) => {
+      for (const e of [...doc.entities()]) tx.remove(e.id)
+    })
+    check(all)
+    doc.undo()
+    check(all)
+    // Inside the old frame, so the next rebuild merges into the old order.
+    doc.transact('more', (tx) => {
+      for (const d of lines(5, 0.25)) tx.add(d)
+    })
+    check(all)
+    check({ minX: 10, minY: 10, maxX: 20, maxY: 20 })
+    const ids = index.query(all)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('matches brute force under random edits that sometimes empty the document', () => {
+    const rand = rng(21)
+    const doc = createDocument()
+    const index = createSpatialIndex(doc, { maxDirty: 30 })
+    const boxes = Array.from({ length: 20 }, () => randomBox(rand))
+    for (let round = 0; round < 60; round++) {
+      const k = rand()
+      const live = [...doc.entities()]
+      if (k < 0.1 && live.length > 0) {
+        doc.transact('erase all', (tx) => {
+          for (const e of live) tx.remove(e.id)
+        })
+      } else if (k < 0.25) doc.undo()
+      else if (k < 0.3) doc.redo()
+      else {
+        doc.transact('edit', (tx) => {
+          const n = Math.floor(rand() * 80)
+          for (let i = 0; i < n; i++) tx.add(randomDraft(rand))
+          for (let i = 0; i < Math.min(live.length, Math.floor(rand() * 40)); i++) {
+            const e = live[Math.floor(rand() * live.length)]!
+            if (doc.get(e.id)) tx.remove(e.id)
+          }
+        })
+      }
+      for (const b of boxes) expect(sorted(index.query(b))).toEqual(brute(doc, b))
+    }
+  })
+
   it('handles the empty document and a document emptied after a build', () => {
     const doc = createDocument()
     const index = createSpatialIndex(doc, { maxDirty: 0 })

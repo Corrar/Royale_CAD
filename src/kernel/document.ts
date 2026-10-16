@@ -61,6 +61,35 @@ function emit<T>(listeners: Set<(x: T) => void>, x: T): void {
   if (failed) throw first
 }
 
+/**
+ * emit, in commit order: a change committed by a listener (a transaction or an undo from inside onChange) waits
+ * until every listener has seen the change being delivered.
+ */
+function orderedEmitter<T>(listeners: Set<(x: T) => void>): (x: T) => void {
+  const queue: T[] = []
+  let delivering = false
+  return (x) => {
+    queue.push(x)
+    if (delivering) return
+    delivering = true
+    let failed = false
+    let first: unknown
+    try {
+      while (queue.length > 0) {
+        try {
+          emit(listeners, queue.shift()!)
+        } catch (error) {
+          if (!failed) first = error
+          failed = true
+        }
+      }
+    } finally {
+      delivering = false
+    }
+    if (failed) throw first
+  }
+}
+
 function subscribe<T>(listeners: Set<(x: T) => void>, fn: (x: T) => void): () => void {
   const entry = (x: T): void => fn(x)
   listeners.add(entry)
@@ -117,6 +146,7 @@ export function createDocument(): Document {
   const items = new Map<number, Entity | typeof REMOVED>()
   const layers = createLayerTable()
   const listeners = new Set<(c: Change) => void>()
+  const deliver = orderedEmitter(listeners)
   const undoStack: Step[] = []
   const redoStack: Step[] = []
   let nextId = 1
@@ -131,13 +161,23 @@ export function createDocument(): Document {
     return e === REMOVED ? undefined : e
   }
 
+  /** Every number and every element of a Float64Array field; bboxes alone miss a NaN that bboxAdd skips. */
+  function finite(e: Entity): boolean {
+    const fields = e as unknown as Record<string, unknown>
+    for (const k in fields) {
+      const v = fields[k]
+      if (typeof v === 'number' ? !Number.isFinite(v) : v instanceof Float64Array && !v.every(Number.isFinite)) return false
+    }
+    return true
+  }
+
   function validate(e: Entity): void {
     const t = typeOf(e)
     if (!layers.get(e.layer)) throw new Error(`layer ${e.layer} does not exist`)
     if (e.color !== undefined && !isColor(e.color)) throw new Error(`invalid color ${e.color}`)
     const problem = t.validate?.(e)
     if (problem) throw new Error(problem)
-    if (!bboxFinite(t.bbox(e))) throw new Error(`${e.type} has non-finite geometry`)
+    if (!finite(e) || !bboxFinite(t.bbox(e))) throw new Error(`${e.type} has non-finite geometry`)
   }
 
   function touch(id: number): void {
@@ -199,7 +239,7 @@ export function createDocument(): Document {
     const s = from.pop()
     if (!s) return undefined
     to.push(s)
-    emit(listeners, name === 'undo' ? apply(s.ids, s.after, s.before) : apply(s.ids, s.before, s.after))
+    deliver(name === 'undo' ? apply(s.ids, s.after, s.before) : apply(s.ids, s.before, s.after))
     return s.label
   }
 
@@ -247,7 +287,7 @@ export function createDocument(): Document {
       if (step.ids.length === 0) return
       undoStack.push(step)
       redoStack.length = 0
-      emit(listeners, c)
+      deliver(c)
     },
     undo: () => move(undoStack, redoStack, 'undo'),
     redo: () => move(redoStack, undoStack, 'redo'),

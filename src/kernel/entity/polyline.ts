@@ -52,7 +52,6 @@ export const polylineType: EntityType<Polyline> = {
   validate(e) {
     if (e.pts.length < 2 || e.pts.length % 2 !== 0) return `polyline vertices must be x, y pairs, at least one; got ${e.pts.length} numbers`
     if (e.bulges && e.bulges.length !== e.pts.length / 2) return `polyline bulges must have one entry per vertex`
-    if (e.bulges?.some((b) => !Number.isFinite(b))) return `polyline bulges must be finite`
     return undefined
   },
 }

@@ -293,9 +293,12 @@ export function createSpatialIndex(doc: Document, opts: SpatialIndexOptions = {}
         coldBuilds++
       }
     }
-    if (next && tree && next.boxes !== tree.boxes) spare = tree
-    else if (!next) spare = tree ?? spare
+    // The outgoing tree becomes the spare unless its arrays now hold the new tree; a spare whose arrays were
+    // just taken is dropped, or the next merge would write into the leaves it reads.
+    const prev = tree
     tree = next
+    if (prev && prev.boxes !== next?.boxes) spare = prev
+    else if (spare && spare.boxes === next?.boxes) spare = null
     for (const id of staleIds) flags[id]! &= ~STALE
     staleIds.length = 0
     extra.clear()

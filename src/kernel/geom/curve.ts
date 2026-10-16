@@ -40,13 +40,19 @@ export function arcDistance(px: number, py: number, cx: number, cy: number, r: n
 }
 
 /**
+ * Below this a bulge is straight. Treating it so errs by the sagitta, |bulge|·chord/2; keeping the arc errs by
+ * the rounding of a centre ~chord/(4·|bulge|) away, ~chord·1e-16/|bulge|. The two meet near 1.5e-8.
+ */
+export const STRAIGHT_BULGE = 1e-8
+
+/**
  * Arc from a to b for a polyline bulge (tan of a quarter of the included angle, positive counter-clockwise).
- * Null when the piece is straight: zero bulge or zero chord.
+ * Null when the piece is straight: a bulge under STRAIGHT_BULGE, or a zero chord.
  */
 export function bulgeToArc(a: Vec2, b: Vec2, bulge: number): ArcGeom | null {
   const dx = b.x - a.x
   const dy = b.y - a.y
-  if (bulge === 0 || (dx === 0 && dy === 0)) return null
+  if (!(Math.abs(bulge) >= STRAIGHT_BULGE) || (dx === 0 && dy === 0)) return null
   // The centre sits on the chord's perpendicular bisector at (c/2)·cot(θ/2), with cot(θ/2) = (1 − bulge²) / (2·bulge).
   const k = (1 - bulge * bulge) / (4 * bulge)
   const cx = (a.x + b.x) / 2 - dy * k

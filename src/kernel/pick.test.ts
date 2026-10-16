@@ -64,6 +64,16 @@ describe('pickBox', () => {
     expect(pickBox(doc, index, box, true)).toEqual([ids[3]])
   })
 
+  it('crossing takes curves that touch the box at a single point', () => {
+    const { doc, index, ids } = setup([
+      { type: 'circle', layer: 0, cx: -5, cy: 5, r: 5 }, // tangent to the left edge at (0, 5)
+      { type: 'arc', layer: 0, cx: 15, cy: 10, r: 5, a0: Math.PI, a1: 1.5 * Math.PI }, // starts on the corner (10, 10)
+      { type: 'circle', layer: 0, cx: 13, cy: 13, r: Math.hypot(3, 3) }, // passes through the corner (10, 10) from outside
+      { type: 'circle', layer: 0, cx: -6, cy: 5, r: 5 }, // misses by 1
+    ])
+    expect(pickBox(doc, index, box, true)).toEqual([ids[0], ids[1], ids[2]])
+  })
+
   it('ignores entities on hidden layers', () => {
     const { doc, index, ids } = setup([line(1, 1, 2, 2), line(3, 3, 4, 4, 1)])
     expect(pickBox(doc, index, box, true)).toEqual([ids[0]])

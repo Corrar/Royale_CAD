@@ -207,6 +207,10 @@ describe('createDocument', () => {
       ['vertices', (tx) => tx.add({ type: 'polyline', layer: 0, pts: new Float64Array(0), bulges: null, closed: false })],
       ['vertices', (tx) => tx.add({ type: 'polyline', layer: 0, pts: new Float64Array(3), bulges: null, closed: false })],
       ['bulges', (tx) => tx.add({ type: 'polyline', layer: 0, pts: new Float64Array(4), bulges: new Float64Array(1), closed: false })],
+      ['finite', (tx) => tx.add({ type: 'arc', layer: 0, cx: 0, cy: 0, r: 1, a0: 0, a1: NaN })],
+      ['finite', (tx) => tx.add({ type: 'arc', layer: 0, cx: 0, cy: 0, r: 1, a0: 0, a1: Infinity })],
+      ['finite', (tx) => tx.add({ type: 'polyline', layer: 0, pts: new Float64Array([0, 0, NaN, NaN, 1, 1]), bulges: null, closed: false })],
+      ['finite', (tx) => tx.add({ type: 'polyline', layer: 0, pts: new Float64Array(4), bulges: new Float64Array([0, NaN]), closed: false })],
       ['unregistered', (tx) => tx.add({ ...L(0, 0, 1, 0), type: 'nope' } as never)],
       ['no entity', (tx) => tx.replace({ ...a, id: 99 })],
       ['no entity', (tx) => tx.remove(99)],
@@ -239,6 +243,22 @@ describe('createDocument', () => {
     expect(() => doc.transact('t', () => doc.redo())).toThrow(/inside a transaction/)
     doc.transact('after', (tx) => void tx.add(L(0, 0, 1, 0)))
     expect(doc.size).toBe(1)
+  })
+
+  it('a listener that commits its own change does not reorder the events for later listeners', () => {
+    const doc = createDocument()
+    doc.onChange((c) => {
+      for (const e of c.added) {
+        if (e.type === 'line' && e.x0 === 0) doc.transact('shift', (tx) => tx.replace({ ...e, x0: 100, x1: 101 }))
+      }
+    })
+    const seen: string[] = []
+    doc.onChange((c) => {
+      for (const e of c.added) seen.push(`added ${(e as Line).x0}`)
+      for (const [, e] of c.changed) seen.push(`changed ${(e as Line).x0}`)
+    })
+    doc.transact('add', (tx) => void tx.add(L(0, 0, 1, 0)))
+    expect(seen).toEqual(['added 0', 'changed 100'])
   })
 
   it('a throwing listener does not starve the others, and the change still commits', () => {

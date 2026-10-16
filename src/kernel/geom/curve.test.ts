@@ -81,6 +81,14 @@ describe('bulgeToArc', () => {
     expect(a.r).toBeCloseTo(1, 12)
   })
 
+  it('treats a bulge too small to bend the chord measurably as straight', () => {
+    // Below 1e-8 the sagitta (|bulge|·chord/2) is smaller than the rounding error of an arc with that radius.
+    expect(bulgeToArc({ x: 0, y: 0 }, { x: 10, y: 0 }, 1e-15)).toBeNull()
+    expect(bulgeToArc({ x: 0, y: 0 }, { x: 10, y: 0 }, -5e-9)).toBeNull()
+    const a = bulgeToArc({ x: 0, y: 0 }, { x: 10, y: 0 }, 2e-8)!
+    expect(Math.abs(a.cx + a.r * Math.cos(a.a0))).toBeLessThan(1e-6)
+  })
+
   it('is null for a zero bulge or a zero chord', () => {
     expect(bulgeToArc({ x: 0, y: 0 }, { x: 1, y: 0 }, 0)).toBeNull()
     expect(bulgeToArc({ x: 1, y: 1 }, { x: 1, y: 1 }, 1)).toBeNull()

@@ -1,4 +1,5 @@
-import { TAU, normAngle } from './tol'
+import { onArc } from './curve'
+import { EPS, TAU, normAngle } from './tol'
 import type { BBox } from './vec'
 
 /** Liang–Barsky: the part of the segment inside the closed box b, in the segment's direction, or null. */
@@ -73,4 +74,22 @@ export function arcSpansInBox(b: BBox, cx: number, cy: number, r: number, a0: nu
   const out: number[] = []
   for (let i = 0; i < pieces.length; i += 2) out.push(start + pieces[i]!, pieces[i + 1]! - pieces[i]!)
   return out
+}
+
+/**
+ * Whether the arc reaches the closed box b at all. Unlike arcSpansInBox, a contact of zero length counts: an end
+ * on an edge, a tangent point (always a quadrant point) or a box corner on the arc.
+ */
+export function arcTouchesBox(b: BBox, cx: number, cy: number, r: number, a0: number, sweep: number): boolean {
+  if (arcSpansInBox(b, cx, cy, r, a0, sweep).length > 0) return true
+  const tol = EPS * Math.max(1, Math.abs(cx) + r, Math.abs(cy) + r)
+  const inside = (x: number, y: number): boolean => x >= b.minX - tol && x <= b.maxX + tol && y >= b.minY - tol && y <= b.maxY + tol
+  const at = (a: number): boolean => inside(cx + r * Math.cos(a), cy + r * Math.sin(a))
+  if (at(a0) || at(a0 + sweep)) return true
+  const quadrants: [number, number, number][] = [[0, cx + r, cy], [Math.PI / 2, cx, cy + r], [Math.PI, cx - r, cy], [1.5 * Math.PI, cx, cy - r]]
+  if (quadrants.some(([a, x, y]) => onArc(a, a0, sweep) && inside(x, y))) return true
+  for (const [x, y] of [[b.minX, b.minY], [b.maxX, b.minY], [b.maxX, b.maxY], [b.minX, b.maxY]] as const) {
+    if (Math.abs(Math.hypot(x - cx, y - cy) - r) <= tol && onArc(Math.atan2(y - cy, x - cx), a0, sweep)) return true
+  }
+  return false
 }
