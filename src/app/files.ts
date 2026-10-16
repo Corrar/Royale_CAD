@@ -207,7 +207,8 @@ export function createFiles(o: FilesOptions): Files {
     return whole
   }
 
-  async function load(f: Opened): Promise<void> {
+  /** Reads f in place of the drawing as it was at `asked` edits (when the user chose to leave it). */
+  async function load(f: Opened, asked: number): Promise<void> {
     patch({ busy: `Reading ${f.name}…` })
     let result: ParseResult
     try {
@@ -223,6 +224,11 @@ export function createFiles(o: FilesOptions): Files {
       result = await o.parse(bytes, (done) => patch({ busy: `Reading ${f.name}… ${40 + Math.round(done * 50)}%` }))
     } catch (error) {
       o.print(`Could not open ${f.name}: ${messageOf(error)}`)
+      return
+    }
+    // A change made during the read (the layer panel stays live) was not in what the user chose to leave.
+    if (edits !== asked) {
+      o.print(`${f.name} was not opened: the drawing changed while it was being read.`)
       return
     }
     let warnings: readonly string[] = []
@@ -296,10 +302,11 @@ export function createFiles(o: FilesOptions): Files {
     busy: () => state.get().busy,
     open(saveFirst) {
       void run(async () => {
+        const asked = edits
         if (saveFirst && !(await save(false))) return
         performance.mark('royale:open')
         const f = await api.open()
-        if (f) await load(f)
+        if (f) await load(f, asked)
       })
     },
     create(saveFirst) {
@@ -316,9 +323,10 @@ export function createFiles(o: FilesOptions): Files {
     },
     openInitial: () =>
       run(async () => {
+        const asked = edits
         performance.mark('royale:open')
         const f = await api.initial()
-        if (f) await load(f)
+        if (f) await load(f, asked)
       }),
     dispose() {
       offDoc()

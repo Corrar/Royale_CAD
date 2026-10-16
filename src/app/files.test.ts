@@ -62,6 +62,17 @@ function setup(parse: Parse = parseHere) {
   return { doc, files, lines, fake, settle, replaced: () => replaced }
 }
 
+/** A parse that ends when the test lets it: a big file in the worker. */
+function heldParse() {
+  let release: () => void = () => {}
+  const gate = new Promise<void>((r) => (release = r))
+  const parse: Parse = async (bytes, progress) => {
+    await gate
+    return parseHere(bytes, progress)
+  }
+  return { parse, release: () => release() }
+}
+
 /** The interpreter and the files on one document, as the app wires them: commands typed while files work. */
 function benchSetup(parse: Parse = parseHere) {
   const fake = fakeApi()
@@ -264,6 +275,30 @@ describe('createFiles while the drawing changes', () => {
     expect(t.fake.calls).not.toContain('forget')
   })
 
+  it('a change made while the file is read keeps the drawing: the file is not opened', async () => {
+    const held = heldParse()
+    const t = setup(held.parse)
+    t.doc.transact('draw', (tx) => void tx.add(line(0)))
+    t.fake.answers.opened = { token: 9, name: 'Plant.dxf', size: 0, bytes: latin1(PLANT) }
+    // OPEN, and No to "Save changes?"; then, while the file is read, a layer from the layer panel.
+    t.files.open(false)
+    await t.settle()
+    t.doc.layers.add({ name: 'Walls', color: 1, visible: true, locked: false })
+    held.release()
+    for (let k = 0; k < 10 && t.files.state.get().busy !== null; k++) await t.settle()
+    expect(t.doc.size).toBe(1)
+    expect(t.doc.layers.get(1)?.name).toBe('Walls')
+    expect(t.files.state.get()).toEqual({ name: 'Drawing1.dxf', dirty: true, busy: null })
+    expect(t.fake.calls).not.toContain('adopt 9')
+    expect(t.lines).toEqual(['Plant.dxf was not opened: the drawing changed while it was being read.'])
+    // OPEN again asks about the drawing as it is now; the file then comes in.
+    held.release()
+    t.files.open(false)
+    for (let k = 0; k < 10 && t.files.state.get().busy !== null; k++) await t.settle()
+    expect(t.lines.at(-1)).toBe('Opened Plant.dxf: 1 object.')
+    expect(t.files.state.get()).toEqual({ name: 'Plant.dxf', dirty: false, busy: null })
+  })
+
   it('a close request does not close a window whose drawing changed while it was saved', async () => {
     const t = benchSetup()
     t.run('L⏎0,0⏎5,5⏎')
@@ -288,17 +323,6 @@ describe('createFiles while the drawing changes', () => {
 })
 
 describe('commands while a file operation is under way', () => {
-  /** A parse that ends when the test lets it: a big file in the worker. */
-  function heldParse() {
-    let release: () => void = () => {}
-    const gate = new Promise<void>((r) => (release = r))
-    const parse: Parse = async (bytes, progress) => {
-      await gate
-      return parseHere(bytes, progress)
-    }
-    return { parse, release: () => release() }
-  }
-
   it('none starts while a file is read, as AutoCAD holds the drawing while it opens one: the open completes', async () => {
     const held = heldParse()
     const t = benchSetup(held.parse)
