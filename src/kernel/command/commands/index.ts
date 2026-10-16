@@ -13,6 +13,9 @@ import { trim } from './trim'
 import { redo, u, undo } from './undo'
 import { pan, zoom } from './view'
 
+// Commands that take the selection made before them (noun-verb).
+for (const c of [move, copy, rotate, mirror, scale, trim, extend]) c.pickfirst = true
+
 /** Every built-in command by its canonical name. */
 export const BUILTIN_COMMANDS: Readonly<Record<string, Command>> = {
   LINE: line,

@@ -156,9 +156,11 @@ Regras: digitar vai para a linha de comando sem precisar de foco · Espaço = En
 
 Aliases v1 (tabela em dados, editável em M8): `L` LINE · `C` CIRCLE · `A` ARC · `PL` PLINE · `REC` RECTANG · `E` ERASE · `M` MOVE · `CO`/`CP` COPY · `RO` ROTATE · `MI` MIRROR · `SC` SCALE · `O` OFFSET · `TR` TRIM · `EX` EXTEND · `Z` ZOOM · `P` PAN · `U` UNDO · `REDO` · `LA` LAYER.
 
-Teclas: `F3` osnap · `F7` grid · `F8` ortho · `Ctrl+Z/Y` · `Ctrl+O/S` · `Del` = ERASE.
+Teclas: `F3` osnap · `F7` grid · `F8` ortho · `Ctrl+Z/Y` · `Ctrl+O/S/N`, `Ctrl+Shift+S` · `Del` = ERASE · AltGr digita (o `@` de muitos layouts).
 
-Seleção: clique; janela esquerda→direita (contido); crossing direita→esquerda (toca); Shift remove; vale antes ou depois do comando.
+Seleção: clique; janela esquerda→direita (contido); crossing direita→esquerda (toca); Shift remove; vale antes ou depois do comando. No `Select objects:` também `ALL`, `L` (Last), `P` (Previous), `W`/`C` (janela ou crossing forçados), `R`/`A` (remover/adicionar), `U` (desfaz a última escolha) e ponto digitado; mensagens como no AutoCAD (`1 found (1 duplicate), 2 total`). A pré-seleção só vale para os comandos que a usam (ERASE, MOVE, COPY, ROTATE, MIRROR, SCALE, TRIM, EXTEND); os outros comandos de edição a descartam ao começar.
+
+Diferença assumida: ZOOM e PAN não entram no undo. No AutoCAD, `U` logo depois de um ZOOM desfaz o zoom; aqui desfaz o último comando de desenho. ZOOM Previous fica para quando a vista tiver histórico próprio.
 
 ## 7. Snap
 

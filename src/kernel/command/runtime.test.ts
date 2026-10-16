@@ -8,7 +8,7 @@ describe('formatPrompt and matchKeyword', () => {
     expect(formatPrompt(null)).toBe('Command:')
     expect(formatPrompt({ kind: 'point', prompt: 'Specify next point', keywords: ['Close', 'Undo'] })).toBe('Specify next point or [Close/Undo]:')
     expect(formatPrompt({ kind: 'number', prompt: 'Specify radius of circle', keywords: ['Diameter'], default: 5 })).toBe(
-      'Specify radius of circle or [Diameter] <5>:',
+      'Specify radius of circle or [Diameter] <5.0000>:',
     )
   })
 
@@ -43,7 +43,8 @@ describe('createInterpreter', () => {
     t.run('FOO⏎')
     t.run('3,4⏎')
     expect(t.interp.command).toBeNull()
-    expect(t.interp.history.slice(-2)).toEqual(['Unknown command "FOO".', 'Unknown command "3,4".'])
+    // What was typed stays in the history, as in AutoCAD.
+    expect(t.interp.history.slice(-4)).toEqual(['Command: FOO', 'Unknown command "FOO".', 'Command: 3,4', 'Unknown command "3,4".'])
   })
 
   it('invalid input keeps the request', () => {

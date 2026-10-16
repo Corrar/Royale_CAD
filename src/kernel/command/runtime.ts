@@ -38,6 +38,8 @@ export interface NumberRequest extends Ask {
   /** What Enter answers; without it Enter is refused. */
   default?: number
   positive?: boolean
+  /** Whole numbers only (UNDO's count). */
+  integer?: boolean
   preview?: (cursor: Vec2, out: PrimSink) => void
 }
 
@@ -66,6 +68,11 @@ export type CommandGen = Generator<Request, void, Input>
 export type Command = ((ctx: CommandContext) => CommandGen) & {
   /** Runs outside an undo group: commands that drive undo itself, or touch only the view. */
   noUndoGroup?: boolean
+  /**
+   * Takes the selection made before it (noun-verb, AutoCAD's PICKFIRST). Other commands that edit the drawing drop
+   * it as they start, so a later ERASE cannot erase a selection forgotten on screen.
+   */
+  pickfirst?: boolean
 }
 
 /** What the interpreter needs from the app; every member is optional so the kernel tests can leave it out. */
@@ -108,6 +115,8 @@ export interface CommandContext {
   /** Values kept between commands, like AutoCAD system variables (CIRCLERAD, …). */
   readonly vars: Map<string, unknown>
   message(text: string): void
+  /** Moves LASTPOINT, the origin of @: LINE does when its Undo or Close changes where the next segment starts. */
+  setLastPoint(p: Vec2): void
 }
 
 export interface Interpreter {
@@ -118,6 +127,8 @@ export interface Interpreter {
   /** The prompt line: "Command" when idle. */
   readonly prompt: string
   readonly history: readonly string[]
+  /** Lines said since the interpreter began, the dropped ones included: history[0] is line said − history.length. */
+  readonly said: number
   /** First corner of a window being dragged at a selection prompt (or idle); null otherwise. */
   readonly corner: Vec2 | null
   /** LASTPOINT: the origin of @ and the last point given. */
@@ -147,12 +158,23 @@ export interface InterpreterOptions {
 
 const HISTORY_MAX = 500
 
-/** "Specify next point or [Close/Undo] <5>:" */
+/**
+ * A number as AutoCAD shows it in prompts: lengths with 4 decimals (LUPREC), angles in whole degrees (AUPREC),
+ * counts as they are.
+ */
+export function formatNumber(v: number, kind: 'length' | 'angle' | 'integer' = 'length'): string {
+  const s = kind === 'integer' ? String(v) : v.toFixed(kind === 'angle' ? 0 : 4)
+  return s === '-0' || /^-0\.0+$/.test(s) ? s.slice(1) : s
+}
+
+/** "Specify next point or [Close/Undo] <5.0000>:" */
 export function formatPrompt(r: Request | null): string {
   if (!r) return 'Command:'
   // A question with only options reads "Erase source objects? [Yes/No] <No>:", without "or".
   const keywords = r.keywords && r.keywords.length > 0 ? `${r.kind === 'keyword' ? '' : ' or'} [${r.keywords.join('/')}]` : ''
-  const def = r.kind !== 'selection' && r.default !== undefined ? ` <${r.default}>` : ''
+  let def = ''
+  if (r.kind === 'number' && r.default !== undefined) def = ` <${formatNumber(r.default, r.integer ? 'integer' : r.angle ? 'angle' : 'length')}>`
+  else if ((r.kind === 'point' || r.kind === 'keyword') && r.default !== undefined) def = ` <${r.default}>`
   return `${r.prompt}${keywords}${def}:`
 }
 
@@ -186,16 +208,34 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
   let cursor: Vec2 | null = null
   let osnap = true
   let ortho = false
+  // Selecting: the window's first corner, a box forced to window or crossing (W, C), Remove mode, what each pick
+  // did (for Undo), and the set the last command took (Previous).
+  let boxMode: 'window' | 'crossing' | null = null
+  let removing = false
+  let picks: { added: number[]; removed: number[] }[] = []
+  let previous: number[] = []
 
   const emit = (): void => {
     for (const fn of [...listeners]) fn()
   }
+  let said = 0
   const say = (line: string): void => {
+    said++
     history.push(line)
     if (history.length > HISTORY_MAX) history.splice(0, history.length - HISTORY_MAX)
   }
 
-  const ctx: CommandContext = { doc, selection, host, layer: 0, vars, message: say }
+  const ctx: CommandContext = {
+    doc,
+    selection,
+    host,
+    layer: 0,
+    vars,
+    message: say,
+    setLastPoint(p) {
+      lastPoint = p
+    },
+  }
 
   function finish(): void {
     gen = null
@@ -210,7 +250,15 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     try {
       const r = input === undefined ? gen!.next() : gen!.next(input)
       if (r.done) finish()
-      else request = r.value
+      else {
+        if (r.value.kind === 'selection') {
+          // Each selection prompt starts adding, with nothing to undo.
+          boxMode = null
+          removing = false
+          picks = []
+        }
+        request = r.value
+      }
     } catch (error) {
       say(`Error: ${error instanceof Error ? error.message : String(error)}`)
       finish()
@@ -223,21 +271,44 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     active = name
     last = name
     say(`Command: ${name}`)
+    if (cmd.pickfirst && selection.ids.size > 0) {
+      previous = [...selection.ids]
+      say(`${previous.length} found`)
+    } else if (!cmd.pickfirst && !cmd.noUndoGroup) selection.clear()
     grouped = !cmd.noUndoGroup
     if (grouped) doc.beginGroup(name)
     gen = cmd(ctx)
     step()
   }
 
+  /** The prompt as shown now: a window waiting for its other corner, or Remove mode, change it. */
+  function promptNow(): string {
+    if (corner && (!gen || request?.kind === 'selection')) return 'Specify opposite corner:'
+    if (request?.kind === 'selection') {
+      if (boxMode) return 'Specify first corner:'
+      if (removing) return 'Remove objects:'
+    }
+    return formatPrompt(request)
+  }
+
   /** Echoes the answered prompt like AutoCAD's history, then hands the answer to the command. */
   function answer(input: Input, echo: string): void {
-    say(`${formatPrompt(request)} ${echo}`.trimEnd())
+    say(`${promptNow()} ${echo}`.trimEnd())
     if (input.kind === 'point') lastPoint = input.p
     step(input)
   }
 
-  function refuse(message: string): void {
+  /** Echoes what was typed, as AutoCAD keeps it in the history, then says why it was not taken. */
+  function refuse(echo: string, message: string): void {
+    say(`${promptNow()} ${echo}`.trimEnd())
     say(message)
+  }
+
+  /** A number for a number request, unless the request's limits refuse it. */
+  function answerNumber(r: NumberRequest, value: number, echo: string): void {
+    if (r.integer && !Number.isInteger(value)) return refuse(echo, 'Requires an integer value.')
+    if (r.positive && !(value > 0)) return refuse(echo, 'Value must be positive and nonzero.')
+    answer({ kind: 'number', value }, echo)
   }
 
   /**
@@ -270,8 +341,51 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     return true
   }
 
+  const EVERYTHING = { minX: -Infinity, minY: -Infinity, maxX: Infinity, maxY: Infinity }
+
+  /** The selection options as AutoCAD spells them, each by its own abbreviation. */
+  const SELECT_OPTIONS: Readonly<Record<string, string>> = {
+    ALL: 'ALL', L: 'Last', LAST: 'Last', P: 'Previous', PREVIOUS: 'Previous', W: 'Window', WINDOW: 'Window',
+    C: 'Crossing', CROSSING: 'Crossing', R: 'Remove', REMOVE: 'Remove', A: 'Add', ADD: 'Add', U: 'Undo', UNDO: 'Undo',
+  }
+
+  function selectOption(option: string, echo: string): void {
+    const line = `${promptNow()} ${echo}`
+    switch (option) {
+      case 'ALL':
+        return choose(host.pickBox?.(EVERYTHING, true) ?? [], removing, line)
+      case 'Last': {
+        // Ids grow with every new entity: the last one visible is the newest.
+        const ids = host.pickBox?.(EVERYTHING, true) ?? []
+        return choose(ids.length > 0 ? [ids[ids.length - 1]!] : [], removing, line)
+      }
+      case 'Previous':
+        return choose(previous.filter((id) => doc.get(id) !== undefined), removing, line)
+      case 'Window':
+      case 'Crossing':
+        say(line)
+        boxMode = option === 'Window' ? 'window' : 'crossing'
+        corner = null
+        return
+      case 'Remove':
+      case 'Add':
+        say(line)
+        removing = option === 'Remove'
+        return
+      case 'Undo': {
+        say(line)
+        const op = picks.pop()
+        if (!op) return say('All selection operations undone.')
+        selection.remove(op.added)
+        selection.add(op.removed)
+        return
+      }
+    }
+  }
+
   function onText(text: string): void {
     const t = parseInput(text)
+    const echo = text.trim()
     if (!gen) {
       if (t.kind === 'empty') {
         if (last) start(last)
@@ -279,76 +393,96 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
       }
       const name = t.kind === 'word' ? resolveCommand(t.text, names, aliases) : undefined
       if (name) start(name)
-      else refuse(`Unknown command "${text.trim().toUpperCase()}".`)
+      else refuse(echo, `Unknown command "${echo.toUpperCase()}".`)
       return
     }
     const r = request!
-    const echo = text.trim()
     switch (r.kind) {
       case 'point': {
         if (t.kind === 'point') return answer({ kind: 'point', p: pointOf(t) }, echo)
-        if (r.acceptNumber && (t.kind === 'number' || (t.kind === 'word' && SCALE_WORD.test(t.text)))) {
-          return answer({ kind: 'number', value: t.kind === 'number' ? t.value : parseFloat(t.text) }, echo)
+        // "2x", ".5x": a scale factor, which the parser does not know as a word.
+        if (r.acceptNumber && (t.kind === 'number' || SCALE_WORD.test(echo))) {
+          return answer({ kind: 'number', value: t.kind === 'number' ? t.value : parseFloat(echo) }, echo)
         }
         if (t.kind === 'number' && r.base) {
           // Direct distance: along the rubber band, towards where the cursor would land (ORTHO squares it).
           const to = cursor ? resolve(cursor).p : r.base
           const d = Math.hypot(to.x - r.base.x, to.y - r.base.y)
-          if (d === 0) return refuse('Move the cursor to give the direction.')
+          if (d === 0) return refuse(echo, 'Move the cursor to give the direction.')
           const k = t.value / d
           return answer({ kind: 'point', p: { x: r.base.x + (to.x - r.base.x) * k, y: r.base.y + (to.y - r.base.y) * k } }, echo)
         }
         if (t.kind === 'word' && keyword(t.text, echo)) return
         if (t.kind === 'empty' && r.allowEmpty) return answer({ kind: 'empty' }, '')
-        return refuse(r.keywords?.length ? 'Point or option keyword required.' : 'Invalid point.')
+        return refuse(echo, r.keywords?.length ? 'Point or option keyword required.' : 'Invalid point.')
       }
       case 'number': {
-        let value: number | undefined
-        if (t.kind === 'number') value = t.value
-        else if (t.kind === 'point' && r.base) value = measure(r, pointOf(t))
-        else if (t.kind === 'word' && keyword(t.text, echo)) return
-        else if (t.kind === 'empty' && r.default !== undefined) return answer({ kind: 'number', value: r.default }, '')
-        if (value === undefined) return refuse(r.keywords?.length ? 'Requires a number or an option keyword.' : 'Requires a number.')
-        if (r.positive && !(value > 0)) return refuse('Value must be positive and nonzero.')
-        return answer({ kind: 'number', value }, echo)
+        if (t.kind === 'word' && keyword(t.text, echo)) return
+        if (t.kind === 'empty' && r.default !== undefined) return answerNumber(r, r.default, '')
+        const value = t.kind === 'number' ? t.value : t.kind === 'point' && r.base ? measure(r, pointOf(t)) : undefined
+        if (value === undefined) return refuse(echo, r.keywords?.length ? 'Requires a number or an option keyword.' : 'Requires a number.')
+        return answerNumber(r, value, echo)
       }
       case 'keyword': {
         if (t.kind === 'word' && keyword(t.text, echo)) return
         if (t.kind === 'empty' && r.default !== undefined) return answer({ kind: 'keyword', word: r.default }, '')
-        return refuse('Invalid option keyword.')
+        return refuse(echo, 'Invalid option keyword.')
       }
       case 'selection': {
         if (t.kind === 'empty') {
           corner = null
-          return answer({ kind: 'selection', ids: [...selection.ids] }, '')
+          boxMode = null
+          previous = [...selection.ids]
+          return answer({ kind: 'selection', ids: previous }, '')
         }
-        if (t.kind === 'word' && t.text.toUpperCase() === 'ALL') {
-          const ids = host.pickBox?.({ minX: -Infinity, minY: -Infinity, maxX: Infinity, maxY: Infinity }, true) ?? []
-          selection.add(ids)
-          return say(`${ids.length} found`)
-        }
-        return refuse('Select objects, or press Enter to finish.')
+        if (t.kind === 'point') return selectAt(pointOf(t), false, echo)
+        const option = t.kind === 'word' ? SELECT_OPTIONS[t.text.toUpperCase()] : undefined
+        if (option) return selectOption(option, echo)
+        return refuse(echo, 'Expects a point or Window/Last/Crossing/ALL/Add/Remove/Previous/Undo.')
       }
     }
   }
 
-  /** Click selection, idle or at a selection prompt: an entity, or the corners of a window. */
-  function selectAt(p: Vec2, shift: boolean): void {
+  /**
+   * Adds ids to the selection, or takes them out (Shift, Remove mode); at a selection prompt, says what happened
+   * as AutoCAD does: "2 found (1 duplicate), 3 total", "1 found, 1 removed, 0 total".
+   */
+  function choose(ids: number[], remove: boolean, line: string | null): void {
+    const before = selection.ids.size
+    let message: string
+    if (remove) {
+      const hit = ids.filter((id) => selection.ids.has(id))
+      selection.remove(hit)
+      picks.push({ added: [], removed: hit })
+      message = `${ids.length} found, ${hit.length} removed, ${selection.ids.size} total`
+    } else {
+      const fresh = ids.filter((id) => !selection.ids.has(id))
+      selection.add(fresh)
+      picks.push({ added: fresh, removed: [] })
+      const dup = ids.length - fresh.length
+      message = `${ids.length} found${dup > 0 ? ` (${dup} duplicate)` : ''}${before > 0 || dup > 0 ? `, ${selection.ids.size} total` : ''}`
+    }
+    if (line !== null) say(`${line} ${message}`)
+  }
+
+  /** A click (or typed point) when selecting, idle or at a selection prompt: an entity, or a window's corners. */
+  function selectAt(p: Vec2, shift: boolean, echo = ''): void {
     const prompting = request?.kind === 'selection'
-    const apply = (ids: number[]): void => {
-      if (shift) selection.remove(ids)
-      else selection.add(ids)
-      if (prompting) say(`${ids.length} found${shift ? ', removed' : ''}`)
-    }
+    const line = prompting ? `${promptNow()} ${echo}`.trimEnd() : null
+    const remove = shift || (prompting && removing)
     if (corner) {
-      // Left to right: window, only what lies inside. Right to left: crossing, also what touches.
+      // Left to right: window, only what lies inside. Right to left: crossing, also what touches. W and C force one.
       const b = { minX: Math.min(corner.x, p.x), minY: Math.min(corner.y, p.y), maxX: Math.max(corner.x, p.x), maxY: Math.max(corner.y, p.y) }
-      const crossing = p.x < corner.x
+      const crossing = boxMode ? boxMode === 'crossing' : p.x < corner.x
       corner = null
-      return apply(host.pickBox?.(b, crossing) ?? [])
+      boxMode = null
+      return choose(host.pickBox?.(b, crossing) ?? [], remove, line)
     }
-    const id = host.pick?.(p) ?? null
-    if (id !== null) return apply([id])
+    if (!boxMode) {
+      const id = host.pick?.(p) ?? null
+      if (id !== null) return choose([id], remove, line)
+    }
+    if (line !== null && echo !== '') say(line)
     corner = p
   }
 
@@ -357,8 +491,8 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
     const r = request!
     const p = resolve(raw).p
     if (r.kind === 'point') return answer({ kind: 'point', p }, '')
-    if (r.kind === 'number' && r.base) return answer({ kind: 'number', value: measure(r, p) }, '')
-    refuse(r.kind === 'number' ? 'Requires a number.' : 'Invalid option keyword.')
+    if (r.kind === 'number' && r.base) return answerNumber(r, measure(r, p), '')
+    refuse('', r.kind === 'number' ? 'Requires a number.' : 'Invalid option keyword.')
   }
 
   return {
@@ -369,9 +503,12 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
       return active
     },
     get prompt() {
-      return formatPrompt(request)
+      return promptNow()
     },
     history,
+    get said() {
+      return said
+    },
     get corner() {
       return corner
     },

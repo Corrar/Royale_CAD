@@ -110,9 +110,11 @@ function editable(t: EventTarget | null): boolean {
 export function attachKeyboard(target: EventTarget, host: KeyboardHost): () => void {
   const onKey = (ev: Event): void => {
     const e = ev as KeyboardEvent
-    if (editable(e.target) || e.altKey) return
+    // AltGr (Ctrl+Alt on Windows) types characters such as @ on many layouts: those are text, not shortcuts.
+    const altGr = e.getModifierState?.('AltGraph') === true
+    if (editable(e.target) || (e.altKey && !altGr)) return
     const handled = ((): boolean => {
-      if (e.ctrlKey || e.metaKey) {
+      if ((e.ctrlKey || e.metaKey) && !altGr) {
         const k = e.key.toLowerCase()
         if (k === 'z') e.shiftKey ? host.redo() : host.undo()
         else if (k === 'y') host.redo()

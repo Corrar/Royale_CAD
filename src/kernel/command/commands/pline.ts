@@ -65,6 +65,7 @@ export const pline: Command = function* (ctx) {
         else {
           pts.pop()
           bulges.pop()
+          ctx.setLastPoint(pts[pts.length - 1]!)
         }
         continue
       }
@@ -77,7 +78,7 @@ export const pline: Command = function* (ctx) {
       bulges.push(b)
       if (r === 'Close') {
         closed = true
-        return
+        return ctx.setLastPoint(start)
       }
       pts.push(q)
     }

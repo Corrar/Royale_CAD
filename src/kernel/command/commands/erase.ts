@@ -1,7 +1,7 @@
-import { getSelection, type Command } from '../runtime'
+import { getSelection, type Command, type CommandContext, type CommandGen } from '../runtime'
 
 /** ERASE: the pre-selection when there is one, otherwise what is selected at the prompt. Locked layers are kept. */
-export const erase: Command = function* (ctx) {
+export const erase: Command = Object.assign(function* (ctx: CommandContext): CommandGen {
   const ids = (yield* getSelection(ctx)).filter((id) => ctx.doc.get(id) !== undefined)
   ctx.selection.clear()
   const free = ids.filter((id) => !ctx.doc.layers.get(ctx.doc.get(id)!.layer)!.locked)
@@ -11,4 +11,4 @@ export const erase: Command = function* (ctx) {
   ctx.doc.transact('ERASE', (tx) => {
     for (const id of free) tx.remove(id)
   })
-}
+}, { pickfirst: true })

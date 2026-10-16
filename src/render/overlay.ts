@@ -9,8 +9,10 @@ export const MARKER_PX = 6
 
 export interface OverlayState {
   view: ViewState
-  /** The cursor, CSS px from the viewport's top left; null when it is outside. */
+  /** The cursor, CSS px from the viewport's top left; its last place after it left; null before it ever came. */
   cursor: Vec2 | null
+  /** Draw the crosshair and pick box: false while the cursor is off the viewport (the rubber band stays). */
+  crosshair?: boolean
   /** Show the pick box: a click would select. */
   pickbox: boolean
   /** Rubber band of the waiting request, in world coordinates. */
@@ -86,6 +88,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: OverlayState, them
     ctx.lineWidth = 1
   }
 
+  if (s.crosshair === false) return
   const x = px(s.cursor.x)
   const y = px(s.cursor.y)
   ctx.beginPath()

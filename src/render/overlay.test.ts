@@ -62,6 +62,13 @@ describe('drawOverlay', () => {
     expect(f.named('arc')).toEqual([['arc', 100, 50, 20, -0, -Math.PI / 2, true]])
   })
 
+  it('with the cursor off the viewport: the rubber band stays, the crosshair goes', () => {
+    const f = fakeContext()
+    drawOverlay(f.ctx, state({ cursor: { x: 50, y: 20 }, crosshair: false, preview: (c, out) => out.segment(0, 0, c.x, c.y) }), THEME, 5)
+    expect(f.calls).toContainEqual(['=strokeStyle', THEME.preview])
+    expect(f.calls).not.toContainEqual(['=strokeStyle', THEME.crosshair])
+  })
+
   it('a window from the left is solid, from the right dashed', () => {
     for (const [cursorX, dash] of [[150, []], [50, [6, 4]]] as const) {
       const f = fakeContext()

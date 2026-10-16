@@ -29,7 +29,7 @@ export const zoom: Command = Object.assign(
     if (!ctx.host.getView || !ctx.host.setView) return ctx.message('No view to zoom.')
     const input = yield {
       kind: 'point' as const,
-      prompt: 'Specify corner of window, enter a scale factor (nX), or',
+      prompt: 'Specify corner of window, enter a scale factor (nX),',
       keywords: ['All', 'Extents', 'Window'],
       acceptNumber: true,
       allowEmpty: true,

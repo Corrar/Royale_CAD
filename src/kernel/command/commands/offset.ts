@@ -2,7 +2,7 @@ import type { Draft } from '../../document'
 import { typeOf } from '../../entity/registry'
 import type { Entity } from '../../entity/types'
 import type { Vec2 } from '../../geom/vec'
-import { getPoint, type Command, type CommandContext, type Input, type Request } from '../runtime'
+import { formatNumber, getPoint, type Command, type CommandContext, type Input, type Request } from '../runtime'
 
 const isPoint = (v: unknown): v is Vec2 => typeof v === 'object' && v !== null
 
@@ -52,7 +52,8 @@ export function offsetOf(e: Entity, dist: Dist, p: Vec2): Entity | string {
 function* distance(ctx: CommandContext): Generator<Request, Dist | null, Input> {
   const last = (ctx.vars.get('OFFSETDIST') as Dist | undefined) ?? 'Through'
   for (;;) {
-    const input = yield { kind: 'point', prompt: 'Specify offset distance', keywords: ['Through'], default: String(last), acceptNumber: true, allowEmpty: true }
+    const shown = typeof last === 'number' ? formatNumber(last) : last
+    const input = yield { kind: 'point', prompt: 'Specify offset distance', keywords: ['Through'], default: shown, acceptNumber: true, allowEmpty: true }
     if (input.kind === 'empty') return last
     if (input.kind === 'keyword') return 'Through'
     if (input.kind === 'number') {

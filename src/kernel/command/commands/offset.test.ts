@@ -73,7 +73,7 @@ describe('OFFSET', () => {
     t.run('⏎')
     expect(t.lines()).toContainEqual([0, 5, 10, 5])
     t.run('O⏎')
-    expect(t.interp.prompt).toBe('Specify offset distance or [Through] <5>:')
+    expect(t.interp.prompt).toBe('Specify offset distance or [Through] <5.0000>:')
     t.run('⏎')
     expect(t.interp.prompt).toBe('Select object to offset or [Exit/Undo] <Exit>:')
   })

@@ -28,7 +28,7 @@ const cases: Array<[string, Token]> = [
   ['@ 1 , -2', { kind: 'point', mode: 'rel', x: 1, y: -2 }],
   ['7400000.001,9100000.002', { kind: 'point', mode: 'abs', x: 7400000.001, y: 9100000.002 }],
   ['1,,2', { kind: 'invalid', text: '1,,2' }],
-  ['@', { kind: 'invalid', text: '@' }],
+  ['@', { kind: 'point', mode: 'rel', x: 0, y: 0 }], // the last point itself
   ['1,2,3', { kind: 'invalid', text: '1,2,3' }],
   ['10<', { kind: 'invalid', text: '10<' }],
   ['<45', { kind: 'invalid', text: '<45' }],

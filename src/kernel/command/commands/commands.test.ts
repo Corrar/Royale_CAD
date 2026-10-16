@@ -41,7 +41,7 @@ describe('CIRCLE', () => {
     const t = commandBench()
     t.run('C⏎0,0⏎2⏎')
     t.run('C⏎9,9⏎')
-    expect(t.interp.prompt).toBe('Specify radius of circle or [Diameter] <2>:')
+    expect(t.interp.prompt).toBe('Specify radius of circle or [Diameter] <2.0000>:')
     t.run('0⏎')
     expect(t.interp.history.at(-1)).toBe('Value must be positive and nonzero.')
     t.run('⏎')
@@ -102,7 +102,12 @@ describe('selection and ERASE', () => {
     t.click(5, 5)
     t.click(5, 5, true) // Shift removes
     t.click(20, 3)
-    expect(t.interp.history.slice(-3)).toEqual(['1 found', '1 found, removed', '1 found'])
+    expect(t.interp.history.slice(-4)).toEqual([
+      'Select objects: 1 found',
+      'Select objects: 1 found, 2 total',
+      'Select objects: 1 found, 1 removed, 1 total',
+      'Select objects: 1 found, 2 total',
+    ])
     t.run('⏎')
     expect(t.lines()).toEqual([[0, 5, 10, 5]])
     t.run('U⏎')
@@ -273,5 +278,106 @@ describe('object snap and ORTHO', () => {
     t.click(5.95, 5.1) // on the circle: CEN, off the ortho line
     t.run('⏎')
     expect(t.lines()).toEqual([[0, 0, 5, 5]])
+  })
+})
+
+describe('AutoCAD parity (M3 review)', () => {
+  it('a clicked radius of zero is refused like a typed one, and the prompt stays', () => {
+    const t = commandBench()
+    t.run('C⏎5,5⏎')
+    t.click(5, 5)
+    expect(t.interp.command).toBe('CIRCLE')
+    expect(t.interp.history.at(-1)).toBe('Value must be positive and nonzero.')
+    t.run('2⏎')
+    expect(t.circles()).toEqual([[5, 5, 2]])
+  })
+
+  it('REDO brings back all that UNDO n took back; UNDO takes whole numbers only', () => {
+    const t = commandBench()
+    for (const x of [0, 1, 2]) t.run(`C⏎${x},0⏎1⏎`)
+    t.run('UNDO⏎0.5⏎')
+    expect(t.interp.history.at(-1)).toBe('Requires an integer value.')
+    t.run('2⏎')
+    expect(t.circles()).toHaveLength(1)
+    t.run('REDO⏎')
+    expect(t.circles()).toHaveLength(3)
+  })
+
+  it("LINE's Undo and Close move LASTPOINT, so @ goes from where the next segment starts", () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎10,5⏎U⏎@0,5⏎⏎')
+    expect(t.lines()).toEqual([[0, 0, 10, 0], [10, 0, 10, 5]])
+    t.run('L⏎0,0⏎10,0⏎10,5⏎C⏎')
+    expect(t.interp.lastPoint).toEqual({ x: 0, y: 0 })
+  })
+
+  it('Enter at the first point continues from the last line drawn', () => {
+    const t = commandBench()
+    t.run('L⏎⏎')
+    expect(t.interp.history.at(-1)).toBe('No line or arc to continue.')
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.run('⏎⏎@0,5⏎⏎') // Enter repeats LINE, Enter again continues from (10,0)
+    expect(t.lines()).toEqual([[0, 0, 10, 0], [10, 0, 10, 5]])
+  })
+
+  it('ZOOM takes .5x and 0.5x; its prompt has one "or"', () => {
+    const t = commandBench()
+    const scale = t.view().scale
+    t.run('Z⏎')
+    expect(t.interp.prompt).toBe('Specify corner of window, enter a scale factor (nX), or [All/Extents/Window]:')
+    t.run('.5x⏎')
+    expect(t.view().scale).toBe(scale / 2)
+    t.run('Z⏎0.5x⏎')
+    expect(t.view().scale).toBe(scale / 4)
+  })
+
+  it('defaults show 4 decimals; what was typed and refused stays in the history', () => {
+    const t = commandBench()
+    t.interp.osnap = false
+    t.run('C⏎0,0⏎')
+    t.click(1, 3)
+    t.run('C⏎5,5⏎')
+    expect(t.interp.prompt).toBe('Specify radius of circle or [Diameter] <3.1623>:')
+    t.interp.cancel()
+    t.run('L⏎0,0⏎nope⏎')
+    expect(t.interp.history.slice(-2)).toEqual(['Specify next point or [Undo]: nope', 'Point or option keyword required.'])
+  })
+
+  it('a window waiting for its other corner says so', () => {
+    const t = commandBench()
+    t.click(50, 50) // nothing there: the first corner
+    expect(t.interp.prompt).toBe('Specify opposite corner:')
+    t.click(60, 60)
+    expect(t.interp.prompt).toBe('Command:')
+  })
+
+  it('a command that does not take the selection drops it, so a later E asks first', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.click(5, 0)
+    expect(t.selection.ids.size).toBe(1)
+    t.run('C⏎20,20⏎1⏎')
+    expect(t.selection.ids.size).toBe(0)
+    t.run('E⏎')
+    expect(t.interp.prompt).toBe('Select objects:')
+  })
+
+  it('Select objects takes Last, Previous, Window, Crossing, Remove, Add, Undo and typed points', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.run('L⏎0,5⏎10,5⏎⏎')
+    t.run('C⏎30,0⏎2⏎')
+    t.run('M⏎L⏎⏎0,0⏎0,1⏎') // Last: the circle
+    expect(t.circles()).toEqual([[30, 1, 2]])
+    t.run('M⏎P⏎⏎0,0⏎0,1⏎') // Previous: the circle again
+    expect(t.circles()).toEqual([[30, 2, 2]])
+    t.run('E⏎W⏎-1,-1⏎11,1⏎') // a window typed from right to left would cross; W keeps it a window
+    expect(t.interp.history.at(-1)).toBe('Specify opposite corner: 11,1 1 found')
+    t.run('R⏎5,0⏎') // Remove mode, a typed point picks
+    expect(t.selection.ids.size).toBe(0)
+    t.run('A⏎5,5⏎U⏎') // Add mode, pick, then Undo the pick
+    expect(t.selection.ids.size).toBe(0)
+    t.run('C⏎12,6⏎9,-1⏎⏎') // Crossing: both lines
+    expect(t.lines()).toEqual([])
   })
 })

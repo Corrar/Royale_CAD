@@ -163,7 +163,7 @@ function keyboard() {
   const type = (text: string): void => {
     for (const ch of text) key(ch)
   }
-  return { key, type, calls, buffer: () => buffer, dispose }
+  return { key, type, calls, buffer: () => buffer, dispose, raw: (e: Event) => target.dispatchEvent(e) }
 }
 
 describe('attachKeyboard', () => {
@@ -213,6 +213,19 @@ describe('attachKeyboard', () => {
     const t = keyboard()
     for (const k of ['F3', 'F7', 'F8']) expect(t.key(k).defaultPrevented).toBe(true)
     expect(t.calls).toEqual(['osnap', 'grid', 'ortho'])
+  })
+
+  it('AltGr types its character (@ on many layouts) instead of being a shortcut', () => {
+    const t = keyboard()
+    const altGr = (k: string): Event => {
+      const e = Object.assign(new Event('keydown', { cancelable: true }), { key: k, ctrlKey: true, altKey: true, getModifierState: (m: string) => m === 'AltGraph' })
+      Object.defineProperty(e, 'target', { value: {} })
+      return e
+    }
+    t.type('L')
+    for (const k of ['@', 's']) t.raw(altGr(k))
+    expect(t.buffer()).toBe('L@s')
+    expect(t.calls).toEqual([])
   })
 
   it('leaves text fields, other shortcuts and Alt alone', () => {

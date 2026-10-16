@@ -30,6 +30,8 @@ export interface CommandLineState {
   /** Typed and not yet submitted. */
   buffer: string
   history: readonly string[]
+  /** The number of history[0] among all lines said: a stable key for each line. */
+  first: number
   expanded: boolean
 }
 
@@ -105,7 +107,8 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
   const selection = createSelection()
 
   let view: ViewState | null = null
-  let cursor: Vec2 | null = null // CSS px over the viewport
+  let cursor: Vec2 | null = null // CSS px over the viewport; kept when it leaves, for the rubber band
+  let inside = false
   let sceneDirty = true
 
   const host: InterpreterHost = {
@@ -150,6 +153,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
         {
           view,
           cursor,
+          crosshair: inside,
           pickbox: !r || r.kind === 'selection' || (r.kind === 'point' && r.pick === true),
           preview: r && (r.kind === 'point' || r.kind === 'number') ? (r.preview ?? null) : null,
           corner: interp.corner,
@@ -168,6 +172,8 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
   function setView(v: ViewState): void {
     view = v
     interp.cursor = cursor && screenToWorld(v, cursor.x, cursor.y)
+    // The same screen point is somewhere else in the world now: the status must say where.
+    tracking.set(tracking.get() + 1)
     redrawScene()
   }
 
@@ -186,7 +192,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
   const buffer = createStore('')
   const expanded = createStore(false)
   const grid = createStore(true)
-  const cursorMoved = createStore(0) // ticks on every move: the status shows where the cursor would land
+  const tracking = createStore(0) // ticks when the cursor or the view moves: the status shows where a click lands
   const offGrid = grid.subscribe(() => {
     backend.setGrid(grid.get())
     redrawScene()
@@ -203,10 +209,13 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     },
     { subscribe: (fn) => interp.onChange(fn) },
     grid,
-    cursorMoved,
+    tracking,
   )
   const commandLine = derivedStore(
-    () => ({ prompt: interp.prompt, buffer: buffer.get(), history: interp.history.slice(-HISTORY_KEEP), expanded: expanded.get() }),
+    () => {
+      const history = interp.history.slice(-HISTORY_KEEP)
+      return { prompt: interp.prompt, buffer: buffer.get(), history, first: interp.said - history.length, expanded: expanded.get() }
+    },
     { subscribe: (fn) => interp.onChange(fn) },
     buffer,
     expanded,
@@ -261,9 +270,14 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
     click: (sx, sy, shift) => interp.feedPoint(screenToWorld(view!, sx, sy), shift),
     enter: submit,
     hover: (p) => {
-      cursor = p
-      interp.cursor = p && screenToWorld(view!, p.x, p.y)
-      cursorMoved.set(cursorMoved.get() + 1)
+      // Off the viewport (over the command line, the status bar) the crosshair goes, but the last point stays for
+      // the rubber band and for a distance typed in its direction.
+      inside = p !== null
+      if (p) {
+        cursor = p
+        interp.cursor = screenToWorld(view!, p.x, p.y)
+      }
+      tracking.set(tracking.get() + 1)
       loop.invalidate()
     },
   })

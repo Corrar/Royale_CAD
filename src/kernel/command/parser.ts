@@ -45,6 +45,8 @@ function vector(s: string): [number, number] | undefined {
 export function parseInput(text: string): Token {
   const t = text.trim()
   if (t === '') return { kind: 'empty' }
+  // "@" alone: the last point itself.
+  if (t === '@') return { kind: 'point', mode: 'rel', x: 0, y: 0 }
   const rel = t.startsWith('@')
   const v = vector(rel ? t.slice(1) : t)
   if (v) return { kind: 'point', mode: rel ? 'rel' : 'abs', x: v[0], y: v[1] }

@@ -1,5 +1,5 @@
 import { ChevronUp } from 'lucide-react'
-import { useSyncExternalStore } from 'react'
+import { useLayoutEffect, useRef, useSyncExternalStore } from 'react'
 import type { CommandLineState } from '../app/controller'
 import type { Store } from '../app/stores'
 
@@ -13,12 +13,32 @@ const LINES_EXPANDED = 30
 export function CommandLine({ store, onToggleHistory }: { store: Store<CommandLineState>; onToggleHistory: () => void }) {
   const s = useSyncExternalStore(store.subscribe, store.get)
   const lines = s.history.slice(-(s.expanded ? LINES_EXPANDED : LINES_COLLAPSED))
+  const first = s.first + s.history.length - lines.length
+  // The newest line in view, as in a terminal, unless the user scrolled back to read.
+  const list = useRef<HTMLOListElement>(null)
+  const pinned = useRef(true)
+  useLayoutEffect(() => {
+    const ol = list.current
+    if (ol && pinned.current) ol.scrollTop = ol.scrollHeight
+  }, [s.expanded, first, lines.length])
+  useLayoutEffect(() => {
+    pinned.current = true
+  }, [s.expanded])
   return (
     <section className={s.expanded ? 'cmdline expanded' : 'cmdline'} aria-label="Command line">
       {lines.length > 0 && (
-        <ol className="cmdline-history" aria-live="polite">
+        <ol
+          ref={list}
+          className="cmdline-history"
+          aria-live="polite"
+          onScroll={(e) => {
+            const ol = e.currentTarget
+            pinned.current = ol.scrollTop + ol.clientHeight >= ol.scrollHeight - 2
+          }}
+        >
           {lines.map((line, i) => (
-            <li key={`${s.history.length - lines.length + i}:${line}`}>{line}</li>
+            // Each line keeps its number for good: a new line does not remount the others.
+            <li key={first + i}>{line}</li>
           ))}
         </ol>
       )}
