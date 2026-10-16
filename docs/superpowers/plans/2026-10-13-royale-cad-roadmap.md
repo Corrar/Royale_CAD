@@ -329,9 +329,12 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
 
 ## M8 — Carcaça
 
-- [ ] **T39 · Barras flutuantes**
+- [x] **T39 · Barras flutuantes**
   - Arquivos: `src/ui/Toolbar.tsx`, `src/ui/App.tsx`
   - Verifica: todo botão tem `aria-label`, dica com alias e foco visível; navegação por Tab; contraste AA.
+  - Feito: três barras no canto superior esquerdo (`src/ui/tools.ts`): Desenhar (LINE, PLINE, CIRCLE, ARC, RECTANG, TEXT), Modificar (MOVE, COPY, ROTATE, MIRROR, SCALE, OFFSET, TRIM, EXTEND, ERASE) e Vista (U, REDO, ZOOM E, PAN). Ícones Lucide; arco e offset desenhados no mesmo traço com `createLucideIcon`. Dica (`role="tooltip"`, ligada por `aria-describedby`) ao passar o mouse e ao focar pelo teclado, com o alias mais curto do `acad.pgp` (Line L, Copy CO, Zoom extents Z E, Undo U, Ctrl+Z). O botão encerra o comando em curso e digita o seu (`AppSession.runCommand`), como o AutoCAD; o comando ativo aparece pressionado (`aria-pressed`, store `active`); depois do clique o botão solta o foco e a digitação segue na linha de comando. Tab segue a ordem de leitura (ferramentas, camada, status, linha de comando); setas andam dentro da barra (padrão toolbar do ARIA); Enter e Espaço acionam só um botão focado pelo teclado (`:focus-visible`), num botão apenas clicado continuam indo para a linha. Em janela baixa as barras quebram numa segunda coluna, longe da linha de comando.
+  - Contraste: ícones `--text-muted` (#9AA0A6) sobre `--surface` (#24272B) 5,8:1; texto da dica sobre `--surface-2` 11:1; ativo `--accent` sobre o fundo realçado acima de 9:1.
+  - Verificado no app: dica ao passar o mouse, LINE pressionado durante o comando, Tab chega nas ferramentas com anel de foco e dica, Enter inicia CIRCLE.
 
 - [ ] **T40 · Ajustes**
   - Arquivos: `src/app/settings.ts`, `src/ui/Settings.tsx`
