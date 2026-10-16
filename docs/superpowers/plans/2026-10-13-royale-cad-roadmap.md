@@ -251,14 +251,15 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
   - Arquivos: `src/kernel/snap.ts` + teste
   - Testa: INT entre linha e círculo; PER relativo ao `base` do pedido; QUA nos 4 quadrantes.
   - Feito: INT entre os objetos sob o cursor (até 32, os mais próximos); PER com o cursor sobre o objeto, pé no próprio objeto (o host repassa o `base` do pedido); QUA por tipo (`arcQuadrants`, exato); NEA só quando nenhum outro modo responde. Empates por arredondamento seguem a prioridade. Marcadores próprios para os oito modos. OSMODE do app: END, MID, CEN, INT, PER.
-  - Pendente: NOD não acha nada até existir uma entidade ponto (POINT), que o roadmap ainda não tem.
+  - Pendente: NOD não acha nada até a entidade ponto (`POINT`) chegar com o leitor DXF (T31); ela deve emitir seu ponto em `snapPoints` com `SNAP.NOD`.
 
 ## M6 — DXF (gate G3)
 
-- [ ] **T30 · Tokenizer**
+- [x] **T30 · Tokenizer**
   - Arquivos: `src/kernel/dxf/tokenizer.ts` + teste
   - Produz: `Pair = { code: number; value: string }`; `tokenize(text): Pair[]`; `sections(pairs)`. A decodificação de bytes fica no T33, fora do kernel.
   - Testa: CRLF e LF; espaços no código; arquivo truncado gera erro com número da linha.
+  - Feito: `tokenize` devolve `PairList` em vez de `Pair[]`: códigos num `Int16Array` e valores como intervalos do texto, cortados só quando pedidos (`value(i)`; `is(i, code, word)` compara sem alocar; `pair(i)` dá o objeto). Com um objeto por par, 111 MB levavam 5,4 s e 1,36 GB de heap; assim, 0,6 s e ~90 MB de índice. `sections` devolve `{ name, start, end }` (intervalo de pares). Para no `0/EOF`; BOM ignorado; DXF binário recusado; `DxfError` com `line` (par i começa na linha 2i + 1).
 
 - [ ] **T31 · Reader**
   - Arquivos: `src/kernel/dxf/reader.ts` + teste; `dxf.read` em `entity/*.ts`; `entity/opaque.ts`; tabela ACI já em `src/kernel/color.ts` (conferir 10–249 aqui)

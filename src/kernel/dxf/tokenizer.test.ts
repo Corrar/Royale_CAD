@@ -1,0 +1,92 @@
+import { describe, expect, it } from 'vitest'
+import { DxfError, sections, tokenize as tokenizeList, type Pair } from './tokenizer'
+
+const dxf = (...lines: string[]): string => lines.join('\n') + '\n'
+/** The pairs as objects, to compare. */
+const tokenize = (text: string): Pair[] => {
+  const list = tokenizeList(text)
+  return Array.from({ length: list.length }, (_, i) => list.pair(i))
+}
+
+describe('tokenize', () => {
+  it('reads code/value pairs; CRLF and LF give the same pairs', () => {
+    const lf = dxf('0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF')
+    const pairs = tokenize(lf)
+    expect(pairs).toEqual([
+      { code: 0, value: 'SECTION' },
+      { code: 2, value: 'ENTITIES' },
+      { code: 0, value: 'ENDSEC' },
+      { code: 0, value: 'EOF' },
+    ])
+    expect(tokenize(lf.replace(/\n/g, '\r\n'))).toEqual(pairs)
+  })
+
+  it('takes codes padded with spaces, and keeps values as written', () => {
+    expect(tokenize('  0\r\nLINE\r\n 10 \r\n  1.5\r\n  1\r\n two  words \r\n')).toEqual([
+      { code: 0, value: 'LINE' },
+      { code: 10, value: '  1.5' },
+      { code: 1, value: ' two  words ' },
+    ])
+  })
+
+  it('grows past its first guess of the number of pairs', () => {
+    const lines: string[] = []
+    for (let i = 0; i < 100; i++) lines.push('1', String(i))
+    const pairs = tokenize(lines.join('\n'))
+    expect(pairs).toHaveLength(100)
+    expect(pairs[99]).toEqual({ code: 1, value: '99' })
+  })
+
+  it('stops at EOF; a byte order mark and a final newline are not content', () => {
+    expect(tokenize('﻿0\nEOF\ntrailing junk')).toEqual([{ code: 0, value: 'EOF' }])
+    expect(tokenize('999\nmade by hand')).toEqual([{ code: 999, value: 'made by hand' }])
+    expect(tokenize('')).toEqual([])
+  })
+
+  it('a file cut after a group code is an error that names the line', () => {
+    const text = dxf('0', 'SECTION', '2', 'ENTITIES', '0', 'LINE', '10')
+    expect(() => tokenize(text)).toThrow(DxfError)
+    expect(() => tokenize(text)).toThrow('line 8: group code 10 has no value (file truncated?)')
+    try {
+      tokenize(text)
+    } catch (error) {
+      expect((error as DxfError).line).toBe(8)
+    }
+  })
+
+  it('a group code that is not an integer is an error that names the line', () => {
+    expect(() => tokenize(dxf('0', 'SECTION', 'abc', 'x'))).toThrow('line 3: invalid group code "abc"')
+    expect(() => tokenize(dxf('0', 'SECTION', '12345', 'x'))).toThrow('line 3: invalid group code "12345"')
+    expect(tokenize(dxf(' -5 ', 'x'))).toEqual([{ code: -5, value: 'x' }])
+    expect(() => tokenize(dxf('0', 'SECTION', '', 'x'))).toThrow('line 3: invalid group code ""')
+  })
+
+  it('refuses binary DXF', () => {
+    expect(() => tokenize('AutoCAD Binary DXF\r\n\u001a\u0000...')).toThrow('line 1: binary DXF is not supported')
+  })
+})
+
+describe('sections', () => {
+  it('names each section and the range of its pairs, between the name and ENDSEC', () => {
+    const pairs = tokenizeList(
+      dxf('999', 'comment', '0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1015', '0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF'),
+    )
+    expect(sections(pairs)).toEqual([
+      { name: 'HEADER', start: 3, end: 5 },
+      { name: 'ENTITIES', start: 8, end: 8 },
+    ])
+    expect(pairs.pair(3)).toEqual({ code: 9, value: '$ACADVER' })
+    expect(pairs.is(2, 2, 'HEADER')).toBe(true)
+    expect(pairs.is(2, 0, 'HEADER')).toBe(false)
+  })
+
+  it('a section cut short is an error that names the line where the file ends', () => {
+    const pairs = tokenizeList(dxf('0', 'SECTION', '2', 'ENTITIES', '0', 'LINE', '8', '0'))
+    expect(() => sections(pairs)).toThrow('line 9: section ENTITIES is not closed (file truncated?)')
+  })
+
+  it('anything but a section at the top level is an error', () => {
+    expect(() => sections(tokenizeList(dxf('0', 'LINE', '8', '0')))).toThrow('line 1: expected 0/SECTION, found 0/LINE')
+    expect(() => sections(tokenizeList(dxf('0', 'SECTION', '8', '0')))).toThrow('line 3: a section starts with its name (code 2)')
+  })
+})
