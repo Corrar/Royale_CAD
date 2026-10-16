@@ -30,7 +30,8 @@ export interface LayerTable {
 
 export interface Document {
   get(id: number): Entity | undefined
-  /** Insertion order; an entity brought back by undo goes to the end. */
+  /** Insertion order; an entity brought back by undo goes to the end. Ids are positive integers given in
+   *  increasing order and never reused. */
   entities(): IterableIterator<Entity>
   readonly size: number
   /** Runs fn as one undo step with one change event. If fn throws, nothing changes and the error propagates. */
@@ -42,7 +43,8 @@ export interface Document {
   readonly layers: LayerTable
 }
 
-interface Step { label: string; before: Map<number, Entity | undefined>; after: Map<number, Entity | undefined> }
+/** Entity ids[k] went from before[k] to after[k]; undefined means absent. */
+interface Step { label: string; ids: number[]; before: (Entity | undefined)[]; after: (Entity | undefined)[] }
 
 /** Calls every listener even if one throws, then rethrows the first error. */
 function emit<T>(listeners: Set<(x: T) => void>, x: T): void {
@@ -119,8 +121,10 @@ export function createDocument(): Document {
   const redoStack: Step[] = []
   let nextId = 1
   let count = 0
-  // Original value of every id the open transaction touched; null when no transaction is open.
+  // Original value of every pre-existing id the open transaction touched; null when no transaction is open.
+  // Ids from txStart on were created by the transaction, so their original value is known to be absent.
   let open: Map<number, Entity | undefined> | null = null
+  let txStart = 0
 
   const read = (id: number): Entity | undefined => {
     const e = items.get(id)
@@ -137,7 +141,7 @@ export function createDocument(): Document {
   }
 
   function touch(id: number): void {
-    if (!open!.has(id)) open!.set(id, read(id))
+    if (id < txStart && !open!.has(id)) open!.set(id, read(id))
   }
 
   // tx outlives its transaction if a caller keeps it.
@@ -151,7 +155,6 @@ export function createDocument(): Document {
       const e = { ...draft, id: nextId } as Entity
       validate(e)
       nextId++
-      touch(e.id)
       items.set(e.id, e)
       count++
       return e
@@ -173,12 +176,13 @@ export function createDocument(): Document {
   }
 
   /** Writes the entities of `to` (undefined: absent) and returns the change from the state `from`. */
-  function apply(from: Map<number, Entity | undefined>, to: Map<number, Entity | undefined>): Change {
+  function apply(ids: readonly number[], from: readonly (Entity | undefined)[], to: readonly (Entity | undefined)[]): Change {
     const c: Change = { added: [], removed: [], changed: [] }
-    for (const [id, next] of to) {
-      const prev = from.get(id)
-      if (next) items.set(id, next)
-      else items.delete(id)
+    for (let k = 0; k < ids.length; k++) {
+      const prev = from[k]
+      const next = to[k]
+      if (next) items.set(ids[k]!, next)
+      else items.delete(ids[k]!)
       if (!prev) {
         c.added.push(next!)
         count++
@@ -195,7 +199,7 @@ export function createDocument(): Document {
     const s = from.pop()
     if (!s) return undefined
     to.push(s)
-    emit(listeners, name === 'undo' ? apply(s.after, s.before) : apply(s.before, s.after))
+    emit(listeners, name === 'undo' ? apply(s.ids, s.after, s.before) : apply(s.ids, s.before, s.after))
     return s.label
   }
 
@@ -210,37 +214,38 @@ export function createDocument(): Document {
     transact(label, fn) {
       if (open) throw new Error('transact cannot be nested')
       const touched = new Map<number, Entity | undefined>()
-      const startId = nextId
       const startCount = count
+      txStart = nextId
       open = touched
       try {
         fn(tx)
       } catch (error) {
-        for (const [id, e] of touched) {
-          if (e) items.set(id, e)
-          else items.delete(id)
-        }
-        nextId = startId
+        for (const [id, e] of touched) items.set(id, e!) // only ids that existed: e is never undefined
+        for (let id = txStart; id < nextId; id++) items.delete(id)
+        nextId = txStart
         count = startCount
         throw error
       } finally {
         open = null
       }
       const c: Change = { added: [], removed: [], changed: [] }
-      const before = new Map<number, Entity | undefined>()
-      const after = new Map<number, Entity | undefined>()
-      for (const [id, prev] of touched) {
-        const next = read(id)
-        if (items.get(id) === REMOVED) items.delete(id)
-        if (prev === next) continue
-        before.set(id, prev)
-        after.set(id, next)
+      const step: Step = { label, ids: [], before: [], after: [] }
+      const record = (id: number, prev: Entity | undefined): void => {
+        const raw = items.get(id)
+        const next = raw === REMOVED ? undefined : raw
+        if (raw === REMOVED) items.delete(id)
+        if (prev === next) return
+        step.ids.push(id)
+        step.before.push(prev)
+        step.after.push(next)
         if (!prev) c.added.push(next!)
         else if (!next) c.removed.push(prev)
         else c.changed.push([prev, next])
       }
-      if (after.size === 0) return
-      undoStack.push({ label, before, after })
+      for (const [id, prev] of touched) record(id, prev)
+      for (let id = txStart; id < nextId; id++) record(id, undefined)
+      if (step.ids.length === 0) return
+      undoStack.push(step)
       redoStack.length = 0
       emit(listeners, c)
     },
