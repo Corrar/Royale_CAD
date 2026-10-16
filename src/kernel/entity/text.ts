@@ -71,7 +71,10 @@ function moved<E extends Text | MText>(e: E, m: Affine): { x: number; y: number;
     return { x: p.x, y: p.y, rotation: normAngle(e.rotation + Math.atan2(m.b, m.a)), k }
   }
   const l = layoutOf(e)
-  return { ...mirrorPlacement(l, anchorOf(l, e.x, e.y), m, e.rotation), k }
+  // A backward text reads against its rotation: place it by the way it reads, then turn back.
+  const back = e.type === 'text' && e.backward ? Math.PI : 0
+  const p = mirrorPlacement(l, anchorOf(l, e.x, e.y), m, e.rotation + back)
+  return { ...p, rotation: normAngle(p.rotation + back), k }
 }
 
 export const textType: EntityType<Text> = {

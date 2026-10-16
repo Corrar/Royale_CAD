@@ -58,6 +58,9 @@ export function layoutText(t: TextProps): Laid {
   place(s, 0, 0, glyphs)
   const box = { x0: 0, y0: -DESCENT, x1: w, y1: 1 }
   let frame: TextFrame
+  // The local point mirroring pivots on.
+  let ax: number
+  let ay: number
   const span = Math.hypot(t.x2 - t.x, t.y2 - t.y)
   if ((t.halign === 3 || t.halign === 5) && w > 0 && span > 0) {
     // Aligned keeps the proportions and scales the height to the span; fit keeps the height and stretches.
@@ -65,13 +68,17 @@ export function layoutText(t: TextProps): Laid {
     const h = t.halign === 3 ? span / (w * t.widthFactor) : t.height
     const wf = t.halign === 3 ? t.widthFactor : span / (w * t.height)
     frame = frameAt(t.x, t.y, 0, 0, rotation, h, wf, t.oblique)
+    // Backward it stays between its points; upside down it hangs from its baseline.
+    ax = w / 2
+    ay = 0
   } else {
-    const ay = t.halign === 4 ? 0.5 : [0, -DESCENT, 0.5, 1][t.valign] ?? 0
-    frame = frameAt(t.x, t.y, (H_AT[t.halign] ?? 0) * w, ay, t.rotation, t.height, t.widthFactor, t.oblique)
+    ax = (H_AT[t.halign] ?? 0) * w
+    ay = t.halign === 4 ? 0.5 : [0, -DESCENT, 0.5, 1][t.valign] ?? 0
+    frame = frameAt(t.x, t.y, ax, ay, t.rotation, t.height, t.widthFactor, t.oblique)
   }
-  // Mirrored in its own box: the box stays where it is.
-  if (t.backward) frame = { ...frame, ox: frame.ox + (box.x0 + box.x1) * frame.ux, oy: frame.oy + (box.x0 + box.x1) * frame.uy, ux: -frame.ux, uy: -frame.uy }
-  if (t.upsideDown) frame = { ...frame, ox: frame.ox + (box.y0 + box.y1) * frame.vx, oy: frame.oy + (box.y0 + box.y1) * frame.vy, vx: -frame.vx, vy: -frame.vy }
+  // Mirrored about its justification point, which stays put: MIRROR with MIRRTEXT 1 writes these flags so.
+  if (t.backward) frame = { ...frame, ox: frame.ox + 2 * ax * frame.ux, oy: frame.oy + 2 * ax * frame.uy, ux: -frame.ux, uy: -frame.uy }
+  if (t.upsideDown) frame = { ...frame, ox: frame.ox + 2 * ay * frame.vx, oy: frame.oy + 2 * ay * frame.vy, vx: -frame.vx, vy: -frame.vy }
   return { frame, glyphs, box }
 }
 

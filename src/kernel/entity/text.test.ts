@@ -47,6 +47,18 @@ describe('text', () => {
     expect(b.maxX).toBeCloseTo(90, 9)
   })
 
+  it('MIRROR puts a backward or upside-down text where the mirror puts its box, flags kept', () => {
+    const across = mirroring({ x: 50, y: 0 }, { x: 50, y: 1 })
+    for (const flags of [{ backward: true }, { upsideDown: true }, { backward: true, upsideDown: true }, { backward: true, halign: 2 }]) {
+      const t = text(flags)
+      const b = typeOf(t).bbox(t)
+      const mirrored = typeOf(t).transform!(t, across)
+      const a = typeOf(mirrored).bbox(mirrored)
+      expect([mirrored.backward, mirrored.upsideDown]).toEqual([t.backward, t.upsideDown])
+      expect([a.minX, a.maxX, a.minY, a.maxY].map((v) => +v.toFixed(9))).toEqual([100 - b.maxX, 100 - b.minX, b.minY, b.maxY].map((v) => +v.toFixed(9)))
+    }
+  })
+
   it('snaps INS at its point; validate wants a height and a width factor', () => {
     const out: number[][] = []
     typeOf(text()).snapPoints!(text(), SNAP.INS | SNAP.END, (x, y, mode) => out.push([x, y, mode]))
