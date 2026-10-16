@@ -148,6 +148,22 @@ describe('createFiles', () => {
     expect([1, 2].map((i) => t.doc.layers.get(i)!.name)).toEqual(['Ação', 'Seção'])
   })
 
+  it('a layer name with a character the code page lacks comes back from a save as it went in', async () => {
+    const t = setup()
+    t.fake.answers.opened = { token: 1, name: 'Plant.dxf', size: 0, bytes: latin1(PLANT.replace('Ação', '\\U+0394-COTA')) }
+    t.files.open(false)
+    await t.settle()
+    t.doc.layers.add({ name: 'Ω', color: 1, visible: true, locked: false })
+    t.files.save()
+    await t.settle()
+    expect(decodeDxf(t.fake.saved[0]!).text).toContain('\r\n\\U+03A9\r\n')
+    t.fake.answers.opened = { token: 2, name: 'Plant.dxf', size: 0, bytes: t.fake.saved[0]! }
+    t.files.open(false)
+    await t.settle()
+    expect([1, 2].map((i) => t.doc.layers.get(i)!.name)).toEqual(['Δ-COTA', 'Ω'])
+    expect(t.lines).toEqual(['Opened Plant.dxf: 1 object.', 'Saved Plant.dxf.', 'Opened Plant.dxf: 1 object.'])
+  })
+
   it('a failed or cancelled save keeps the changes and stops what was to follow', async () => {
     const t = setup()
     t.doc.transact('draw', (tx) => void tx.add({ type: 'line', layer: 0, x0: 0, y0: 0, x1: 1, y1: 1 }))
