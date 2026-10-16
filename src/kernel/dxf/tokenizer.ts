@@ -148,7 +148,14 @@ export function sections(pairs: PairList): SectionRange[] {
     if (i + 1 >= pairs.length || pairs.code(i + 1) !== 2) throw new DxfError(lineOf(i + 1), 'a section starts with its name (code 2)')
     const name = pairs.value(i + 1).trim()
     let j = i + 2
-    while (j < pairs.length && !pairs.is(j, 0, 'ENDSEC')) j++
+    for (; j < pairs.length; j++) {
+      if (pairs.codes[j] !== 0) continue
+      if (pairs.is(j, 0, 'ENDSEC')) break
+      // Sections do not nest: without this, the section would swallow the ones after it.
+      if (pairs.is(j, 0, 'SECTION') || pairs.is(j, 0, 'EOF')) {
+        throw new DxfError(lineOf(j), `section ${name} is not closed (0/${pairs.value(j).trim()} before 0/ENDSEC)`)
+      }
+    }
     if (j >= pairs.length) throw new DxfError(lineOf(pairs.length), `section ${name} is not closed (file truncated?)`)
     out.push({ name, start: i + 2, end: j })
     i = j + 1

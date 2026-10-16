@@ -96,6 +96,15 @@ describe('sections', () => {
     expect(() => sections(pairs)).toThrow('line 9: section ENTITIES is not closed (file truncated?)')
   })
 
+  it('a section without its ENDSEC is an error at the 0/SECTION or 0/EOF that comes first, not a section swallowing the next', () => {
+    const blocks = tokenizeList(dxf('0', 'SECTION', '2', 'BLOCKS', '0', 'BLOCK', '2', 'A', '0', 'ENDBLK', '0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF'))
+    expect(() => sections(blocks)).toThrow('line 11: section BLOCKS is not closed (0/SECTION before 0/ENDSEC)')
+    const header = tokenizeList(dxf('0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1015', '0', 'SECTION', '2', 'TABLES', '0', 'ENDSEC', '0', 'EOF'))
+    expect(() => sections(header)).toThrow('line 9: section HEADER is not closed (0/SECTION before 0/ENDSEC)')
+    const entities = tokenizeList(dxf('0', 'SECTION', '2', 'ENTITIES', '0', 'LINE', '8', '0', '0', 'EOF'))
+    expect(() => sections(entities)).toThrow('line 9: section ENTITIES is not closed (0/EOF before 0/ENDSEC)')
+  })
+
   it('anything but a section at the top level is an error', () => {
     expect(() => sections(tokenizeList(dxf('0', 'LINE', '8', '0')))).toThrow('line 1: expected 0/SECTION, found 0/LINE')
     expect(() => sections(tokenizeList(dxf('0', 'SECTION', '8', '0')))).toThrow('line 3: a section starts with its name (code 2)')
