@@ -112,6 +112,15 @@ describe('real', () => {
   })
 })
 
+describe('nearestAci', () => {
+  it('gives the 62 AutoCAD writes beside a 420: black is 18 (dark red), not a gray, as in its own VISUALSTYLE objects', () => {
+    // AutoCAD's visual styles, as ezdxf copies them into a drawing it sets up, pair 420 0 with 62 18, 255 with 5,
+    // white with 7: AutoCAD's own nearest index, the hue included.
+    expect([0x000000, 0x0000ff, 0xffffff].map(nearestAci)).toEqual([18, 5, 7])
+    expect([0x101010, 0x404040, 0x808080].map(nearestAci)).toEqual([250, 250, 8])
+  })
+})
+
 describe('writeDxf', () => {
   it('a file written back without edits is the file read, byte for byte', () => {
     const text = file([...LINE, ...CIRCLE, ...HATCH, ...LWPOLY])
