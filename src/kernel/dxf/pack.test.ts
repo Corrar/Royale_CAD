@@ -38,6 +38,13 @@ describe('packDrafts', () => {
     expect(unpackDrafts(p, 1, 3)[0]).toEqual(drafts[1])
   })
 
+  it('carries the attributes of an insert: tag, layer, color (ByBlock and ByLayer told apart), hidden', () => {
+    const attrib = { type: 'text', layer: 2, value: 'D1', x: 1, y: 2, x2: 3, y2: 4, height: 0.5, rotation: 0.25, widthFactor: 0.9, oblique: 0.1, halign: 5, valign: 0, backward: false, upsideDown: true, tag: 'NUM', hidden: false } as const
+    const drafts = [{ ...ins(A, 1), attribs: [attrib, { ...attrib, color: BY_BLOCK, tag: 'NOTE', hidden: true, value: '' }, { ...attrib, color: 4 }] }, ins(A, 2)]
+    const p = structuredClone(packDrafts(drafts))
+    expect(unpackDrafts(p, 0, p.n)).toEqual(drafts)
+  })
+
   it('unpacks to the same drafts, whole or in slices', () => {
     const p = structuredClone(packDrafts(DRAFTS))
     expect(unpackDrafts(p, 0, p.n)).toEqual(DRAFTS)

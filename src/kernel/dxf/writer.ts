@@ -2,7 +2,7 @@ import { TRUE_COLOR, aciRgb, type Color } from '../color'
 import { docExtents, type Document, type Layer } from '../document'
 import { typeOf } from '../entity/registry'
 import { insertAffines } from '../entity/insert'
-import type { Ellipse, Entity, Insert, MText, Polyline, Spline, Text } from '../entity/types'
+import type { Attrib, Ellipse, Entity, Insert, MText, Polyline, Spline, Text } from '../entity/types'
 import { affineDet, applyAffine, type Affine } from '../geom/vec'
 import { TAU, normAngle } from '../geom/tol'
 import { baselineStart, mtextLines } from '../text/layout'
@@ -176,9 +176,11 @@ function fresh(c: Ctx, e: Entity, handle: string | null): void {
       o.real(42, ellipseEnd(e))
       return
     case 'insert': {
-      // A copy: the block reference alone (its attributes wait for text, T38). A grid is a MINSERT.
+      // A copy: the block reference, then its attributes, owned by it, and a SEQEND. A grid is a MINSERT.
       const grid = e.cols > 1 || e.rows > 1
+      const attribs = e.attribs ?? []
       head(c, 'INSERT', e, handle, grid ? 'AcDbMInsertBlock' : 'AcDbBlockReference')
+      if (attribs.length > 0) o.int(66, 1)
       o.str(2, e.block.name)
       o.real(10, e.x)
       o.real(20, e.y)
@@ -192,6 +194,17 @@ function fresh(c: Ctx, e: Entity, handle: string | null): void {
         o.real(44, e.dx)
         o.real(45, e.dy)
       }
+      if (attribs.length === 0) return
+      const take = (): string | null => (f.handles ? c.ids.take() : null)
+      for (const a of attribs) freshAttrib(c, a, take(), handle)
+      o.str(0, 'SEQEND')
+      const seqend = take()
+      if (seqend) o.str(5, seqend)
+      if (f.modern) {
+        if (handle) o.str(330, handle)
+        o.str(100, 'AcDbEntity')
+      }
+      o.str(8, layerName(c, e))
       return
     }
     case 'text':
@@ -248,6 +261,33 @@ function fresh(c: Ctx, e: Entity, handle: string | null): void {
 function freshText(c: Ctx, e: Text, handle: string | null): void {
   const { o, f } = c
   head(c, 'TEXT', e, handle, 'AcDbText')
+  textBody(c, e)
+  if (f.modern) o.str(100, 'AcDbText')
+  if (e.valign !== 0) o.int(73, e.valign)
+}
+
+/** ATTRIB: a text's groups, then its tag, flags and vertical alignment (74). Owned by its insert. */
+function freshAttrib(c: Ctx, a: Attrib, handle: string | null, owner: string | null): void {
+  const { o, f } = c
+  o.str(0, 'ATTRIB')
+  if (handle) o.str(5, handle)
+  if (f.modern) {
+    if (owner) o.str(330, owner)
+    o.str(100, 'AcDbEntity')
+  }
+  o.str(8, fileLayer(c, a.layer))
+  colorGroups(o, f, a.color)
+  if (f.modern) o.str(100, 'AcDbText')
+  textBody(c, a)
+  if (f.modern) o.str(100, 'AcDbAttribute')
+  o.str(2, a.tag)
+  o.int(70, a.hidden ? 1 : 0)
+  if (a.valign !== 0) o.int(74, a.valign)
+}
+
+/** The groups TEXT and ATTRIB share: 10 through 11. */
+function textBody(c: Ctx, e: Omit<Text, 'id'>): void {
+  const { o } = c
   const [first, second] = textPoints(e)
   o.real(10, first.x)
   o.real(20, first.y)
@@ -265,18 +305,16 @@ function freshText(c: Ctx, e: Text, handle: string | null): void {
     o.real(21, second.y)
     o.real(31, 0)
   }
-  if (f.modern) o.str(100, 'AcDbText')
-  if (e.valign !== 0) o.int(73, e.valign)
 }
 
 /** A TEXT's first alignment point (10) and, when it is justified, its second (11). */
-function textPoints(e: Text): [{ x: number; y: number }, { x: number; y: number } | null] {
+function textPoints(e: Omit<Text, 'id'>): [{ x: number; y: number }, { x: number; y: number } | null] {
   if (e.halign === 3 || e.halign === 5) return [{ x: e.x, y: e.y }, { x: e.x2, y: e.y2 }]
   if (e.halign === 0 && e.valign === 0) return [{ x: e.x, y: e.y }, null]
   return [baselineStart(e), { x: e.x, y: e.y }]
 }
 
-const textFlags = (e: Text): number => (e.backward ? 2 : 0) | (e.upsideDown ? 4 : 0)
+const textFlags = (e: Omit<Text, 'id'>): number => (e.backward ? 2 : 0) | (e.upsideDown ? 4 : 0)
 
 /** DXF strings hold 255 characters: MTEXT's value in pieces of 250, none splitting a surrogate pair. */
 function chunksOf(s: string): string[] {
@@ -482,36 +520,9 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
       }
       break
     }
-    case 'text': {
-      const [first, second] = textPoints(e)
-      put(10, first.x)
-      put(20, first.y)
-      put(40, e.height)
-      ok = set(1, e.value) && ok
-      // In AutoCAD's order: 10 40 1 50 41 51 7 71 72 11, then (after a second AcDbText marker) 73.
-      const order = [72, 71, 7, 51, 41, 50, 1, 40]
-      opt(50, real(deg(e.rotation)), e.rotation === 0, order.slice(6))
-      opt(41, real(e.widthFactor), e.widthFactor === 1, order.slice(5))
-      opt(51, real(deg(e.oblique)), e.oblique === 0, order.slice(4))
-      opt(71, String(textFlags(e)), textFlags(e) === 0, order.slice(2))
-      opt(72, String(e.halign), e.halign === 0, order.slice(1))
-      if (second) {
-        opt(11, real(second.x), false, order)
-        opt(21, real(second.y), false, [11])
-        opt(31, '0.0', false, [21])
-      }
-      if (!set(73, String(e.valign)) && e.valign !== 0) {
-        const tail: [number, string][] = c.f.modern ? [[100, 'AcDbText'], [73, String(e.valign)]] : [[73, String(e.valign)]]
-        const markers = gs.flatMap((g, k) => (g[0] === 100 && g[1].trim() === 'AcDbText' ? [k] : []))
-        if (c.f.modern && markers.length > 1) gs.splice(markers.at(-1)! + 1, 0, tail[1]!)
-        else {
-          const k = [31, 21, 11, ...order].map((code) => gs.findLastIndex((g) => g[0] === code)).find((i) => i >= 0)
-          if (k === undefined) ok = false
-          else gs.splice(k + 1, 0, ...tail)
-        }
-      }
+    case 'text':
+      ok = patchText(gs, e, 73, c.f.modern) && ok
       break
-    }
     case 'mtext':
       put(10, e.x)
       put(20, e.y)
@@ -563,20 +574,103 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
     if (k === layerAt) out.raw(colors.text())
   })
   if (e.type !== 'insert') return out.text()
-  // Its attributes (ATTRIB … SEQEND) follow it: moved as the edit moved the insert.
+  // Its attributes (ATTRIB … SEQEND) follow it: as the document has them, or, when it does not (one was not
+  // understood), moved as the edit moved the insert.
   const old = insertAffines(was as Insert)[0]!
   const now = insertAffines(e)[0]!
   const move = compose(now, invert(old))
+  const children: { name: string; gs: [number, string][] }[] = []
   let i = 1
   while (i < p.length && p.code(i) !== 0) i++
   while (i < p.length) {
     const name = p.value(i).trim()
     const child: [number, string][] = []
     for (i++; i < p.length && p.code(i) !== 0; i++) child.push([p.code(i), p.value(i)])
+    children.push({ name, gs: child })
+  }
+  const attribs = e.attribs ?? []
+  const modelled = attribs.length > 0 && children.filter((ch) => ch.name === 'ATTRIB').length === attribs.length
+  let k = 0
+  for (const { name, gs: child } of children) {
     out.str(0, name)
-    for (const [code, v] of name === 'ATTRIB' ? movedText(child, move) : child) out.str(code, v)
+    if (name !== 'ATTRIB') {
+      for (const [code, v] of child) out.str(code, v)
+      continue
+    }
+    const a = modelled ? attribs[k++]! : null
+    const flags = Number(child.find((g) => g[0] === 70)?.[1] ?? 0)
+    const patchedChild = a && child.map((g): [number, string] => [g[0], g[1]])
+    if (a && patchedChild && patchText(patchedChild, a, 74, c.f.modern) && patchedChild.some((g) => g[0] === 70) && patchedChild.some((g) => g[0] === 8)) {
+      for (const g of patchedChild) {
+        if (g[0] === 70) g[1] = String((flags & ~1) | (a.hidden ? 1 : 0))
+        if (g[0] === 8) g[1] = fileLayer(c, a.layer)
+      }
+      const colors = emitter(nl)
+      colorGroups(colors, c.f, a.color)
+      const rest = patchedChild.filter((g) => g[0] !== 62 && g[0] !== 420 && g[0] !== 430)
+      const layerAt = rest.findIndex((g) => g[0] === 8)
+      rest.forEach(([code, v], n) => {
+        out.str(code, v)
+        if (n === layerAt) out.raw(colors.text())
+      })
+    } else for (const [code, v] of movedText(child, move)) out.str(code, v)
   }
   return out.text()
+}
+
+/**
+ * Puts text e into the groups of a TEXT (vcode 73) or ATTRIB (vcode 74) record. A group left out at its default and
+ * now needed goes in AutoCAD's order; false when there is no place for it.
+ */
+function patchText(gs: [number, string][], e: Omit<Text, 'id'>, vcode: 73 | 74, modern: boolean): boolean {
+  let ok = true
+  const at = (code: number): number => gs.findIndex((g) => g[0] === code)
+  const set = (code: number, v: string): boolean => {
+    const k = at(code)
+    if (k >= 0) gs[k]![1] = v
+    return k >= 0
+  }
+  const put = (code: number, v: number): void => void (ok = set(code, real(v)) && ok)
+  const opt = (code: number, v: string, atDefault: boolean, after: readonly number[]): void => {
+    if (set(code, v) || atDefault) return
+    for (const a of after) {
+      const k = gs.findLastIndex((g) => g[0] === a)
+      if (k >= 0) return void gs.splice(k + 1, 0, [code, v])
+    }
+    ok = false
+  }
+  const [first, second] = textPoints(e)
+  put(10, first.x)
+  put(20, first.y)
+  put(40, e.height)
+  ok = set(1, e.value) && ok
+  // In AutoCAD's order: 10 40 1 50 41 51 7 71 72 11; then TEXT's 73 after a second AcDbText marker, ATTRIB's 74
+  // after its tag and flags.
+  const order = [72, 71, 7, 51, 41, 50, 1, 40]
+  opt(50, real(deg(e.rotation)), e.rotation === 0, order.slice(6))
+  opt(41, real(e.widthFactor), e.widthFactor === 1, order.slice(5))
+  opt(51, real(deg(e.oblique)), e.oblique === 0, order.slice(4))
+  opt(71, String(textFlags(e)), textFlags(e) === 0, order.slice(2))
+  opt(72, String(e.halign), e.halign === 0, order.slice(1))
+  if (second) {
+    opt(11, real(second.x), false, order)
+    opt(21, real(second.y), false, [11])
+    opt(31, '0.0', false, [21])
+  }
+  if (vcode === 74) {
+    opt(74, String(e.valign), e.valign === 0, [73, 70, 2])
+    return ok
+  }
+  if (!set(73, String(e.valign)) && e.valign !== 0) {
+    const markers = gs.flatMap((g, k) => (g[0] === 100 && g[1].trim() === 'AcDbText' ? [k] : []))
+    if (modern && markers.length > 1) gs.splice(markers.at(-1)! + 1, 0, [73, String(e.valign)])
+    else {
+      const k = [31, 21, 11, ...order].map((code) => gs.findLastIndex((g) => g[0] === code)).find((i) => i >= 0)
+      if (k === undefined) return false
+      gs.splice(k + 1, 0, ...((modern ? [[100, 'AcDbText'], [73, String(e.valign)]] : [[73, String(e.valign)]]) as [number, string][]))
+    }
+  }
+  return ok
 }
 
 /** a after b. */

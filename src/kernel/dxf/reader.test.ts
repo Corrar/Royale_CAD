@@ -197,6 +197,36 @@ describe('readDxf', () => {
     expect(d.warnings.join(' ')).toMatch(/knots/)
   })
 
+  it('INSERT attributes: each ATTRIB a text in the world with its tag, layer and color; hidden kept; a mirrored one leaves them all as is', () => {
+    const blocks: G = [0, 'BLOCK', 8, '0', 2, 'DOOR', 70, 2, 10, 0, 20, 0, 0, 'LINE', 8, '0', 10, 0, 20, 0, 11, 1, 21, 0, 0, 'ENDBLK']
+    const attribs: G = [
+      0, 'INSERT', 8, 'Plan', 62, 5, 66, 1, 2, 'DOOR', 10, 1, 20, 1,
+      0, 'ATTRIB', 8, 'Tags', 62, 0, 10, 1, 20, 2, 40, 0.5, 1, 'D1', 2, 'NUMBER', 70, 0,
+      // Middle center by 11, its vertical alignment in 74 (73 is the field length); and hidden.
+      0, 'ATTRIB', 8, '0', 10, 0, 20, 0, 11, 3, 21, 4, 40, 0.25, 1, 'secret', 72, 1, 2, 'NOTE', 70, 1, 73, 9, 74, 2,
+      // A multiline one: the embedded MTEXT after 101 says nothing the line of text needs.
+      0, 'ATTRIB', 8, '0', 10, 5, 20, 6, 40, 1, 1, 'ML', 2, 'MULTI', 70, 0, 101, 'Embedded Object', 10, 99, 20, 99, 40, 9, 1, 'ML',
+      0, 'SEQEND', 8, 'Plan',
+    ]
+    const mirrored: G = [
+      0, 'INSERT', 8, '0', 66, 1, 2, 'DOOR', 10, 0, 20, 0,
+      0, 'ATTRIB', 8, '0', 10, 0, 20, 0, 40, 1, 1, 'M', 2, 'M', 210, 0, 220, 0, 230, -1,
+      0, 'SEQEND', 8, '0',
+    ]
+    const d = readDxf(lines([0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES', ...attribs, ...mirrored, 0, 'ENDSEC', 0, 'EOF']))
+    expect(d.warnings).toEqual([])
+    const [door, plain] = all(d) as [Insert, Insert]
+    const L = (name: string): number => d.doc.layers.indexOf(name)
+    expect(door).toMatchObject({ layer: L('Plan'), color: 5 })
+    expect(door.attribs).toEqual([
+      { type: 'text', layer: L('Tags'), color: BY_BLOCK, tag: 'NUMBER', hidden: false, value: 'D1', x: 1, y: 2, x2: 1, y2: 2, height: 0.5, rotation: 0, widthFactor: 1, oblique: 0, halign: 0, valign: 0, backward: false, upsideDown: false },
+      { type: 'text', layer: 0, tag: 'NOTE', hidden: true, value: 'secret', x: 3, y: 4, x2: 3, y2: 4, height: 0.25, rotation: 0, widthFactor: 1, oblique: 0, halign: 1, valign: 2, backward: false, upsideDown: false },
+      { type: 'text', layer: 0, tag: 'MULTI', hidden: false, value: 'ML', x: 5, y: 6, x2: 5, y2: 6, height: 1, rotation: 0, widthFactor: 1, oblique: 0, halign: 0, valign: 0, backward: false, upsideDown: false },
+    ])
+    expect(plain.type).toBe('insert')
+    expect(plain.attribs).toBeUndefined()
+  })
+
   it('BLOCK and INSERT: nested blocks with their base points, layer 0 and ByBlock kept for the insert, -Z, grids', () => {
     const blocks: G = [
       0, 'BLOCK', 8, '0', 2, 'A', 70, 0, 10, 1, 20, 1, 30, 0, 3, 'A',

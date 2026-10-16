@@ -133,6 +133,17 @@ export interface Insert extends Base {
   readonly rows: number
   readonly dx: number
   readonly dy: number
+  /** Its attributes (DXF ATTRIB), in the file's order: texts in the world, not in the block, moved with it. */
+  readonly attribs?: readonly Attrib[]
+}
+
+/**
+ * An attribute of an insert: a line of text named by its tag. On its own layer; ByBlock takes the insert's color.
+ * A hidden one (DXF 70 bit 1) is kept, not shown.
+ */
+export interface Attrib extends Omit<Text, 'id'> {
+  readonly tag: string
+  readonly hidden: boolean
 }
 
 /**

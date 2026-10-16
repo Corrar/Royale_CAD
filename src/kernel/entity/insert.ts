@@ -3,10 +3,13 @@ import { TAU, normAngle } from '../geom/tol'
 import { affineDet, applyAffine, bboxIntersects, segmentDistance, type Affine, type BBox, type Vec2 } from '../geom/vec'
 import { DEFAULT_TOL } from './free'
 import { typeOf } from './registry'
-import { BY_BLOCK, SNAP, type Block, type BlockEntity, type Entity, type EntityType, type Insert, type PrimSink } from './types'
+import { BY_BLOCK, SNAP, type Attrib, type Block, type BlockEntity, type Entity, type EntityType, type Insert, type PrimSink } from './types'
 
 /** A block's entity as the entity types take it: they never read its id. */
 const asEntity = (d: BlockEntity): Entity => d as unknown as Entity
+
+/** The attributes shown: not hidden. */
+const shown = (e: Insert): readonly Attrib[] => (e.attribs ? e.attribs.filter((a) => !a.hidden) : [])
 
 /** The affine of copy (i, j): T(x, y) · R(rotation) · T(i·dx, j·dy) · S(sx, sy) · T(−base). */
 function copyAffine(e: Insert, i: number, j: number): Affine {
@@ -141,14 +144,15 @@ export const insertType: EntityType<Insert> = {
   bbox(e) {
     const inner = infoOf(e.block).box
     const out = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
-    if (!(inner.minX <= inner.maxX)) return out // nothing to show
-    for (const m of insertAffines(e)) {
-      const b = mapBox(m, inner)
+    const add = (b: BBox): void => {
       out.minX = Math.min(out.minX, b.minX)
       out.minY = Math.min(out.minY, b.minY)
       out.maxX = Math.max(out.maxX, b.maxX)
       out.maxY = Math.max(out.maxY, b.maxY)
     }
+    // An empty block shows nothing; its attributes still do.
+    if (inner.minX <= inner.maxX) for (const m of insertAffines(e)) add(mapBox(m, inner))
+    for (const a of shown(e)) add(typeOf(asEntity(a)).bbox(asEntity(a)))
     return out
   },
   primitives(e, tol, out, clip) {
@@ -163,6 +167,10 @@ export const insertType: EntityType<Insert> = {
         typeOf(inner).primitives(inner, t, sink, local)
       }
     }
+    for (const a of shown(e)) {
+      out.look?.(a.layer, a.color === BY_BLOCK ? e.color : a.color)
+      typeOf(asEntity(a)).primitives(asEntity(a), tol, out, clip)
+    }
   },
   free(e) {
     const info = infoOf(e.block)
@@ -170,6 +178,7 @@ export const insertType: EntityType<Insert> = {
   },
   distance(e, p) {
     let best = Infinity
+    for (const a of shown(e)) best = Math.min(best, typeOf(asEntity(a)).distance(asEntity(a), p))
     const ms = insertAffines(e)
     if (ms.every(similar)) {
       for (const m of ms) {
@@ -190,12 +199,16 @@ export const insertType: EntityType<Insert> = {
     const k = Math.sqrt(Math.abs(det))
     const p = applyAffine(m, e.x, e.y)
     const angle = Math.atan2(m.b, m.a)
+    // Attributes are texts in the world: they move as texts do (a mirror keeps them readable).
+    const attribs = e.attribs && { attribs: e.attribs.map((a) => ({ ...(typeOf(asEntity(a)).transform!(asEntity(a), m) as unknown as Attrib), tag: a.tag, hidden: a.hidden })) }
     // A turn adds to the rotation; a mirror reflects it and flips the Y scale (AutoCAD does the same).
-    if (det > 0) return { ...e, x: p.x, y: p.y, rotation: normAngle(e.rotation + angle), sx: e.sx * k, sy: e.sy * k, dx: e.dx * k, dy: e.dy * k }
-    return { ...e, x: p.x, y: p.y, rotation: normAngle(angle - e.rotation), sx: e.sx * k, sy: -e.sy * k, dx: e.dx * k, dy: -e.dy * k }
+    if (det > 0) return { ...e, ...attribs, x: p.x, y: p.y, rotation: normAngle(e.rotation + angle), sx: e.sx * k, sy: e.sy * k, dx: e.dx * k, dy: e.dy * k }
+    return { ...e, ...attribs, x: p.x, y: p.y, rotation: normAngle(angle - e.rotation), sx: e.sx * k, sy: -e.sy * k, dx: e.dx * k, dy: -e.dy * k }
   },
   snapPoints(e, modes, out) {
     const inner = modes & ~SNAP.INS
+    // Each attribute's own insertion point.
+    if (modes & SNAP.INS) for (const a of shown(e)) typeOf(asEntity(a)).snapPoints?.(asEntity(a), SNAP.INS, out)
     for (const m of insertAffines(e)) {
       if (modes & SNAP.INS) {
         const p = applyAffine(m, e.block.x, e.block.y)

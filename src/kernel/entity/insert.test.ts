@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { applyAffine, mirroring, rotation, scaling, type Affine } from '../geom/vec'
 import { typeOf } from './registry'
-import { BY_BLOCK, SNAP, type Block, type Entity, type Insert } from './types'
+import { BY_BLOCK, SNAP, type Attrib, type Block, type Entity, type Insert } from './types'
 
 const deg = (d: number): number => (d * Math.PI) / 180
 const r6 = (v: number): number => Math.round(v * 1e6) / 1e6 + 0
@@ -139,6 +139,37 @@ describe('insert', () => {
     expect(out).toContainEqual([10, 20, SNAP.END])
     expect(out).toContainEqual([12, 20, SNAP.END])
     expect(out).toContainEqual([11, 21, SNAP.CEN])
+  })
+
+  it('attributes: shown where they are, in their look (ByBlock takes the insert color), hidden ones not; moved with the insert', () => {
+    const attrib = (value: string, x: number, extra: Partial<Attrib> = {}): Attrib => ({
+      type: 'text', layer: 3, value, x, y: 0, x2: x, y2: 0, height: 1, rotation: 0, widthFactor: 1, oblique: 0,
+      halign: 0, valign: 0, backward: false, upsideDown: false, tag: value.toUpperCase(), hidden: false, ...extra,
+    })
+    const e = insert(A, { x: 0, y: 0, layer: 5, color: 6, attribs: [attrib('a', 20), attrib('b', 30, { color: BY_BLOCK }), attrib('c', 40, { hidden: true })] })
+    const glyphs: Prim[] = []
+    let look: Prim = []
+    typeOf(e).primitives(e, 0, {
+      segment() {},
+      arc() {},
+      look: (layer, color) => void (look = [layer, color ?? 'bylayer']),
+      glyph: (cp, x, y) => void glyphs.push([String.fromCodePoint(cp), r6(x), r6(y), ...look]),
+    })
+    expect(glyphs).toEqual([['a', 20, 0, 3, 'bylayer'], ['b', 30, 0, 3, 6]])
+    // In the box and picked by its letters; the hidden one is neither.
+    const b = typeOf(e).bbox(e)
+    expect(b.maxX).toBeGreaterThan(30.5)
+    expect(b.maxX).toBeLessThan(40)
+    expect(typeOf(e).distance(e, { x: 30.3, y: 0.5 })).toBe(0)
+    const ins: number[][] = []
+    typeOf(e).snapPoints!(e, SNAP.INS, (x, y) => ins.push([r6(x), r6(y)]))
+    expect(ins).toEqual([[20, 0], [30, 0], [0, 0]])
+    // Moved, turned and scaled with the insert; a mirror keeps them readable.
+    const moved = typeOf(e).transform!(e, rotation({ x: 0, y: 0 }, 90)) as Insert
+    expect(moved.attribs!.map((t) => [t.tag, r6(t.x), r6(t.y), r6(t.rotation)])).toEqual([['A', 0, 20, r6(Math.PI / 2)], ['B', 0, 30, r6(Math.PI / 2)], ['C', 0, 40, r6(Math.PI / 2)]])
+    const flipped = typeOf(e).transform!(e, mirroring({ x: 0, y: 0 }, { x: 0, y: 1 })) as Insert
+    expect(flipped.attribs!.every((t) => !t.backward && t.rotation === 0 && t.x < 0)).toBe(true)
+    expect(flipped.attribs![2]!.hidden).toBe(true)
   })
 
   it('validate: non-zero scales and a grid of whole copies', () => {

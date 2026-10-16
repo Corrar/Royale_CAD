@@ -1,5 +1,5 @@
 import type { Draft } from '../document'
-import type { Block, BlockEntity } from '../entity/types'
+import type { Attrib, Block, BlockEntity, Text } from '../entity/types'
 
 const KIND = { line: 0, circle: 1, arc: 2, point: 3, polyline: 4, opaque: 5, ellipse: 6, spline: 7, insert: 8, text: 9, mtext: 10 } as const
 
@@ -19,8 +19,10 @@ export interface DraftPack {
    * closed, vertex count, the coordinates, then 1 and a bulge per vertex, or 0 · opaque its index in names/raws ·
    * ellipse cx cy mx my ratio t0 t1 · spline degree, closed, knot count, the knots, control point count, the
    * coordinates, then 1 and a weight per point, or 0 · insert its block's index in blocks, x y sx sy rotation cols
-   * rows dx dy · text its value's index in texts, x y x2 y2 height rotation widthFactor oblique halign valign, then
-   * backward + 2·upsideDown · mtext its value's index, x y height width attachment rotation spacing.
+   * rows dx dy, its attribute count, then for each its tag's index in texts, layer, color + 1 and the numbers of a
+   * text, hidden adding 4 to its flags · text its value's index in texts, x y x2 y2 height rotation widthFactor
+   * oblique halign valign, then backward + 2·upsideDown · mtext its value's index, x y height width attachment
+   * rotation spacing.
    */
   readonly nums: Float64Array
   /** Draft k's numbers start at nums[at[k]]. */
@@ -82,6 +84,10 @@ export function packDrafts(drafts: readonly Draft[]): DraftPack {
     grownAt.set(at)
     at = grownAt
   }
+  const putText = (t: Omit<Text, 'id' | 'layer'>, more: number): void => {
+    put(texts.length, t.x, t.y, t.x2, t.y2, t.height, t.rotation, t.widthFactor, t.oblique, t.halign, t.valign, (t.backward ? 1 : 0) + (t.upsideDown ? 2 : 0) + more)
+    texts.push(t.value)
+  }
   const encode = (k: number): void => {
     room(k)
     const d = all[k]!
@@ -125,11 +131,15 @@ export function packDrafts(drafts: readonly Draft[]): DraftPack {
         put(d.cx, d.cy, d.mx, d.my, d.ratio, d.t0, d.t1)
         break
       case 'insert':
-        put(indexOf(d.block), d.x, d.y, d.sx, d.sy, d.rotation, d.cols, d.rows, d.dx, d.dy)
+        put(indexOf(d.block), d.x, d.y, d.sx, d.sy, d.rotation, d.cols, d.rows, d.dx, d.dy, d.attribs?.length ?? 0)
+        for (const a of d.attribs ?? []) {
+          put(texts.length, a.layer, a.color === undefined ? 0 : a.color + 1)
+          texts.push(a.tag)
+          putText(a, a.hidden ? 4 : 0)
+        }
         break
       case 'text':
-        put(texts.length, d.x, d.y, d.x2, d.y2, d.height, d.rotation, d.widthFactor, d.oblique, d.halign, d.valign, (d.backward ? 1 : 0) + (d.upsideDown ? 2 : 0))
-        texts.push(d.value)
+        putText(d, 0)
         break
       case 'mtext':
         put(texts.length, d.x, d.y, d.height, d.width, d.attachment, d.rotation, d.spacing)
@@ -187,6 +197,20 @@ function blockOf(p: DraftPack, i: number): Block {
   return b
 }
 
+/** The numbers a text takes. */
+const TEXT_NUMS = 12
+
+/** The text whose numbers start at nums[o]. */
+function textAt(p: DraftPack, o: number, layer: number): Draft<Text> {
+  const v = p.nums
+  const flags = v[o + 11]!
+  return {
+    type: 'text', layer, value: p.texts[v[o]!]!, x: v[o + 1]!, y: v[o + 2]!, x2: v[o + 3]!, y2: v[o + 4]!, height: v[o + 5]!,
+    rotation: v[o + 6]!, widthFactor: v[o + 7]!, oblique: v[o + 8]!, halign: v[o + 9]!, valign: v[o + 10]!,
+    backward: (flags & 1) !== 0, upsideDown: (flags & 2) !== 0,
+  }
+}
+
 /** Drafts [from, to) of a pack. */
 export function unpackDrafts(p: DraftPack, from: number, to: number): Draft[] {
   const out: Draft[] = new Array(Math.max(0, to - from))
@@ -228,21 +252,25 @@ export function unpackDrafts(p: DraftPack, from: number, to: number): Draft[] {
         d = { type: 'spline', layer, degree: v[o]!, closed: v[o + 1] === 1, knots, ctrl, weights: v[w] === 1 ? v.slice(w + 1, w + 1 + m) : null }
         break
       }
-      case KIND.insert:
+      case KIND.insert: {
         d = {
           type: 'insert', layer, block: blockOf(p, v[o]!), x: v[o + 1]!, y: v[o + 2]!, sx: v[o + 3]!, sy: v[o + 4]!,
           rotation: v[o + 5]!, cols: v[o + 6]!, rows: v[o + 7]!, dx: v[o + 8]!, dy: v[o + 9]!,
         }
-        break
-      case KIND.text: {
-        const flags = v[o + 11]!
-        d = {
-          type: 'text', layer, value: p.texts[v[o]!]!, x: v[o + 1]!, y: v[o + 2]!, x2: v[o + 3]!, y2: v[o + 4]!, height: v[o + 5]!,
-          rotation: v[o + 6]!, widthFactor: v[o + 7]!, oblique: v[o + 8]!, halign: v[o + 9]!, valign: v[o + 10]!,
-          backward: (flags & 1) !== 0, upsideDown: (flags & 2) !== 0,
+        const count = v[o + 10]!
+        if (count > 0) {
+          const attribs: Attrib[] = []
+          for (let i = 0, a = o + 11; i < count; i++, a += 3 + TEXT_NUMS) {
+            const c = v[a + 2]!
+            attribs.push({ ...textAt(p, a + 3, v[a + 1]!), ...(c !== 0 && { color: c - 1 }), tag: p.texts[v[a]!]!, hidden: (v[a + 3 + 11]! & 4) !== 0 })
+          }
+          d = { ...d, attribs }
         }
         break
       }
+      case KIND.text:
+        d = textAt(p, o, layer)
+        break
       case KIND.mtext:
         d = {
           type: 'mtext', layer, value: p.texts[v[o]!]!, x: v[o + 1]!, y: v[o + 2]!, height: v[o + 3]!, width: v[o + 4]!,

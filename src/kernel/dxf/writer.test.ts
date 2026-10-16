@@ -274,18 +274,24 @@ describe('writeDxf', () => {
     expect(back.warnings).toEqual([])
     const got = [...back.doc.entities()] as Insert[]
     const want = [...d.doc.entities()] as Insert[]
-    expect(got.map(({ id: _id, block, rotation: r, ...rest }) => [rest, block.name, Math.round(r * 1e12)])).toEqual(
-      want.map(({ id: _id, block, rotation: r, ...rest }) => [rest, block.name, Math.round(r * 1e12)]),
-    )
+    const round = (v: unknown): unknown => JSON.parse(JSON.stringify(v, (_k, x: unknown) => (typeof x === 'number' ? Math.round(x * 1e12) / 1e12 + 0 : x)))
+    expect(got.map(({ id: _id, block, ...rest }) => [round(rest), block.name])).toEqual(want.map(({ id: _id, block, ...rest }) => [round(rest), block.name]))
     const span = (id: number): string => back.source.text.slice(back.source.loaded(id)!.start, back.source.loaded(id)!.end)
-    // The attribute went with its insert: from (10, 21), one above the old insertion point, to one left of (15, 20).
+    // The attribute, a text in the world, turned about (15, 20) with its insert: from (10, 21) to (14, 15).
     expect(span(1)).toContain(lines([0, 'ATTRIB', 5, '51']))
-    expect(span(1)).toContain(lines([10, '14.0', 20, '20.0']))
+    expect(span(1)).toContain(lines([10, '14.0', 20, '15.0']))
     expect(span(1)).toContain(lines([50, '90.0']))
     expect(span(1)).toContain(lines([0, 'SEQEND']))
     expect(back.source.handleOf(2)).toBe('53')
     expect(span(2)).toContain(lines([230, -1]))
-    expect(span(3)).not.toContain('ATTRIB')
+    // The copy has its attributes too, owned by it, and ends in a SEQEND.
+    const copy = back.source.handleOf(3)!
+    expect(span(3)).toContain(lines([66, 1]))
+    expect(span(3)).toContain(lines([0, 'ATTRIB']))
+    expect(span(3)).toContain(lines([330, copy]))
+    expect(span(3)).toContain(lines([2, 'TAG', 70, 0]))
+    expect(span(3)).toContain(lines([0, 'SEQEND']))
+    expect(got[2]!.attribs).toEqual(want[2]!.attribs)
   })
 
   it('TEXT and MTEXT: edits are patched in place (handle, style, extra groups kept), new ones written fresh; all read back the same', () => {

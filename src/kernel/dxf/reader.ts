@@ -1,7 +1,7 @@
 import { TRUE_COLOR, type Color } from '../color'
 import { createDocument, type Document, type Draft, type Layer } from '../document'
 import { typeOf } from '../entity/registry'
-import { BY_BLOCK, type Block, type BlockEntity, type Entity, type Insert } from '../entity/types'
+import { BY_BLOCK, type Attrib, type Block, type BlockEntity, type Entity, type Insert, type Text } from '../entity/types'
 import { nurbsProblem } from '../geom/curve'
 import { TAU, normAngle } from '../geom/tol'
 import { bboxEmpty, bboxFinite } from '../geom/vec'
@@ -129,7 +129,49 @@ const CHILDREN: Readonly<Record<string, string>> = { POLYLINE: 'VERTEX', INSERT:
  * own head is read (finding it reads the block's entities with the same head).
  */
 type Parsed = (Draft extends infer D ? (D extends Draft ? Omit<D, 'layer' | 'color'> : never) : never) | PendingInsert
-type PendingInsert = Omit<Draft<Insert>, 'layer' | 'color' | 'block'> & { blockName: string }
+/** Its attributes are null when one of them is not understood: the record then keeps them as they are. */
+type PendingInsert = Omit<Draft<Insert>, 'layer' | 'color' | 'block' | 'attribs'> & { blockName: string; attribs: PendingAttrib[] | null }
+type TextFields = Omit<Text, 'id' | 'layer' | 'color'>
+/** An attribute before its layer and color are resolved. */
+type PendingAttrib = TextFields & { tag: string; hidden: boolean; layerName: string; aci: number | undefined; trueColor: number | undefined }
+
+/** The groups of a line of text as TEXT and ATTRIB give them. */
+interface TextGroups {
+  value: string
+  x: number
+  y: number
+  x2: number
+  y2: number
+  height: number
+  rotation: number
+  widthFactor: number
+  oblique: number
+  flags: number
+  halign: number
+  valign: number
+}
+
+const textGroups = (): TextGroups => ({ value: '', x: 0, y: 0, x2: NaN, y2: NaN, height: 0, rotation: 0, widthFactor: 1, oblique: 0, flags: 0, halign: 0, valign: 0 })
+
+/**
+ * A text placed by the point of its justification, which is 11 (10 being worked out from it) unless it is left on
+ * the baseline; aligned and fit run from 10 to 11. Angles in degrees; the slant is kept within AutoCAD's ±85°.
+ */
+function textOf(t: TextGroups): TextFields {
+  if (!(t.height > 0)) throw new Unsupported(`height ${t.height} is not positive`)
+  const halign = Number.isInteger(t.halign) && t.halign >= 0 && t.halign <= 5 ? t.halign : 0
+  const valign = Number.isInteger(t.valign) && t.valign >= 0 && t.valign <= 3 ? t.valign : 0
+  const second = !Number.isNaN(t.x2) && !Number.isNaN(t.y2)
+  const spanned = halign === 3 || halign === 5
+  const [px, py] = (halign !== 0 || valign !== 0) && !spanned && second ? [t.x2, t.y2] : [t.x, t.y]
+  const [qx, qy] = spanned && second ? [t.x2, t.y2] : [px, py]
+  const slant = ((((t.oblique + 180) % 360) + 360) % 360) - 180
+  return {
+    type: 'text', value: t.value, x: px, y: py, x2: qx, y2: qy, height: t.height, rotation: normAngle(t.rotation * DEG),
+    widthFactor: t.widthFactor > 0 ? t.widthFactor : 1, oblique: Math.max(-85, Math.min(85, slant)) * DEG,
+    halign, valign, backward: (t.flags & 2) !== 0, upsideDown: (t.flags & 4) !== 0,
+  }
+}
 
 /**
  * The entity readers of one file. They share one head, reset for each entity: a load of a million entities makes
@@ -368,8 +410,11 @@ function parser(pairs: PairList) {
     return curve
   }
 
-  /** INSERT (and a MINSERT grid): planar in its OCS, as an arc; the block is found by the caller. */
-  const insert = (a: number, b: number): Parsed => {
+  /**
+   * INSERT (and a MINSERT grid): planar in its OCS, as an arc; the block is found by the caller. Its attributes are
+   * the ATTRIB records from own to end.
+   */
+  const insert = (a: number, b: number, end: number): Parsed => {
     let blockName = ''
     let x = 0
     let y = 0
@@ -395,11 +440,20 @@ function parser(pairs: PairList) {
       else common(c, i)
     }
     if (!blockName) throw new Unsupported('it names no block')
+    let attribs: PendingAttrib[] | null = []
+    for (let i = b; i < end && pairs.is(i, 0, 'ATTRIB'); ) {
+      let j = i + 1
+      while (j < end && codes[j] !== 0) j++
+      const at = attribAt(i, j)
+      if (at === null) attribs = null
+      else attribs?.push(at)
+      i = j
+    }
     const s = ocsSign(head)
     // Seen from -Z: diag(−1, 1)·T(x, y)·R(r)·S(sx, sy) = T(−x, y)·R(−r)·S(−sx, sy); the grid's columns flip too.
     return {
       type: 'insert', blockName, x: s * x, y, sx: s * sx, sy, rotation: normAngle(s * rotation * DEG),
-      cols: Math.max(1, Math.trunc(cols)), rows: Math.max(1, Math.trunc(rows)), dx: s * dx, dy,
+      cols: Math.max(1, Math.trunc(cols)), rows: Math.max(1, Math.trunc(rows)), dx: s * dx, dy, attribs,
     }
   }
 
@@ -408,52 +462,92 @@ function parser(pairs: PairList) {
     if (ocsSign(head) === -1) throw new Unsupported('mirrored text (extrusion (0, 0, -1)) is not supported')
   }
 
-  /**
-   * TEXT: placed by the point of its justification, which is 11 (10 being worked out from it) unless it is left on
-   * the baseline; aligned and fit run from 10 to 11. Angles in degrees; the slant is kept within AutoCAD's ±85°.
-   */
-  const text = (a: number, b: number): Parsed => {
-    let value = ''
-    let x = 0
-    let y = 0
-    let x2 = NaN
-    let y2 = NaN
-    let height = 0
-    let rotation = 0
-    let widthFactor = 1
-    let oblique = 0
-    let flags = 0
-    let halign = 0
-    let valign = 0
-    for (let i = a + 1; i < b; i++) {
-      const c = codes[i]!
-      if (c === 1) value = pairs.value(i)
-      else if (c === 10) x = num(i)
-      else if (c === 20) y = num(i)
-      else if (c === 11) x2 = num(i)
-      else if (c === 21) y2 = num(i)
-      else if (c === 40) height = num(i)
-      else if (c === 41) widthFactor = num(i)
-      else if (c === 50) rotation = num(i)
-      else if (c === 51) oblique = num(i)
-      else if (c === 71) flags = num(i)
-      else if (c === 72) halign = num(i)
-      else if (c === 73) valign = num(i)
-      else common(c, i)
+  /** Takes a group of a line of text into t; vcode is the vertical alignment's (73 for TEXT, 74 for ATTRIB). */
+  const textGroup = (t: TextGroups, c: number, i: number, vcode: number): boolean => {
+    switch (c) {
+      case 1:
+        t.value = pairs.value(i)
+        return true
+      case 10:
+        t.x = num(i)
+        return true
+      case 20:
+        t.y = num(i)
+        return true
+      case 11:
+        t.x2 = num(i)
+        return true
+      case 21:
+        t.y2 = num(i)
+        return true
+      case 40:
+        t.height = num(i)
+        return true
+      case 41:
+        t.widthFactor = num(i)
+        return true
+      case 50:
+        t.rotation = num(i)
+        return true
+      case 51:
+        t.oblique = num(i)
+        return true
+      case 71:
+        t.flags = num(i)
+        return true
+      case 72:
+        t.halign = num(i)
+        return true
+      case vcode:
+        t.valign = num(i)
+        return true
     }
+    return false
+  }
+
+  /** TEXT, seen from +Z (textOf says where it goes). */
+  const text = (a: number, b: number): Parsed => {
+    const t = textGroups()
+    for (let i = a + 1; i < b; i++) if (!textGroup(t, codes[i]!, i, 73)) common(codes[i]!, i)
     upright()
-    if (!(height > 0)) throw new Unsupported(`height ${height} is not positive`)
-    if (!(Number.isInteger(halign) && halign >= 0 && halign <= 5)) halign = 0
-    if (!(Number.isInteger(valign) && valign >= 0 && valign <= 3)) valign = 0
-    const second = !Number.isNaN(x2) && !Number.isNaN(y2)
-    const spanned = halign === 3 || halign === 5
-    const [px, py] = (halign !== 0 || valign !== 0) && !spanned && second ? [x2, y2] : [x, y]
-    const [qx, qy] = spanned && second ? [x2, y2] : [px, py]
-    const slant = ((((oblique + 180) % 360) + 360) % 360) - 180
-    return {
-      type: 'text', value, x: px, y: py, x2: qx, y2: qy, height, rotation: normAngle(rotation * DEG),
-      widthFactor: widthFactor > 0 ? widthFactor : 1, oblique: Math.max(-85, Math.min(85, slant)) * DEG,
-      halign, valign, backward: (flags & 2) !== 0, upsideDown: (flags & 4) !== 0,
+    return textOf(t)
+  }
+
+  /**
+   * An ATTRIB record [a, b) with its own layer and color (the insert's head stays as it is); null when it is not
+   * understood. A multiline one's embedded MTEXT, after 101, is left out: the line of text has the value.
+   */
+  const attribAt = (a: number, b: number): PendingAttrib | null => {
+    const t = textGroups()
+    let tag = ''
+    let flags = 0
+    let invisible = false
+    let layerName = '0'
+    let aci: number | undefined
+    let trueColor: number | undefined
+    let ex = 0
+    let ey = 0
+    let ez = 1
+    try {
+      for (let i = a + 1; i < b; i++) {
+        const c = codes[i]!
+        if (c === 101) break
+        if (textGroup(t, c, i, 74)) continue
+        if (c === 2) tag = pairs.value(i).trim()
+        else if (c === 70) flags = num(i)
+        else if (c === 60) invisible = num(i) === 1
+        else if (c === 8) layerName = pairs.value(i).trim()
+        else if (c === 62) aci = num(i)
+        else if (c === 420) trueColor = num(i)
+        else if (c === 210) ex = num(i)
+        else if (c === 220) ey = num(i)
+        else if (c === 230) ez = num(i)
+      }
+      if (!(Math.abs(ex) <= 1e-9 && Math.abs(ey) <= 1e-9 && Math.abs(ez - 1) <= 1e-9)) return null
+      return { ...textOf(t), tag, hidden: (flags & 1) !== 0 || invisible, layerName, aci, trueColor }
+    } catch (error) {
+      if (error instanceof Unsupported) return null
+      throw error
     }
   }
 
@@ -519,7 +613,7 @@ function parser(pairs: PairList) {
       case 'SPLINE':
         return spline(a, own)
       case 'INSERT':
-        return insert(a, own)
+        return insert(a, own, end)
       case 'TEXT':
         return text(a, own)
       case 'MTEXT':
@@ -751,8 +845,12 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
     const color = colorOf(head, inBlock)
     let d: Draft
     if (parsed.type === 'insert') {
-      const { blockName, ...rest } = parsed as PendingInsert
-      d = { ...rest, layer, block: blockOf(blockName) }
+      const { blockName, attribs, ...rest } = parsed as PendingInsert
+      const shown = attribs?.map(({ layerName, aci, trueColor, ...a }): Attrib => {
+        const c = colorOf({ ...head, aci, trueColor }, true)
+        return { ...a, layer: layers.of(layerName), ...(c !== undefined && { color: c }) }
+      })
+      d = { ...rest, layer, block: blockOf(blockName), ...(shown && shown.length > 0 && { attribs: shown }) }
     } else d = { ...(parsed as Omit<Draft, 'layer'>), layer } as Draft
     if (color !== undefined) (d as { color?: Color }).color = color
     // Finite numbers can still make a box past the largest double (a radius of 1e308), which the document refuses.
