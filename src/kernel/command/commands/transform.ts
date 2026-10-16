@@ -2,7 +2,7 @@ import type { Draft } from '../../document'
 import { typeOf } from '../../entity/registry'
 import type { Entity, PrimSink } from '../../entity/types'
 import { mirroring, rotation, scaling, translation, type Affine, type Vec2 } from '../../geom/vec'
-import { getNumber, getPoint, getSelection, type Command, type CommandContext, type Input, type Request } from '../runtime'
+import { formatNumber, getNumber, getPoint, getSelection, type Command, type CommandContext, type Input, type Request } from '../runtime'
 
 const isPoint = (v: unknown): v is Vec2 => typeof v === 'object' && v !== null
 
@@ -49,11 +49,27 @@ function apply(ctx: CommandContext, label: string, es: Entity[], m: Affine, copy
 
 const rubber = (from: Vec2) => (c: Vec2, out: PrimSink): void => out.segment(from.x, from.y, c.x, c.y)
 
+/** MOVE's and COPY's base point; Enter stands for Displacement, as in AutoCAD. */
+const basePoint = () => getPoint('Specify base point', { keywords: ['Displacement'], default: 'Displacement', allowEmpty: true })
+
+/** The displacement itself, a point taken from the origin (MOVE's and COPY's Displacement); Enter repeats the last one. */
+function* displacement(ctx: CommandContext): Generator<Request, Vec2, Input> {
+  const last = (ctx.vars.get('DISPLACEMENT') as Vec2 | undefined) ?? { x: 0, y: 0 }
+  const d = yield* getPoint('Specify displacement', { allowEmpty: true, default: `${formatNumber(last.x)}, ${formatNumber(last.y)}` })
+  const v = isPoint(d) ? d : last
+  ctx.vars.set('DISPLACEMENT', v)
+  return v
+}
+
 /** MOVE by a base point and a second point; Enter at the second takes the first as the displacement. */
 export const move: Command = function* (ctx) {
   const es = yield* editable(ctx)
   if (es.length === 0) return
-  const base = yield* getPoint('Specify base point or displacement')
+  const base = yield* basePoint()
+  if (base === null || base === 'Displacement') {
+    const d = yield* displacement(ctx)
+    return apply(ctx, 'MOVE', es, translation(d.x, d.y), false)
+  }
   if (!isPoint(base)) return
   const to = yield* getPoint('Specify second point or <use first point as displacement>', {
     base,
@@ -64,20 +80,28 @@ export const move: Command = function* (ctx) {
   apply(ctx, 'MOVE', es, translation(d.x, d.y), false)
 }
 
-/** COPY to as many second points as given, until Enter or Exit; Undo takes back the last copy. */
+/**
+ * COPY to as many second points as given, until Enter or Exit; Undo takes back the last copy. Enter before the
+ * first copy copies once by the base point taken as the displacement, as MOVE does.
+ */
 export const copy: Command = function* (ctx) {
   const es = yield* editable(ctx)
   if (es.length === 0) return
-  const base = yield* getPoint('Specify base point')
+  const base = yield* basePoint()
+  if (base === null || base === 'Displacement') {
+    const d = yield* displacement(ctx)
+    return apply(ctx, 'COPY', es, translation(d.x, d.y), true)
+  }
   if (!isPoint(base)) return
   let copies = 0
   for (;;) {
-    const to = yield* getPoint('Specify second point', {
+    const to = yield* getPoint(copies > 0 ? 'Specify second point' : 'Specify second point or <use first point as displacement>', {
       base,
       allowEmpty: true,
       keywords: copies > 0 ? ['Exit', 'Undo'] : [],
       preview: ghost(es, (c) => translation(c.x - base.x, c.y - base.y), rubber(base)),
     })
+    if (to === null && copies === 0) return apply(ctx, 'COPY', es, translation(base.x, base.y), true)
     if (to === null || to === 'Exit') return
     if (to === 'Undo') {
       ctx.doc.undo()
