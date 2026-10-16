@@ -508,6 +508,126 @@ describe('writeDxf', () => {
     expect(got[2]!.attribs).toEqual(want[2]!.attribs)
   })
 
+  it('a copy of a TEXT, an MTEXT or an attribute keeps its text style (7), in R2000 and R12', () => {
+    const BLOCKS: G = [0, 'SECTION', 2, 'BLOCKS',
+      0, 'BLOCK', 5, '40', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockBegin', 2, 'TAGGED', 70, 2, 10, 0, 20, 0, 30, 0, 3, 'TAGGED',
+      0, 'ENDBLK', 5, '43', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockEnd',
+      0, 'ENDSEC']
+    const TEXTS: G = [
+      0, 'TEXT', 5, '60', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 1, 20, 2, 30, 0, 40, 2.5, 1, 'Room 101', 7, 'ROMANS', 100, 'AcDbText',
+      0, 'MTEXT', 5, '61', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbMText', 10, 0, 20, 30, 30, 0, 40, 2, 41, 20, 71, 1, 1, 'styled\\Pmtext', 7, 'ROMANS',
+      0, 'INSERT', 5, '62', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbBlockReference', 66, 1, 2, 'TAGGED', 10, 0, 20, 0, 30, 0,
+      0, 'ATTRIB', 5, '63', 330, '62', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 0, 20, 0, 30, 0, 40, 1, 1, 'V', 7, 'ROMANS', 100, 'AcDbAttribute', 2, 'TAG', 70, 0,
+      0, 'SEQEND', 5, '64', 330, '62', 100, 'AcDbEntity', 8, '0',
+    ]
+    for (const version of ['AC1015', 'AC1009']) {
+      const t = commandBench()
+      const text = file(TEXTS, version).replace(lines([0, 'SECTION', 2, 'ENTITIES']), lines(BLOCKS) + lines([0, 'SECTION', 2, 'ENTITIES']))
+      const d = drawingFrom(t.doc, parseDxf(text))
+      t.run('COPY⏎ALL⏎⏎0,0⏎10,0⏎⏎')
+      const out = writeDxf(t.doc, d.source)
+      // The three records, their three copies, and in R12 the second line of the MTEXT's copy.
+      expect(out.split(lines([7, 'ROMANS'])).length - 1).toBe(version === 'AC1015' ? 6 : 7)
+      const back = [...readDxf(out).doc.entities()]
+      const styles = back.map((e) => (e.type === 'insert' ? e.attribs![0]!.style : (e as Text | MText).style))
+      expect(styles.every((s) => s === 'ROMANS')).toBe(true)
+    }
+  })
+
+  it('R2018 ATTRIB: a moved insert patches the AcDbText groups of its attributes; 71 stays the attribute type, 11 follows', () => {
+    const BLOCKS: G = [0, 'SECTION', 2, 'BLOCKS',
+      0, 'BLOCK', 5, '40', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockBegin', 2, 'BUBBLE', 70, 2, 10, 0, 20, 0, 30, 0, 3, 'BUBBLE',
+      0, 'CIRCLE', 5, '41', 8, '0', 100, 'AcDbEntity', 100, 'AcDbCircle', 10, 0, 20, 0, 30, 0, 40, 5,
+      0, 'ENDBLK', 5, '43', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockEnd',
+      0, 'ENDSEC']
+    // As ezdxf and AutoCAD 2018 write them: AcDbAttribute repeats 72 and 11, and has the attribute type in 71.
+    const BUBBLE: G = [0, 'INSERT', 5, '50', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbBlockReference', 66, 1, 2, 'BUBBLE', 10, 50, 20, 50, 30, 0,
+      0, 'ATTRIB', 5, '51', 330, '50', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 50, 20, 50, 30, 0, 40, 2, 1, 'A12', 72, 1, 11, 50, 21, 50, 31, 0,
+      100, 'AcDbAttribute', 2, 'GRID', 70, 0, 74, 2, 71, 1, 72, 0, 11, 50, 21, 50, 31, 0,
+      0, 'ATTRIB', 5, '52', 330, '50', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 50, 20, 40, 30, 0, 40, 1, 1, 'centered', 72, 1, 11, 50, 21, 40, 31, 0,
+      100, 'AcDbAttribute', 2, 'NOTE', 70, 0, 71, 1, 72, 0, 11, 50, 21, 40, 31, 0,
+      0, 'ATTRIB', 5, '54', 330, '50', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 50, 20, 56, 30, 0, 40, 1, 1, 'K1', 11, 50, 21, 56, 31, 0,
+      100, 'AcDbAttribute', 2, 'LEFT', 70, 0, 71, 1, 72, 0, 11, 50, 21, 56, 31, 0,
+      0, 'SEQEND', 5, '53', 330, '50', 100, 'AcDbEntity', 8, '0']
+    const text = file(BUBBLE, 'AC1032').replace(lines([0, 'SECTION', 2, 'ENTITIES']), lines(BLOCKS) + lines([0, 'SECTION', 2, 'ENTITIES']))
+    const t = commandBench()
+    const d = drawingFrom(t.doc, parseDxf(text))
+    t.run('MOVE⏎ALL⏎⏎0,0⏎10,0⏎')
+    const out = writeDxf(t.doc, d.source)
+    const grid = out.slice(out.indexOf(lines([5, '51'])), out.indexOf(lines([5, '52'])))
+    expect(grid).toContain(lines([1, 'A12', 72, 1, 11, '60.0', 21, '50.0', 31, '0.0', 100, 'AcDbAttribute', 2, 'GRID', 70, 0, 74, 2, 71, 1, 72, 0, 11, '60.0', 21, '50.0']))
+    const note = out.slice(out.indexOf(lines([5, '52'])), out.indexOf(lines([5, '54'])))
+    expect(note).toContain(lines([72, 1, 11, '60.0', 21, '40.0', 31, '0.0', 100, 'AcDbAttribute', 2, 'NOTE', 70, 0, 71, 1, 72, 0, 11, '60.0', 21, '40.0']))
+    // Left on the baseline, its 11 (which R2018 writes anyway) moves with it.
+    const left = out.slice(out.indexOf(lines([5, '54'])), out.indexOf(lines([5, '53'])))
+    expect(left).toContain(lines([10, '60.0', 20, '56.0', 30, 0, 40, '1.0', 1, 'K1', 11, '60.0', 21, '56.0', 31, 0, 100, 'AcDbAttribute', 2, 'LEFT', 70, 0, 71, 1, 72, 0, 11, '60.0', 21, '56.0']))
+    const [bubble] = [...readDxf(out).doc.entities()] as [Insert]
+    expect(bubble.attribs!.map((a) => [a.x, a.y, a.halign, a.valign])).toEqual([[60, 50, 1, 2], [60, 40, 1, 0], [60, 56, 0, 0]])
+  })
+
+  it('INSERT seen from -Z: its attributes are patched in their OCS when it moves, and a copy has them, mirrored in the world', () => {
+    const BLOCKS: G = [0, 'SECTION', 2, 'BLOCKS',
+      0, 'BLOCK', 5, '40', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockBegin', 2, 'BUBBLE', 70, 2, 10, 0, 20, 0, 30, 0, 3, 'BUBBLE',
+      0, 'CIRCLE', 5, '41', 8, '0', 100, 'AcDbEntity', 100, 'AcDbCircle', 10, 0, 20, 0, 30, 0, 40, 5,
+      0, 'ENDBLK', 5, '43', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockEnd',
+      0, 'ENDSEC']
+    const z: G = [210, 0, 220, 0, 230, -1]
+    // As ezdxf writes an insert at (100, 50) seen from -Z: x is -100 in its OCS, and in its attributes'.
+    const NEG: G = [0, 'INSERT', 5, '50', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbBlockReference', 66, 1, 2, 'BUBBLE', 10, -100, 20, 50, 30, 0, ...z,
+      0, 'ATTRIB', 5, '51', 330, '50', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, -100, 20, 50, 30, 0, 40, 2, 1, 'B7', 72, 1, 11, -100, 21, 50, 31, 0, ...z,
+      100, 'AcDbAttribute', 2, 'GRID', 70, 0, 74, 2,
+      0, 'ATTRIB', 5, '52', 330, '50', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, -98, 20, 56, 30, 0, 40, 1, 1, 'K1', 50, 30, ...z,
+      100, 'AcDbAttribute', 2, 'LEFT', 70, 0,
+      0, 'SEQEND', 5, '53', 330, '50', 100, 'AcDbEntity', 8, '0']
+    const text = file(NEG).replace(lines([0, 'SECTION', 2, 'ENTITIES']), lines(BLOCKS) + lines([0, 'SECTION', 2, 'ENTITIES']))
+    const t = commandBench()
+    const d = drawingFrom(t.doc, parseDxf(text))
+    expect(d.warnings).toEqual([])
+    t.run('MOVE⏎ALL⏎⏎0,0⏎10,0⏎')
+    t.run('COPY⏎ALL⏎⏎0,0⏎0,100⏎⏎')
+    const out = writeDxf(t.doc, d.source)
+    const grid = out.slice(out.indexOf(lines([5, '51'])), out.indexOf(lines([5, '52'])))
+    // Centred on its point in the OCS, where it reads forward: no 71.
+    expect(grid).toContain(lines([1, 'B7', 72, 1, 11, '-110.0', 21, '50.0', 31, '0.0', ...z]))
+    expect(grid).not.toContain(lines([71, 2]))
+    const left = out.slice(out.indexOf(lines([5, '52'])), out.indexOf(lines([5, '53'])))
+    expect(left).toContain(lines([10, '-108.0', 20, '56.0', 30, 0, 40, '1.0', 1, 'K1']))
+    expect(Number(/ 50\r\n(.*)\r\n/.exec(left)![1])).toBeCloseTo(30, 9)
+    const back = readDxf(out)
+    expect(back.warnings).toEqual([])
+    const [moved, copy] = [...back.doc.entities()] as [Insert, Insert]
+    const round = (v: unknown): unknown => JSON.parse(JSON.stringify(v, (_k, x: unknown) => (typeof x === 'number' ? Math.round(x * 1e9) / 1e9 + 0 : x)))
+    expect(round(moved.attribs!.map((a) => [a.x, a.y, a.halign, a.rotation, a.backward]))).toEqual(round([[110, 50, 1, 0, true], [108, 56, 0, 2 * Math.PI - Math.PI / 6, true]]))
+    expect(round(copy.attribs!.map(({ y, y2, ...a }) => ({ ...a, y: y - 100, y2: y2 - 100 })))).toEqual(round(moved.attribs))
+  })
+
+  it('R2018 multiline ATTRIB: its embedded MTEXT moves, turns and scales with the insert, its width kept', () => {
+    const BLOCKS: G = [0, 'SECTION', 2, 'BLOCKS',
+      0, 'BLOCK', 5, '40', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockBegin', 2, 'B', 70, 2, 10, 0, 20, 0, 30, 0, 3, 'B',
+      0, 'CIRCLE', 5, '41', 8, '0', 100, 'AcDbEntity', 100, 'AcDbCircle', 10, 0, 20, 0, 30, 0, 40, 5,
+      0, 'ENDBLK', 5, '43', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockEnd',
+      0, 'ENDSEC']
+    // As ezdxf writes it (embed_mtext): the line of text, then the MTEXT after 101; 11 its direction when given.
+    const B: G = [0, 'INSERT', 5, '50', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbBlockReference', 66, 1, 2, 'B', 10, 10, 20, 20, 30, 0,
+      0, 'ATTRIB', 5, '51', 330, '50', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 12, 20, 22, 30, 0, 40, 1, 1, 'line1', 11, 12, 21, 22, 31, 0,
+      100, 'AcDbAttribute', 2, 'TAG', 70, 0, 74, 3, 71, 2, 72, 0, 11, 12, 21, 22, 31, 0,
+      101, 'Embedded Object', 10, 12, 20, 22, 30, 0, 40, 1, 41, 30, 46, 0, 71, 1, 72, 5, 1, 'line1\\Pline2', 11, 1, 21, 0, 31, 0,
+      0, 'SEQEND', 5, '53', 330, '50', 100, 'AcDbEntity', 8, '0']
+    const text = file(B, 'AC1032').replace(lines([0, 'SECTION', 2, 'ENTITIES']), lines(BLOCKS) + lines([0, 'SECTION', 2, 'ENTITIES']))
+    const t = commandBench()
+    const d = drawingFrom(t.doc, parseDxf(text))
+    t.run('MOVE⏎ALL⏎⏎0,0⏎100,0⏎')
+    const embedded = (out: string): string => out.slice(out.indexOf(lines([101, 'Embedded Object'])), out.indexOf(lines([0, 'SEQEND'])))
+    expect(embedded(writeDxf(t.doc, d.source))).toBe(lines([101, 'Embedded Object', 10, '112.0', 20, '22.0', 30, 0, 40, 1, 41, 30, 46, 0, 71, 1, 72, 5, 1, 'line1\\Pline2', 11, '1.0', 21, '0.0', 31, 0]))
+    t.run('ROTATE⏎ALL⏎⏎110,20⏎90⏎')
+    t.run('SCALE⏎ALL⏎⏎110,20⏎2⏎')
+    const out = writeDxf(t.doc, d.source)
+    const values = embedded(out).split('\r\n').filter((_, i) => i % 2 === 1).map((v) => (Number.isNaN(Number(v)) ? v : Math.round(Number(v) * 1e9) / 1e9 + 0))
+    expect(values).toEqual(['Embedded Object', 106, 24, 0, 2, 60, 0, 1, 5, 'line1\\Pline2', 0, 1, 0])
+    const [b] = [...readDxf(out).doc.entities()] as [Insert]
+    expect(b.attribs!.map((a) => [a.x, a.y, a.height, a.backward])).toEqual([[106, 24, 2, false]])
+  })
+
   it('TEXT and MTEXT: edits are patched in place (handle, style, extra groups kept), new ones written fresh; all read back the same', () => {
     const TEXT: G = [0, 'TEXT', 5, '60', 330, '1F', 100, 'AcDbEntity', 8, 'Walls', 100, 'AcDbText', 10, 4.5, 20, 5.5, 30, 0, 40, 1, 1, 'MC', 7, 'ROMANS', 72, 1, 11, 5, 21, 6, 31, 0, 100, 'AcDbText', 73, 2, 1001, 'ROYALE', 1000, 'kept']
     const MTEXT: G = [0, 'MTEXT', 5, '61', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbMText', 10, 0, 20, 10, 30, 0, 40, 2, 41, 20, 71, 1, 72, 1, 3, 'two ', 1, 'chunks\\Pand a paragraph', 7, 'Standard', 11, 1, 21, 0, 31, 0, 73, 1, 44, 1]
@@ -541,6 +661,23 @@ describe('writeDxf', () => {
     // DXF strings hold 255 characters: a long MTEXT goes in chunks of 3, then 1.
     expect(span(6)).toContain('\r\n  3\r\n')
     for (const l of span(6).split('\r\n')) expect(l.length).toBeLessThanOrEqual(255)
+  })
+
+  it('MTEXT with columns (R2018): an edit patches its own groups; the embedded object keeps its sizes and follows its insert', () => {
+    const MTEXT: G = [0, 'MTEXT', 5, '4D', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbMText', 10, 300, 20, 400, 30, 0, 40, 3, 41, 30, 46, 40, 71, 1, 1, 'one\\Ntwo',
+      101, 'Embedded Object', 70, 1, 10, 1, 20, 0, 30, 0, 11, 300, 21, 400, 31, 0, 40, 30, 41, 40, 42, 65, 43, 40, 71, 1, 72, 2, 44, 30, 45, 5, 73, 0, 74, 0]
+    const t = commandBench()
+    const d = drawingFrom(t.doc, parseDxf(file(MTEXT, 'AC1032')))
+    t.run('MOVE⏎ALL⏎⏎0,0⏎5,0⏎')
+    const out = writeDxf(t.doc, d.source)
+    expect(out).toContain(lines([100, 'AcDbMText', 10, '305.0', 20, '400.0', 30, 0, 40, '3.0', 41, '30.0', 46, 40, 71, 1, 1, 'one\\Ntwo',
+      101, 'Embedded Object', 70, 1, 10, '1.0', 20, '0.0', 30, 0, 11, '305.0', 21, '400.0', 31, 0, 40, 30, 41, 40, 42, 65, 43, 40, 71, 1, 72, 2, 44, 30, 45, 5, 73, 0, 74, 0]))
+    t.run('SCALE⏎ALL⏎⏎305,400⏎2⏎')
+    const scaled = writeDxf(t.doc, d.source)
+    expect(scaled).toContain(lines([40, '6.0', 41, '60.0', 46, '80.0', 71, 1, 1, 'one\\Ntwo',
+      101, 'Embedded Object', 70, 1, 10, '1.0', 20, '0.0', 30, 0, 11, '305.0', 21, '400.0', 31, 0, 40, '60.0', 41, '80.0', 42, '130.0', 43, '80.0', 71, 1, 72, 2, 44, '60.0', 45, '10.0']))
+    const [m] = [...readDxf(scaled).doc.entities()] as [MText]
+    expect(m).toMatchObject({ x: 305, y: 400, height: 6, width: 60, rotation: 0, spacing: 1 })
   })
 
   it('SOLID: edits are patched in place in its OCS (handle, thickness, linetype kept), new ones written fresh (R2000 and R12)', () => {

@@ -228,6 +228,17 @@ describe('readDxf', () => {
     ])
   })
 
+  it('MTEXT with columns (R2018): the groups of its embedded object, after 101, are not the text\'s own', () => {
+    // As ezdxf and AutoCAD 2018 write static columns: after 101 come the direction, the insert, sizes and spacing.
+    const d = readDxf(file([
+      0, 'MTEXT', 5, '4D', 100, 'AcDbEntity', 8, '0', 100, 'AcDbMText', 10, 300, 20, 400, 30, 0, 40, 3, 41, 30, 46, 40, 71, 1, 1, 'one\\Ntwo',
+      101, 'Embedded Object', 70, 1, 10, 1, 20, 0, 30, 0, 11, 300, 21, 400, 31, 0, 40, 30, 41, 40, 42, 65, 43, 40, 71, 1, 72, 2, 44, 30, 45, 5, 73, 0, 74, 0,
+    ]))
+    expect(d.warnings).toEqual([])
+    const [m] = all(d) as [MText]
+    expect(m).toMatchObject({ x: 300, y: 400, height: 3, width: 30, attachment: 1, rotation: 0, spacing: 1 })
+  })
+
   it('TEXT and MTEXT without a positive height stay as is', () => {
     const d = readDxf(file([0, 'TEXT', 8, '0', 10, 0, 20, 0, 1, 'x', 0, 'MTEXT', 8, '0', 10, 0, 20, 0, 40, -1, 1, 'y']))
     expect(all(d).map((e) => e.type)).toEqual(['opaque', 'opaque'])
@@ -256,7 +267,7 @@ describe('readDxf', () => {
     expect(d.warnings.join(' ')).toMatch(/knots/)
   })
 
-  it('INSERT attributes: each ATTRIB a text in the world with its tag, layer and color; hidden kept; a mirrored one leaves them all as is', () => {
+  it('INSERT attributes: each ATTRIB a text in the world with its tag, layer and color; hidden kept; one not understood leaves them all as is', () => {
     const blocks: G = [0, 'BLOCK', 8, '0', 2, 'DOOR', 70, 2, 10, 0, 20, 0, 0, 'LINE', 8, '0', 10, 0, 20, 0, 11, 1, 21, 0, 0, 'ENDBLK']
     const attribs: G = [
       0, 'INSERT', 8, 'Plan', 62, 5, 66, 1, 2, 'DOOR', 10, 1, 20, 1,
@@ -267,13 +278,14 @@ describe('readDxf', () => {
       0, 'ATTRIB', 8, '0', 10, 5, 20, 6, 40, 1, 1, 'ML', 2, 'MULTI', 70, 0, 101, 'Embedded Object', 10, 99, 20, 99, 40, 9, 1, 'ML',
       0, 'SEQEND', 8, 'Plan',
     ]
-    const mirrored: G = [
+    const tilted: G = [
       0, 'INSERT', 8, '0', 66, 1, 2, 'DOOR', 10, 0, 20, 0,
-      0, 'ATTRIB', 8, '0', 10, 0, 20, 0, 40, 1, 1, 'M', 2, 'M', 210, 0, 220, 0, 230, -1,
+      0, 'ATTRIB', 8, '0', 10, 0, 20, 0, 40, 1, 1, 'T', 2, 'T', 210, 0, 220, 1, 230, 0,
       0, 'SEQEND', 8, '0',
     ]
-    const d = readDxf(lines([0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES', ...attribs, ...mirrored, 0, 'ENDSEC', 0, 'EOF']))
-    expect(d.warnings).toEqual([])
+    const d = readDxf(lines([0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES', ...attribs, ...tilted, 0, 'ENDSEC', 0, 'EOF']))
+    // Kept in the record, but not shown, and a copy is without them: said.
+    expect(d.warnings).toEqual(['line 125: INSERT keeps its attributes as is, not shown: one is not understood.'])
     const [door, plain] = all(d) as [Insert, Insert]
     const L = (name: string): number => d.doc.layers.indexOf(name)
     expect(door).toMatchObject({ layer: L('Plan'), color: 5 })
@@ -284,6 +296,71 @@ describe('readDxf', () => {
     ])
     expect(plain.type).toBe('insert')
     expect(plain.attribs).toBeUndefined()
+  })
+
+  it('a constant attribute definition (ATTDEF 70 bit 2) shows in the inserts of its block, as a text of it; others do not', () => {
+    const blocks: G = [
+      0, 'BLOCK', 8, '0', 2, 'K', 70, 2, 10, 0, 20, 0, 0, 'CIRCLE', 8, '0', 10, 0, 20, 0, 40, 5,
+      // As AutoCAD 2018 writes them: the R2018 attribute type in 71, 72 and 11 repeated after the subclass marker.
+      0, 'ATTDEF', 8, 'Tags', 62, 3, 100, 'AcDbText', 10, 0, 20, 6, 30, 0, 40, 1, 1, 'K1', 7, 'ROMANS', 72, 1, 11, 0, 21, 6, 31, 0,
+      100, 'AcDbAttributeDefinition', 3, '', 2, 'CONST', 70, 2, 71, 1, 72, 0, 11, 0, 21, 6, 31, 0,
+      0, 'ATTDEF', 8, '0', 100, 'AcDbText', 10, 0, 20, 8, 30, 0, 40, 1, 1, 'HIDDEN', 100, 'AcDbAttributeDefinition', 3, '', 2, 'HIDK', 70, 3,
+      0, 'ATTDEF', 8, '0', 100, 'AcDbText', 10, 0, 20, 9, 30, 0, 40, 1, 1, 'default', 100, 'AcDbAttributeDefinition', 3, 'Value?', 2, 'VAR', 70, 0,
+      0, 'ENDBLK',
+    ]
+    const d = readDxf(lines([0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES', 0, 'INSERT', 8, '0', 2, 'K', 10, 50, 20, 50, 0, 'ENDSEC', 0, 'EOF']))
+    expect(d.warnings).toEqual([])
+    const [k] = all(d) as [Insert]
+    expect(k.block.entities.map((e) => e.type)).toEqual(['circle', 'text'])
+    expect(k.block.entities[1]).toEqual({
+      type: 'text', layer: d.doc.layers.indexOf('Tags'), color: 3, value: 'K1', x: 0, y: 6, x2: 0, y2: 6, height: 1, rotation: 0, widthFactor: 1,
+      oblique: 0, halign: 1, valign: 0, backward: false, upsideDown: false, style: 'ROMANS',
+    })
+  })
+
+  it('INSERT attributes seen from -Z: in the world, mirrored (backward, angles the other way), aligned ones between their points', () => {
+    const blocks: G = [0, 'BLOCK', 8, '0', 2, 'DOOR', 70, 2, 10, 0, 20, 0, 0, 'LINE', 8, '0', 10, 0, 20, 0, 11, 1, 21, 0, 0, 'ENDBLK']
+    const z: G = [210, 0, 220, 0, 230, -1]
+    const entities: G = [
+      0, 'INSERT', 8, '0', 66, 1, 2, 'DOOR', 10, -100, 20, 50, ...z,
+      0, 'ATTRIB', 8, '0', 10, -98, 20, 51, 40, 1, 1, 'M', 50, 30, 51, 10, ...z, 2, 'M', 70, 0,
+      0, 'ATTRIB', 8, '0', 10, -100, 20, 40, 11, -100, 21, 40, 40, 1, 1, 'C', 71, 2, 72, 1, ...z, 2, 'C', 70, 0,
+      0, 'ATTRIB', 8, '0', 10, 0, 20, 0, 11, 4, 21, 0, 40, 1, 1, 'A', 72, 3, ...z, 2, 'A', 70, 0,
+      0, 'SEQEND', 8, '0',
+    ]
+    const d = readDxf(lines([0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES', ...entities, 0, 'ENDSEC', 0, 'EOF']))
+    expect(d.warnings).toEqual([])
+    const [door] = all(d) as [Insert]
+    expect(door.attribs!.map((a) => [a.tag, a.x, a.y, a.x2, a.y2, r9(a.rotation), r9(a.oblique), a.halign, a.backward])).toEqual([
+      ['M', 98, 51, 98, 51, r9(2 * Math.PI - Math.PI / 6), r9(-Math.PI / 18), 0, true],
+      // Backward in the file, it reads forward from -Z.
+      ['C', 100, 40, 100, 40, 0, 0, 1, false],
+      // Aligned from (0, 0) to (4, 0) in its OCS: from (-4, 0) to (0, 0), backward, in the world.
+      ['A', -4, 0, 0, 0, 0, 0, 3, true],
+    ])
+  })
+
+  it('R2018 ATTRIB: the 71 (attribute type), 72 and 11 AcDbAttribute repeats are not text groups; AcDbText justifies it', () => {
+    const blocks: G = [0, 'BLOCK', 8, '0', 2, 'BUBBLE', 70, 2, 10, 0, 20, 0, 0, 'CIRCLE', 8, '0', 10, 0, 20, 0, 40, 5, 0, 'ENDBLK']
+    // As ezdxf and AutoCAD 2018 write them: middle center, center, and a multiline one (71 2).
+    const entities: G = [
+      0, 'INSERT', 5, '38', 100, 'AcDbEntity', 8, '0', 100, 'AcDbBlockReference', 66, 1, 2, 'BUBBLE', 10, 50, 20, 50, 30, 0,
+      0, 'ATTRIB', 5, '3A', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 50, 20, 50, 30, 0, 40, 2, 1, 'A12', 72, 1, 11, 50, 21, 50, 31, 0,
+      100, 'AcDbAttribute', 2, 'GRID', 70, 0, 74, 2, 71, 1, 72, 0, 11, 50, 21, 50, 31, 0,
+      0, 'ATTRIB', 5, '3B', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 50, 20, 40, 30, 0, 40, 1, 1, 'centered', 72, 1, 11, 50, 21, 40, 31, 0,
+      100, 'AcDbAttribute', 2, 'NOTE', 70, 0, 71, 1, 72, 0, 11, 50, 21, 40, 31, 0,
+      0, 'ATTRIB', 5, '3C', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 12, 20, 22, 30, 0, 40, 1, 1, 'line1', 11, 12, 21, 22, 31, 0,
+      100, 'AcDbAttribute', 2, 'TAG', 70, 0, 74, 3, 71, 2, 72, 0, 11, 12, 21, 22, 31, 0, 101, 'Embedded Object', 10, 12, 20, 22, 40, 1, 41, 30, 71, 1, 1, 'line1\\Pline2',
+      0, 'SEQEND', 5, '3D', 100, 'AcDbEntity', 8, '0',
+    ]
+    const d = readDxf(lines([0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES', ...entities, 0, 'ENDSEC', 0, 'EOF']))
+    expect(d.warnings).toEqual([])
+    const [bubble] = all(d) as [Insert]
+    expect(bubble.attribs!.map((a) => [a.tag, a.x, a.y, a.halign, a.valign, a.backward, a.upsideDown])).toEqual([
+      ['GRID', 50, 50, 1, 2, false, false],
+      ['NOTE', 50, 40, 1, 0, false, false],
+      ['TAG', 12, 22, 0, 3, false, false],
+    ])
   })
 
   it('BLOCK and INSERT: nested blocks with their base points, layer 0 and ByBlock kept for the insert, -Z, grids', () => {

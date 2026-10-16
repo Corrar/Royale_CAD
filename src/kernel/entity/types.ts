@@ -181,6 +181,8 @@ export interface Text extends Base {
   readonly backward: boolean
   /** Drawn mirrored top to bottom (DXF 71 bit 4). */
   readonly upsideDown: boolean
+  /** Its text style's name (DXF 7) as the file gives it; none is STANDARD. */
+  readonly style?: string
 }
 
 /**
@@ -198,6 +200,8 @@ export interface MText extends Base {
   readonly attachment: number
   readonly rotation: number
   readonly spacing: number
+  /** Its text style's name (DXF 7) as the file gives it; none is STANDARD. */
+  readonly style?: string
 }
 
 /**

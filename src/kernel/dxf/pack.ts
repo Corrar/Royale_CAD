@@ -22,8 +22,9 @@ export interface DraftPack {
    * coordinates, then 1 and a weight per point, or 0 · insert its block's index in blocks, x y sx sy rotation cols
    * rows dx dy, its attribute count, then for each its tag's index in texts, layer, color + 1 and the numbers of a
    * text, hidden adding 4 to its flags · text its value's index in texts, x y x2 y2 height rotation widthFactor
-   * oblique halign valign, then backward + 2·upsideDown · mtext its value's index, x y height width attachment
-   * rotation spacing · solid x0 y0 x1 y1 x2 y2 x3 y3.
+   * oblique halign valign, then backward + 2·upsideDown, then its style's index in texts (-1: none) · mtext its
+   * value's index, x y height width attachment rotation spacing, then its style's index · solid x0 y0 x1 y1 x2 y2 x3
+   * y3.
    */
   readonly nums: Float64Array
   /** Draft k's numbers start at nums[at[k]]. */
@@ -85,9 +86,10 @@ export function packDrafts(drafts: readonly Draft[]): DraftPack {
     grownAt.set(at)
     at = grownAt
   }
+  /** The index in texts of a string pushed there; -1 for none. */
+  const str = (v: string | undefined): number => (v === undefined ? -1 : texts.push(v) - 1)
   const putText = (t: Omit<Text, 'id' | 'layer'>, more: number): void => {
-    put(texts.length, t.x, t.y, t.x2, t.y2, t.height, t.rotation, t.widthFactor, t.oblique, t.halign, t.valign, (t.backward ? 1 : 0) + (t.upsideDown ? 2 : 0) + more)
-    texts.push(t.value)
+    put(str(t.value), t.x, t.y, t.x2, t.y2, t.height, t.rotation, t.widthFactor, t.oblique, t.halign, t.valign, (t.backward ? 1 : 0) + (t.upsideDown ? 2 : 0) + more, str(t.style))
   }
   const encode = (k: number): void => {
     room(k)
@@ -141,8 +143,7 @@ export function packDrafts(drafts: readonly Draft[]): DraftPack {
       case 'insert':
         put(indexOf(d.block), d.x, d.y, d.sx, d.sy, d.rotation, d.cols, d.rows, d.dx, d.dy, d.attribs?.length ?? 0)
         for (const a of d.attribs ?? []) {
-          put(texts.length, a.layer, a.color === undefined ? 0 : a.color + 1)
-          texts.push(a.tag)
+          put(str(a.tag), a.layer, a.color === undefined ? 0 : a.color + 1)
           putText(a, a.hidden ? 4 : 0)
         }
         break
@@ -150,8 +151,7 @@ export function packDrafts(drafts: readonly Draft[]): DraftPack {
         putText(d, 0)
         break
       case 'mtext':
-        put(texts.length, d.x, d.y, d.height, d.width, d.attachment, d.rotation, d.spacing)
-        texts.push(d.value)
+        put(str(d.value), d.x, d.y, d.height, d.width, d.attachment, d.rotation, d.spacing, str(d.style))
         break
       case 'solid':
         put(d.x0, d.y0, d.x1, d.y1, d.x2, d.y2, d.x3, d.y3)
@@ -209,7 +209,7 @@ function blockOf(p: DraftPack, i: number): Block {
 }
 
 /** The numbers a text takes. */
-const TEXT_NUMS = 12
+const TEXT_NUMS = 13
 
 /** The text whose numbers start at nums[o]. */
 function textAt(p: DraftPack, o: number, layer: number): Draft<Text> {
@@ -218,7 +218,7 @@ function textAt(p: DraftPack, o: number, layer: number): Draft<Text> {
   return {
     type: 'text', layer, value: p.texts[v[o]!]!, x: v[o + 1]!, y: v[o + 2]!, x2: v[o + 3]!, y2: v[o + 4]!, height: v[o + 5]!,
     rotation: v[o + 6]!, widthFactor: v[o + 7]!, oblique: v[o + 8]!, halign: v[o + 9]!, valign: v[o + 10]!,
-    backward: (flags & 1) !== 0, upsideDown: (flags & 2) !== 0,
+    backward: (flags & 1) !== 0, upsideDown: (flags & 2) !== 0, ...(v[o + 12]! >= 0 && { style: p.texts[v[o + 12]!]! }),
   }
 }
 
@@ -292,7 +292,7 @@ export function unpackDrafts(p: DraftPack, from: number, to: number): Draft[] {
       case KIND.mtext:
         d = {
           type: 'mtext', layer, value: p.texts[v[o]!]!, x: v[o + 1]!, y: v[o + 2]!, height: v[o + 3]!, width: v[o + 4]!,
-          attachment: v[o + 5]!, rotation: v[o + 6]!, spacing: v[o + 7]!,
+          attachment: v[o + 5]!, rotation: v[o + 6]!, spacing: v[o + 7]!, ...(v[o + 8]! >= 0 && { style: p.texts[v[o + 8]!]! }),
         }
         break
       case KIND.solid:

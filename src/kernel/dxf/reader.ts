@@ -149,9 +149,10 @@ interface TextGroups {
   flags: number
   halign: number
   valign: number
+  style: string
 }
 
-const textGroups = (): TextGroups => ({ value: '', x: 0, y: 0, x2: NaN, y2: NaN, height: 0, rotation: 0, widthFactor: 1, oblique: 0, flags: 0, halign: 0, valign: 0 })
+const textGroups = (): TextGroups => ({ value: '', x: 0, y: 0, x2: NaN, y2: NaN, height: 0, rotation: 0, widthFactor: 1, oblique: 0, flags: 0, halign: 0, valign: 0, style: '' })
 
 /**
  * A text placed by the point of its justification, which is 11 (10 being worked out from it) unless it is left on
@@ -169,7 +170,17 @@ function textOf(t: TextGroups): TextFields {
   return {
     type: 'text', value: t.value, x: px, y: py, x2: qx, y2: qy, height: t.height, rotation: normAngle(t.rotation * DEG),
     widthFactor: t.widthFactor > 0 ? t.widthFactor : 1, oblique: Math.max(-85, Math.min(85, slant)) * DEG,
-    halign, valign, backward: (t.flags & 2) !== 0, upsideDown: (t.flags & 4) !== 0,
+    halign, valign, backward: (t.flags & 2) !== 0, upsideDown: (t.flags & 4) !== 0, ...(t.style && { style: t.style }),
+  }
+}
+
+/**
+ * A text in its OCS seen from -Z as one in the world, and back: x the other way, so it reads backward, its angles
+ * the other way round, and an aligned or fit one between the same two points, its second first.
+ */
+export function seenFromBelow<T extends TextFields>(t: T): T {
+  return {
+    ...t, x: 0 - t.x2, y: t.y2, x2: 0 - t.x, y2: t.y, rotation: normAngle(0 - t.rotation), oblique: 0 - t.oblique, backward: !t.backward,
   }
 }
 
@@ -537,6 +548,9 @@ function parser(pairs: PairList) {
       case 51:
         t.oblique = num(i)
         return true
+      case 7:
+        t.style = pairs.value(i).trim()
+        return true
       case 71:
         t.flags = num(i)
         return true
@@ -560,10 +574,14 @@ function parser(pairs: PairList) {
 
   /**
    * An ATTRIB record [a, b) with its own layer and color (the insert's head stays as it is); null when it is not
-   * understood. A multiline one's embedded MTEXT, after 101, is left out: the line of text has the value.
+   * understood. A multiline one's embedded MTEXT, after 101, is left out: the line of text has the value. Seen from
+   * -Z, it is mirrored into the world.
    */
   const attribAt = (a: number, b: number): PendingAttrib | null => {
     const t = textGroups()
+    // Past its 100 AcDbAttribute marker, R2018 repeats 72 and 11 and has 71 as the attribute type (1 single line,
+    // 2 multiline): the text's own groups are those of AcDbText.
+    let attribute = false
     let tag = ''
     let flags = 0
     let invisible = false
@@ -577,6 +595,8 @@ function parser(pairs: PairList) {
       for (let i = a + 1; i < b; i++) {
         const c = codes[i]!
         if (c === 101) break
+        if (c === 100) attribute = pairs.value(i).trim().startsWith('AcDbAttribute') // ATTDEF's AcDbAttributeDefinition too
+        if (attribute && (c === 71 || c === 72 || c === 11 || c === 21 || c === 31)) continue
         if (textGroup(t, c, i, 74)) continue
         if (c === 2) tag = pairs.value(i).trim()
         else if (c === 70) flags = num(i)
@@ -588,17 +608,26 @@ function parser(pairs: PairList) {
         else if (c === 220) ey = num(i)
         else if (c === 230) ez = num(i)
       }
-      if (!(Math.abs(ex) <= 1e-9 && Math.abs(ey) <= 1e-9 && Math.abs(ez - 1) <= 1e-9)) return null
-      return { ...textOf(t), tag, hidden: (flags & 1) !== 0 || invisible, layerName, aci, trueColor }
+      if (!(Math.abs(ex) <= 1e-9 && Math.abs(ey) <= 1e-9 && Math.abs(Math.abs(ez) - 1) <= 1e-9)) return null
+      const text = ez < 0 ? seenFromBelow(textOf(t)) : textOf(t)
+      return { ...text, tag, hidden: (flags & 1) !== 0 || invisible, layerName, aci, trueColor }
     } catch (error) {
       if (error instanceof Unsupported) return null
       throw error
     }
   }
 
+  /** An ATTDEF [a, b) inserts show (constant, 70 bit 2, and not hidden) as a text of its block; null otherwise. */
+  const constantAt = (a: number, b: number): PendingAttrib | null => {
+    let flags = 0
+    for (let i = a + 1; i < b && codes[i] !== 101; i++) if (codes[i] === 70) flags = num(i)
+    const at = (flags & 2) !== 0 ? attribAt(a, b) : null
+    return at && !at.hidden ? at : null
+  }
+
   /**
    * MTEXT: its value is the 3 chunks then the 1 group, codes kept. The direction 11/21 (WCS), when given, wins
-   * over the rotation 50 (degrees, as AutoCAD writes it).
+   * over the rotation 50 (degrees, as AutoCAD writes it). Its columns, after 101, are left out.
    */
   const mtext = (a: number, b: number): Parsed => {
     const chunks: string[] = []
@@ -612,8 +641,11 @@ function parser(pairs: PairList) {
     let attachment = 1
     let rotation = 0
     let spacing = 1
+    let style = ''
     for (let i = a + 1; i < b; i++) {
       const c = codes[i]!
+      // R2018's columns: an embedded object, its own direction, insert and sizes.
+      if (c === 101) break
       if (c === 1) last = pairs.value(i)
       else if (c === 3) chunks.push(pairs.value(i))
       else if (c === 10) x = num(i)
@@ -625,6 +657,7 @@ function parser(pairs: PairList) {
       else if (c === 71) attachment = num(i)
       else if (c === 50) rotation = num(i)
       else if (c === 44) spacing = num(i)
+      else if (c === 7) style = pairs.value(i).trim()
       else common(c, i)
     }
     upright()
@@ -633,7 +666,7 @@ function parser(pairs: PairList) {
       type: 'mtext', value: chunks.join('') + last, x, y, height, width: width > 0 ? width : 0,
       attachment: Number.isInteger(attachment) && attachment >= 1 && attachment <= 9 ? attachment : 1,
       rotation: normAngle(dx !== 0 || dy !== 0 ? Math.atan2(dy, dx) : rotation * DEG),
-      spacing: spacing > 0 ? spacing : 1,
+      spacing: spacing > 0 ? spacing : 1, ...(style && { style }),
     }
   }
 
@@ -669,7 +702,7 @@ function parser(pairs: PairList) {
     return null
   }
 
-  return { head, read, scanHead }
+  return { head, read, scanHead, constantAt }
 }
 
 /** The entities of the ENTITIES section as pair ranges: entity k is [starts[k], ends[k]), its own groups end at owns[k]. */
@@ -855,7 +888,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
 
   const ents = find('ENTITIES')
   const recs = ents ? records(pairs, ents.start, ents.end) : { n: 0, starts: new Int32Array(0), owns: new Int32Array(0), ends: new Int32Array(0) }
-  const { head, read, scanHead } = parser(pairs)
+  const { head, read, scanHead, constantAt } = parser(pairs)
 
   // Blocks, read when an insert first needs one: name (any case) to definition, then to the block made of it.
   const bs = find('BLOCKS')
@@ -878,8 +911,16 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
     for (let k = 0; k < rs.n; k++) {
       const a = rs.starts[k]!
       const name = pairs.value(a).trim()
-      // An attribute definition never shows in an insert: its values (ATTRIB) do.
-      if (name === 'ATTDEF') continue
+      // An attribute definition shows in an insert only when constant: the values of the others (ATTRIB) do.
+      if (name === 'ATTDEF') {
+        const at = constantAt(a, rs.owns[k]!)
+        if (at) {
+          const { layerName, aci, trueColor, tag: _tag, hidden: _hidden, ...text } = at
+          const color = colorOf({ ...head, aci, trueColor })
+          entities.push({ ...text, layer: layers.of(layerName), ...(color !== undefined && { color }) })
+        }
+        continue
+      }
       try {
         const d = resolve(read(name, a, rs.owns[k]!, rs.ends[k]!))
         if (d) entities.push(d as BlockEntity)
@@ -939,6 +980,9 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
       else if (head.invisible) keep('invisible')
       else draft = resolve(parsed)
       if (draft && isWide(draft)) wide++
+      if (draft?.type === 'insert' && (parsed as PendingInsert).attribs === null) {
+        warnings.push(`line ${2 * a + 1}: INSERT keeps its attributes as is, not shown: one is not understood.`)
+      }
     } catch (error) {
       if (!(error instanceof Unsupported)) throw error
       warnings.push(`line ${error.line ?? 2 * a + 1}: ${name} kept as is: ${error.message}.`)

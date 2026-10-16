@@ -7,7 +7,7 @@ import { affineDet, applyAffine, type Affine } from '../geom/vec'
 import { TAU, normAngle } from '../geom/tol'
 import { caretCoded } from '../text/codes'
 import { baselineStart, mtextLines } from '../text/layout'
-import type { DxfSource } from './reader'
+import { seenFromBelow, type DxfSource } from './reader'
 import { entryEnd, findTable, groupValue, layerEntry, type TableRange } from './tables'
 import { FIRST_FREE_HANDLE, H, TEXTSIZE, textSizeOf, writeTemplate } from './template'
 import { tokenize, type PairList } from './tokenizer'
@@ -224,7 +224,7 @@ function fresh(c: Ctx, e: Entity, handle: string | null): void {
         mtextLines(e).forEach((l, k) => freshText(c, {
           type: 'text', id: e.id, layer: e.layer, ...(e.color !== undefined && { color: e.color }), value: caretCoded(l.text),
           x: l.x, y: l.y, x2: l.x, y2: l.y, height: e.height, rotation: e.rotation, widthFactor: 1, oblique: 0,
-          halign: 0, valign: 0, backward: false, upsideDown: false,
+          halign: 0, valign: 0, backward: false, upsideDown: false, ...(e.style !== undefined && { style: e.style }),
         }, k === 0 ? handle : f.handles ? c.ids.take() : null))
         return
       }
@@ -239,6 +239,7 @@ function fresh(c: Ctx, e: Entity, handle: string | null): void {
       const chunks = chunksOf(e.value)
       for (let k = 0; k < chunks.length - 1; k++) o.str(3, chunks[k]!)
       o.str(1, chunks.at(-1)!)
+      if (e.style !== undefined) o.str(7, e.style)
       // The direction as a vector: 50 is in radians to some readers, in degrees to others.
       o.real(11, Math.cos(e.rotation))
       o.real(21, Math.sin(e.rotation))
@@ -294,7 +295,7 @@ function freshAttrib(c: Ctx, a: Attrib, handle: string | null, owner: string | n
   if (a.valign !== 0) o.int(74, a.valign)
 }
 
-/** The groups TEXT and ATTRIB share: 10 through 11. */
+/** The groups TEXT and ATTRIB share: 10 through 11, in AutoCAD's order (10 40 1 50 41 51 7 71 72 11). */
 function textBody(c: Ctx, e: Omit<Text, 'id'>): void {
   const { o } = c
   const [first, second] = textPoints(e)
@@ -306,6 +307,7 @@ function textBody(c: Ctx, e: Omit<Text, 'id'>): void {
   if (e.rotation !== 0) o.real(50, deg(e.rotation))
   if (e.widthFactor !== 1) o.real(41, e.widthFactor)
   if (e.oblique !== 0) o.real(51, deg(e.oblique))
+  if (e.style !== undefined) o.str(7, e.style)
   const flags = textFlags(e)
   if (flags !== 0) o.int(71, flags)
   if (e.halign !== 0) o.int(72, e.halign)
@@ -598,10 +600,16 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
         gs.splice(k + 1, 0, [13, real(s * e.x3)], [23, real(e.y3)], [33, gs[at(32)]?.[1] ?? real(0)])
       }
       break
-    case 'mtext':
+    case 'mtext': {
+      // R2018's columns, after 101: an embedded object with its own direction, insert and sizes, set apart.
+      const cut = gs.findIndex((g) => g[0] === 101)
+      const columns = cut >= 0 ? gs.splice(cut) : []
+      const k = e.height / (was as MText).height
       put(10, e.x)
       put(20, e.y)
       put(40, e.height)
+      // The defined height, as the sizes of the columns.
+      if (k !== 1 && at(46) >= 0) put(46, Number(gs[at(46)]![1]) * k)
       // In AutoCAD's order: 10 40 41 71 72 3… 1 7 11 50 73 44.
       opt(41, real(e.width), e.width === 0, [40])
       opt(71, String(e.attachment), e.attachment === 1, [41, 40])
@@ -614,7 +622,14 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
       opt(44, real(e.spacing), e.spacing === 1, [73, 50, 31, 7, 1])
       // The value is in chunks: a new one is written fresh.
       if (e.value !== (was as MText).value) ok = false
+      for (const g of columns) {
+        const v = g[0] === 10 ? Math.cos(e.rotation) : g[0] === 20 ? Math.sin(e.rotation) : g[0] === 11 ? e.x : g[0] === 21 ? e.y : NaN
+        if (!Number.isNaN(v)) g[1] = real(v)
+        else if (k !== 1 && g[0] >= 40 && g[0] <= 45) g[1] = real(Number(g[1]) * k)
+      }
+      gs.push(...columns)
       break
+    }
     case 'polyline': {
       if (name === 'POLYLINE') {
         // The head here, the vertices after it. A curve or spline fit no longer matches them: plain, as shown.
@@ -705,9 +720,14 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
       continue
     }
     const a = modelled ? attribs[k++]! : null
+    // A multiline one's MTEXT, after 101, follows the insert on its own; the line of text is patched or moved.
+    const cut = child.findIndex((g) => g[0] === 101)
+    const embedded = cut >= 0 ? movedMText(child.splice(cut), move) : []
     const flags = Number(child.find((g) => g[0] === 70)?.[1] ?? 0)
     const patchedChild = a && child.map((g): [number, string] => [g[0], g[1]])
-    if (a && patchedChild && patchText(patchedChild, a, 74, c.f.modern) && patchedChild.some((g) => g[0] === 70) && patchedChild.some((g) => g[0] === 8)) {
+    // Seen from -Z, the attribute goes back into its OCS.
+    const below = Number(child.find((g) => g[0] === 230)?.[1] ?? 1) < 0
+    if (a && patchedChild && patchText(patchedChild, below ? seenFromBelow(a) : a, 74, c.f.modern) && patchedChild.some((g) => g[0] === 70) && patchedChild.some((g) => g[0] === 8)) {
       for (const g of patchedChild) {
         if (g[0] === 70) g[1] = String((flags & ~1) | (a.hidden ? 1 : 0))
         if (g[0] === 8) g[1] = fileLayer(c, a.layer)
@@ -721,6 +741,7 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
         if (n === layerAt) out.raw(colors.text())
       })
     } else for (const [code, v] of movedText(child, move)) out.str(code, v)
+    for (const [code, v] of embedded) out.str(code, v)
   }
   return out.text()
 }
@@ -731,7 +752,15 @@ function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): stri
  */
 function patchText(gs: [number, string][], e: Omit<Text, 'id'>, vcode: 73 | 74, modern: boolean): boolean {
   let ok = true
-  const at = (code: number): number => gs.findIndex((g) => g[0] === code)
+  // An ATTRIB's text groups are those before its AcDbAttribute marker: R2018 repeats 72 and 11 after it, and has the
+  // attribute type in 71. Its own groups (tag, flags, field length, 74) are after it.
+  const marker = (): number => (vcode === 74 ? gs.findIndex((g) => g[0] === 100 && g[1].trim() === 'AcDbAttribute') : -1)
+  const end = (): number => {
+    const k = marker()
+    return k >= 0 ? k : gs.length
+  }
+  const own = (code: number, k: number): boolean => k < end() || code === 74 || code === 73 || code === 70 || code === 2
+  const at = (code: number): number => gs.findIndex((g, k) => g[0] === code && own(code, k))
   const set = (code: number, v: string): boolean => {
     const k = at(code)
     if (k >= 0) gs[k]![1] = v
@@ -741,7 +770,7 @@ function patchText(gs: [number, string][], e: Omit<Text, 'id'>, vcode: 73 | 74, 
   const opt = (code: number, v: string, atDefault: boolean, after: readonly number[]): void => {
     if (set(code, v) || atDefault) return
     for (const a of after) {
-      const k = gs.findLastIndex((g) => g[0] === a)
+      const k = gs.findLastIndex((g, j) => g[0] === a && own(a, j))
       if (k >= 0) return void gs.splice(k + 1, 0, [code, v])
     }
     ok = false
@@ -763,9 +792,20 @@ function patchText(gs: [number, string][], e: Omit<Text, 'id'>, vcode: 73 | 74, 
     opt(11, real(second.x), false, order)
     opt(21, real(second.y), false, [11])
     opt(31, '0.0', false, [21])
+  } else if (at(11) >= 0 && at(21) >= 0) {
+    // Left on the baseline, a second point the record has anyway (R2018's ATTRIB) stays on the first.
+    put(11, first.x)
+    put(21, first.y)
   }
   if (vcode === 74) {
     opt(74, String(e.valign), e.valign === 0, [73, 70, 2])
+    // The repeated alignment point follows the text's, so no reader finds it stale.
+    const k = marker()
+    const point = second ?? first
+    for (const [code, v] of [[11, point.x], [21, point.y]] as const) {
+      const j = gs.findIndex((g, i) => i > k && g[0] === code)
+      if (k >= 0 && j >= 0) gs[j]![1] = real(v)
+    }
     return ok
   }
   if (!set(73, String(e.valign)) && e.valign !== 0) {
@@ -824,6 +864,33 @@ function movedText(gs: [number, string][], m: Affine): [number, string][] {
     else if (at(40) >= 0) out.splice(at(40) + 1, 0, [50, v])
   }
   return out
+}
+
+/**
+ * An attribute's embedded MTEXT (101 on) moved by m: its insert (10), its direction (11, a vector), its height and
+ * widths (40, 41, 46) by the scale.
+ */
+function movedMText(gs: [number, string][], m: Affine): [number, string][] {
+  const at = (code: number): number => gs.findIndex((g) => g[0] === code)
+  const [x, y, dx, dy] = [10, 20, 11, 21].map(at) as [number, number, number, number]
+  if (x >= 0 && y >= 0) {
+    const p = applyAffine(m, Number(gs[x]![1]), Number(gs[y]![1]))
+    gs[x]![1] = real(p.x)
+    gs[y]![1] = real(p.y)
+  }
+  if (dx >= 0 && dy >= 0) {
+    const u = Number(gs[dx]![1])
+    const v = Number(gs[dy]![1])
+    const [ux, uy] = [m.a * u + m.c * v, m.b * u + m.d * v]
+    const n = Math.hypot(ux, uy)
+    if (n > 0) {
+      gs[dx]![1] = real(ux / n)
+      gs[dy]![1] = real(uy / n)
+    }
+  }
+  const k = Math.sqrt(Math.abs(affineDet(m)))
+  if (k !== 1) for (const g of gs) if (g[0] === 40 || g[0] === 41 || g[0] === 46) g[1] = real(Number(g[1]) * k)
+  return gs
 }
 
 /** Writes the document's entities; returns the spans of the file's records still there, as start, end pairs. */

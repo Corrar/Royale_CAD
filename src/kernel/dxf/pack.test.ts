@@ -16,7 +16,9 @@ const DRAFTS: Draft[] = [
   { type: 'opaque', layer: 1, name: 'HATCH', raw: '  0\r\nHATCH\r\n' },
   { type: 'ellipse', layer: 2, color: 5, cx: 1, cy: 2, mx: 3, my: 4, ratio: 0.5, t0: 0.25, t1: 6 },
   { type: 'text', layer: 0, value: '%%c50 Ação', x: 1, y: 2, x2: 3, y2: 4, height: 2.5, rotation: 0.3, widthFactor: 0.8, oblique: 0.1, halign: 3, valign: 0, backward: true, upsideDown: false },
+  { type: 'text', layer: 0, value: 'styled', x: 1, y: 2, x2: 1, y2: 2, height: 1, rotation: 0, widthFactor: 1, oblique: 0, halign: 0, valign: 0, backward: false, upsideDown: false, style: 'ROMANS' },
   { type: 'mtext', layer: 1, value: '{\\fArial;Hi}\\PThere', x: 5, y: 6, height: 1, width: 40, attachment: 5, rotation: 0, spacing: 1.5 },
+  { type: 'mtext', layer: 1, value: 'styled', x: 5, y: 6, height: 1, width: 0, attachment: 1, rotation: 0, spacing: 1, style: 'ROMANS' },
   { type: 'solid', layer: 2, color: 1, x0: 0.5, y0: -1, x1: 7_400_000.25, y1: 0, x2: 3, y2: 4, x3: 3, y3: 4 },
   { type: 'spline', layer: 0, degree: 2, closed: false, knots: Float64Array.of(0, 0, 0, 1, 1, 1), ctrl: Float64Array.of(0, 0, 1, 2, 3, 0), weights: null },
   { type: 'spline', layer: 1, degree: 1, closed: true, knots: Float64Array.of(0, 0, 1, 1), ctrl: Float64Array.of(0, 0, 1, 2), weights: Float64Array.of(1, 3) },
@@ -48,9 +50,9 @@ describe('packDrafts', () => {
     expect(unpackDrafts(p, 1, 3)[0]).toEqual(drafts[1])
   })
 
-  it('carries the attributes of an insert: tag, layer, color (ByBlock and ByLayer told apart), hidden', () => {
+  it('carries the attributes of an insert: tag, layer, color (ByBlock and ByLayer told apart), hidden, style', () => {
     const attrib = { type: 'text', layer: 2, value: 'D1', x: 1, y: 2, x2: 3, y2: 4, height: 0.5, rotation: 0.25, widthFactor: 0.9, oblique: 0.1, halign: 5, valign: 0, backward: false, upsideDown: true, tag: 'NUM', hidden: false } as const
-    const drafts = [{ ...ins(A, 1), attribs: [attrib, { ...attrib, color: BY_BLOCK, tag: 'NOTE', hidden: true, value: '' }, { ...attrib, color: 4 }] }, ins(A, 2)]
+    const drafts = [{ ...ins(A, 1), attribs: [attrib, { ...attrib, color: BY_BLOCK, tag: 'NOTE', hidden: true, value: '' }, { ...attrib, color: 4, style: 'ROMANS' }] }, ins(A, 2)]
     const p = structuredClone(packDrafts(drafts))
     expect(unpackDrafts(p, 0, p.n)).toEqual(drafts)
   })
