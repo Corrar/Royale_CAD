@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import type { FileHost } from '../kernel/command/runtime'
+import { commandBench } from '../kernel/command/testing'
 import { createDocument } from '../kernel/document'
 import type { Line } from '../kernel/entity/types'
+import { readDxf } from '../kernel/dxf/reader'
 import { decodeDxf } from './codec'
 import { packDrafts } from '../kernel/dxf/pack'
-import { createFiles, parseHere, type FileApi, type Opened, type Parse, type Saved } from './files'
+import { createFiles, parseHere, type FileApi, type Files, type Opened, type Parse, type Saved } from './files'
 
 const PLANT = ['0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1015', '9', '$DWGCODEPAGE', '3', 'ANSI_1252', '0', 'ENDSEC',
   '0', 'SECTION', '2', 'ENTITIES', '0', 'LINE', '5', '2A', '8', 'Ação', '10', '0', '20', '0', '11', '10', '21', '0', '0', 'ENDSEC', '0', 'EOF', ''].join('\r\n')
@@ -14,7 +17,11 @@ function fakeApi() {
   const calls: string[] = []
   const saved: Uint8Array[] = []
   let closeHandler: (() => void) | null = null
-  const answers = { opened: null as (Opened & { bytes: Uint8Array }) | null, saveAnswer: { name: 'Plant.dxf' } as Saved }
+  const answers = { opened: null as (Opened & { bytes: Uint8Array }) | null, saveAnswer: { name: 'Plant.dxf' } as Saved, holdSave: false }
+  // With holdSave, a save answers only when the test lets it: the main process is still writing the file.
+  let held: (() => void) | null = null
+  const answer = (): Promise<Saved> =>
+    answers.holdSave ? new Promise((r) => (held = () => r(answers.saveAnswer))) : Promise.resolve(answers.saveAnswer)
   const api: FileApi = {
     initial: async () => null,
     open: async () => {
@@ -26,12 +33,12 @@ function fakeApi() {
     save: async (bytes: Uint8Array, suggested: string) => {
       calls.push(`save ${suggested}`)
       saved.push(bytes)
-      return answers.saveAnswer
+      return answer()
     },
     saveAs: async (bytes: Uint8Array, suggested: string) => {
       calls.push(`saveAs ${suggested}`)
       saved.push(bytes)
-      return answers.saveAnswer
+      return answer()
     },
     forget: async () => void calls.push('forget'),
     setDirty: (d: boolean) => void calls.push(`dirty ${d}`),
@@ -41,7 +48,7 @@ function fakeApi() {
     },
     closeNow: () => void calls.push('closeNow'),
   }
-  return { api, answers, calls, saved, requestClose: () => closeHandler?.() }
+  return { api, answers, calls, saved, requestClose: () => closeHandler?.(), finishSave: () => held?.() }
 }
 
 function setup(parse: Parse = parseHere) {
@@ -53,6 +60,26 @@ function setup(parse: Parse = parseHere) {
   /** Lets the async operation started by a call finish. */
   const settle = () => new Promise((r) => setTimeout(r, 0))
   return { doc, files, lines, fake, settle, replaced: () => replaced }
+}
+
+/** The interpreter and the files on one document, as the app wires them: commands typed while files work. */
+function benchSetup(parse: Parse = parseHere) {
+  const fake = fakeApi()
+  let files: Files | null = null
+  const host: FileHost = {
+    name: () => files!.name(),
+    dirty: () => files!.dirty(),
+    open: (saveFirst) => files!.open(saveFirst),
+    create: (saveFirst) => files!.create(saveFirst),
+    save: () => files!.save(),
+    saveAs: () => files!.saveAs(),
+  }
+  const t = commandBench(undefined, { files: host })
+  files = createFiles({ api: fake.api, doc: t.doc, parse, print: (l) => t.interp.print(l), replaced: () => t.selection.clear(), currentLayer: () => '0' })
+  const settle = () => new Promise((r) => setTimeout(r, 0))
+  /** The entities of the file saved k-th, read back. */
+  const savedSize = (k: number): number => readDxf(decodeDxf(fake.saved[k]!).text).doc.size
+  return { ...t, files, fake, settle, savedSize }
 }
 
 describe('createFiles', () => {
@@ -175,5 +202,86 @@ describe('createFiles', () => {
     t.fake.requestClose()
     await t.settle()
     expect(t.fake.calls.slice(-3)).toEqual(['save Plant.dxf', 'dirty false', 'closeNow'])
+  })
+})
+
+describe('createFiles while the drawing changes', () => {
+  const line = (x: number) => ({ type: 'line' as const, layer: 0, x0: x, y0: 0, x1: x + 1, y1: 1 })
+
+  it('an edit made while the file is being written is not in it: the drawing stays dirty', async () => {
+    const t = setup()
+    t.doc.transact('draw', (tx) => void tx.add(line(0)))
+    t.fake.answers.holdSave = true
+    t.files.save()
+    await t.settle()
+    expect(t.files.state.get().busy).toBe('Saving Drawing1.dxf…')
+    t.doc.transact('draw', (tx) => void tx.add(line(5)))
+    t.fake.finishSave()
+    await t.settle()
+    expect(readDxf(decodeDxf(t.fake.saved[0]!).text).doc.size).toBe(1)
+    expect(t.doc.size).toBe(2)
+    expect(t.files.state.get()).toEqual({ name: 'Plant.dxf', dirty: true, busy: null })
+    // The main process heard dirty once and never clean: closing the window still asks.
+    expect(t.fake.calls).toEqual(['dirty true', 'save Drawing1.dxf'])
+    expect(t.lines).toEqual(['Saved Plant.dxf, without the changes made while it was being written.'])
+  })
+
+  it('so does an undo, and an edit to a drawing that was clean when the save began', async () => {
+    const t = setup()
+    t.doc.transact('draw', (tx) => void tx.add(line(0)))
+    t.files.save()
+    await t.settle()
+    expect(t.files.dirty()).toBe(false)
+    t.fake.answers.holdSave = true
+    t.files.save()
+    await t.settle()
+    t.doc.undo()
+    t.fake.finishSave()
+    await t.settle()
+    expect(t.doc.size).toBe(0)
+    expect(t.files.dirty()).toBe(true)
+    expect(t.fake.calls.slice(-2)).toEqual(['save Plant.dxf', 'dirty true'])
+    // Nothing changed during the next save: it cleans the drawing.
+    t.fake.answers.holdSave = false
+    t.files.save()
+    await t.settle()
+    expect(t.files.dirty()).toBe(false)
+    expect(t.lines.at(-1)).toBe('Saved Plant.dxf.')
+  })
+
+  it('NEW after Save does not drop what changed while the save was being written', async () => {
+    const t = setup()
+    t.doc.transact('draw', (tx) => void tx.add(line(0)))
+    t.fake.answers.holdSave = true
+    t.files.create(true)
+    await t.settle()
+    t.doc.transact('draw', (tx) => void tx.add(line(5)))
+    t.fake.finishSave()
+    await t.settle()
+    expect(t.doc.size).toBe(2)
+    expect(t.files.state.get()).toEqual({ name: 'Plant.dxf', dirty: true, busy: null })
+    expect(t.fake.calls).not.toContain('forget')
+  })
+
+  it('a close request does not close a window whose drawing changed while it was saved', async () => {
+    const t = benchSetup()
+    t.run('L⏎0,0⏎5,5⏎')
+    t.fake.answers.holdSave = true
+    // Save, in the main process's close dialog, while LINE is still asking for points.
+    t.fake.requestClose()
+    await t.settle()
+    t.run('10,0⏎⏎')
+    t.fake.finishSave()
+    await t.settle()
+    expect(t.savedSize(0)).toBe(1)
+    expect(t.doc.size).toBe(2)
+    expect(t.fake.calls).not.toContain('closeNow')
+    expect(t.files.dirty()).toBe(true)
+    // Asked again, the save has everything: now the window closes.
+    t.fake.answers.holdSave = false
+    t.fake.requestClose()
+    await t.settle()
+    expect(t.savedSize(1)).toBe(2)
+    expect(t.fake.calls.slice(-2)).toEqual(['dirty false', 'closeNow'])
   })
 })
