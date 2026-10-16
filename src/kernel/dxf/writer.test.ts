@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
 import { createDocument } from '../document'
-import type { Arc, Circle, Ellipse, Entity, Line, Polyline, Spline } from '../entity/types'
+import type { Arc, Circle, Ellipse, Entity, Insert, Line, Polyline, Spline } from '../entity/types'
+import { typeOf } from '../entity/registry'
+import { rotation } from '../geom/vec'
 import { readDxf } from './reader'
 import { tokenize } from './tokenizer'
 import { nearestAci, real, writeDxf } from './writer'
@@ -166,6 +168,45 @@ describe('writeDxf', () => {
     expect(text(2)).not.toContain(lines([11, '0.0']))
     expect(text(2)).not.toContain(lines([12, '1.0']))
     expect(text(2)).toContain(lines([74, 0]))
+  })
+
+  it('INSERT: an edit is patched in its OCS and moves its attributes with it; a copy is written fresh', () => {
+    const BLOCKS: G = [0, 'SECTION', 2, 'BLOCKS',
+      0, 'BLOCK', 5, '40', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockBegin', 2, 'DOOR', 70, 2, 10, 0, 20, 0, 30, 0, 3, 'DOOR',
+      0, 'LINE', 5, '41', 8, '0', 100, 'AcDbEntity', 100, 'AcDbLine', 10, 0, 20, 0, 30, 0, 11, 1, 21, 0, 31, 0,
+      0, 'ATTDEF', 5, '42', 8, '0', 100, 'AcDbEntity', 100, 'AcDbText', 10, 0, 20, 1, 30, 0, 40, 0.25, 1, '', 100, 'AcDbAttributeDefinition', 3, 'Tag?', 2, 'TAG', 70, 0,
+      0, 'ENDBLK', 5, '43', 8, '0', 100, 'AcDbEntity', 100, 'AcDbBlockEnd',
+      0, 'ENDSEC']
+    const WITH_ATTRIB: G = [0, 'INSERT', 5, '50', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbBlockReference', 66, 1, 2, 'DOOR', 10, 10, 20, 20, 30, 0,
+      0, 'ATTRIB', 5, '51', 330, '50', 100, 'AcDbEntity', 8, '0', 100, 'AcDbText', 10, 10, 20, 21, 30, 0, 40, 0.25, 1, 'D1', 100, 'AcDbAttribute', 2, 'TAG', 70, 0,
+      0, 'SEQEND', 5, '52', 330, '50', 100, 'AcDbEntity', 8, '0']
+    const MIRRORED: G = [0, 'INSERT', 5, '53', 330, '1F', 100, 'AcDbEntity', 8, 'Walls', 100, 'AcDbBlockReference', 2, 'DOOR', 10, 5, 20, 5, 30, 0, 41, 2, 50, 30, 210, 0, 220, 0, 230, -1]
+    const text = file([...WITH_ATTRIB, ...MIRRORED]).replace(lines([0, 'SECTION', 2, 'ENTITIES']), lines(BLOCKS) + lines([0, 'SECTION', 2, 'ENTITIES']))
+    const d = readDxf(text)
+    expect(d.warnings).toEqual([])
+    const [door, mirrored] = [...d.doc.entities()] as [Insert, Insert]
+    d.doc.transact('edit', (tx) => {
+      tx.replace(typeOf(door).transform!({ ...door, x: 15 }, rotation({ x: 15, y: 20 }, 90)))
+      tx.replace({ ...mirrored, sy: 3, rotation: mirrored.rotation + 0.5 })
+      tx.add({ ...door, x: 100 })
+    })
+    const out = writeDxf(d.doc, d.source)
+    const back = readDxf(out)
+    expect(back.warnings).toEqual([])
+    const got = [...back.doc.entities()] as Insert[]
+    const want = [...d.doc.entities()] as Insert[]
+    expect(got.map(({ id: _id, block, rotation: r, ...rest }) => [rest, block.name, Math.round(r * 1e12)])).toEqual(
+      want.map(({ id: _id, block, rotation: r, ...rest }) => [rest, block.name, Math.round(r * 1e12)]),
+    )
+    const span = (id: number): string => back.source.text.slice(back.source.loaded(id)!.start, back.source.loaded(id)!.end)
+    // The attribute went with its insert: from (10, 21), one above the old insertion point, to one left of (15, 20).
+    expect(span(1)).toContain(lines([0, 'ATTRIB', 5, '51']))
+    expect(span(1)).toContain(lines([10, '14.0', 20, '20.0']))
+    expect(span(1)).toContain(lines([50, '90.0']))
+    expect(span(1)).toContain(lines([0, 'SEQEND']))
+    expect(back.source.handleOf(2)).toBe('53')
+    expect(span(2)).toContain(lines([230, -1]))
+    expect(span(3)).not.toContain('ATTRIB')
   })
 
   it('an R12 file has no ELLIPSE nor SPLINE: they go as polylines close to them', () => {

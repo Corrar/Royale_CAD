@@ -1,6 +1,6 @@
 import { TRUE_COLOR, type Color } from '../color'
 import { createDocument, type Document, type Draft, type Layer } from '../document'
-import type { Entity } from '../entity/types'
+import { BY_BLOCK, type Block, type BlockEntity, type Entity, type Insert } from '../entity/types'
 import { nurbsProblem } from '../geom/curve'
 import { TAU, normAngle } from '../geom/tol'
 import { entryEnd, findTable, layerEntry } from './tables'
@@ -46,6 +46,9 @@ class Unsupported extends Error {
   }
 }
 
+/** A block that holds itself, at some depth: every insert of it is kept as is. */
+class Cycle extends Unsupported {}
+
 /** Pair i's value as a number; the value's line (2i + 2) in the error. */
 function numberAt(pairs: PairList, i: number): number {
   const v = pairs.value(i)
@@ -68,12 +71,15 @@ interface Head {
   ez: number
 }
 
-/** ACI 1–255, ByLayer (undefined), ByBlock shown as 7 (white in model space), or a 420 true color. */
-function colorOf(h: Head): Color | undefined {
+/**
+ * ACI 1–255, ByLayer (undefined), or a 420 true color. ByBlock is kept in a block (BY_BLOCK, the insert's color);
+ * in model space it shows as 7, white.
+ */
+function colorOf(h: Head, inBlock = false): Color | undefined {
   if (h.trueColor !== undefined) return TRUE_COLOR | (h.trueColor & 0xffffff)
   if (h.aci === undefined) return undefined
   const a = Math.abs(h.aci)
-  if (a === 0) return 7
+  if (a === 0) return inBlock ? BY_BLOCK : 7
   return Number.isInteger(a) && a >= 1 && a <= 255 ? a : undefined
 }
 
@@ -90,8 +96,12 @@ const DEG = Math.PI / 180
 /** Records whose data continues in the entities after them, up to their SEQEND. */
 const CHILDREN: Readonly<Record<string, string>> = { POLYLINE: 'VERTEX', INSERT: 'ATTRIB' }
 
-/** A draft before its layer and color are resolved. */
-type Parsed = Draft extends infer D ? (D extends Draft ? Omit<D, 'layer' | 'color'> : never) : never
+/**
+ * A draft before its layer and color are resolved; an insert names its block, which is found once the insert's
+ * own head is read (finding it reads the block's entities with the same head).
+ */
+type Parsed = (Draft extends infer D ? (D extends Draft ? Omit<D, 'layer' | 'color'> : never) : never) | PendingInsert
+type PendingInsert = Omit<Draft<Insert>, 'layer' | 'color' | 'block'> & { blockName: string }
 
 /**
  * The entity readers of one file. They share one head, reset for each entity: a load of a million entities makes
@@ -325,6 +335,41 @@ function parser(pairs: PairList) {
     return curve
   }
 
+  /** INSERT (and a MINSERT grid): planar in its OCS, as an arc; the block is found by the caller. */
+  const insert = (a: number, b: number): Parsed => {
+    let blockName = ''
+    let x = 0
+    let y = 0
+    let sx = 1
+    let sy = 1
+    let rotation = 0
+    let cols = 1
+    let rows = 1
+    let dx = 0
+    let dy = 0
+    for (let i = a + 1; i < b; i++) {
+      const c = codes[i]!
+      if (c === 2) blockName = pairs.value(i).trim()
+      else if (c === 10) x = num(i)
+      else if (c === 20) y = num(i)
+      else if (c === 41) sx = num(i)
+      else if (c === 42) sy = num(i)
+      else if (c === 50) rotation = num(i)
+      else if (c === 70) cols = num(i)
+      else if (c === 71) rows = num(i)
+      else if (c === 44) dx = num(i)
+      else if (c === 45) dy = num(i)
+      else common(c, i)
+    }
+    if (!blockName) throw new Unsupported('it names no block')
+    const s = ocsSign(head)
+    // Seen from -Z: diag(−1, 1)·T(x, y)·R(r)·S(sx, sy) = T(−x, y)·R(−r)·S(−sx, sy); the grid's columns flip too.
+    return {
+      type: 'insert', blockName, x: s * x, y, sx: s * sx, sy, rotation: normAngle(s * rotation * DEG),
+      cols: Math.max(1, Math.trunc(cols)), rows: Math.max(1, Math.trunc(rows)), dx: s * dx, dy,
+    }
+  }
+
   /** The entity [a, end) (its own groups end at own) as understood; null for a type it does not read. */
   const read = (name: string, a: number, own: number, end: number): Parsed | null => {
     reset()
@@ -345,6 +390,8 @@ function parser(pairs: PairList) {
         return ellipse(a, own)
       case 'SPLINE':
         return spline(a, own)
+      case 'INSERT':
+        return insert(a, own)
     }
     return null
   }
@@ -455,6 +502,33 @@ export interface ParsedDxf {
   readonly warnings: readonly string[]
 }
 
+/** A BLOCK of the BLOCKS section: its name and base point, and the pairs [start, end) of its entities. */
+interface BlockDef { name: string; x: number; y: number; external: boolean; start: number; end: number }
+
+/** The blocks defined in the BLOCKS section, by upper-case name; model and paper space are not blocks to show. */
+function blockDefs(pairs: PairList, start: number, end: number): Map<string, BlockDef> {
+  const defs = new Map<string, BlockDef>()
+  for (let i = start; i < end; i++) {
+    if (!pairs.is(i, 0, 'BLOCK')) continue
+    const def: BlockDef = { name: '', x: 0, y: 0, external: false, start: i + 1, end: i + 1 }
+    let j = i + 1
+    for (; j < end && pairs.code(j) !== 0; j++) {
+      const c = pairs.code(j)
+      if (c === 2) def.name = pairs.value(j).trim()
+      else if (c === 10) def.x = numberAt(pairs, j)
+      else if (c === 20) def.y = numberAt(pairs, j)
+      else if (c === 70) def.external = (numberAt(pairs, j) & 4) !== 0
+    }
+    def.start = j
+    while (j < end && !pairs.is(j, 0, 'ENDBLK')) j++
+    def.end = j
+    i = j
+    const key = def.name.toUpperCase()
+    if (def.name && !key.startsWith('*MODEL_SPACE') && !key.startsWith('*PAPER_SPACE')) defs.set(key, def)
+  }
+  return defs
+}
+
 /** How often, in entities, parseDxf reports progress. */
 const PROGRESS_EVERY = 16384
 
@@ -481,6 +555,57 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
   const ents = find('ENTITIES')
   const recs = ents ? records(pairs, ents.start, ents.end) : { n: 0, starts: new Int32Array(0), owns: new Int32Array(0), ends: new Int32Array(0) }
   const { head, read, scanHead } = parser(pairs)
+
+  // Blocks, read when an insert first needs one: name (any case) to definition, then to the block made of it.
+  const bs = find('BLOCKS')
+  const defs = bs ? blockDefs(pairs, bs.start, bs.end) : new Map<string, BlockDef>()
+  const made = new Map<string, Block | null>() // null: being read
+  let blockKept = 0
+  const blockOf = (name: string): Block => {
+    const key = name.toUpperCase()
+    const done = made.get(key)
+    if (done === null) throw new Cycle(`block ${name} holds itself`)
+    if (done) return done
+    const def = defs.get(key)
+    if (!def) throw new Unsupported(`block ${name} is not defined`)
+    if (def.external) throw new Unsupported(`block ${name} is an external reference, which is not supported`)
+    made.set(key, null)
+    const entities: BlockEntity[] = []
+    const rs = records(pairs, def.start, def.end)
+    for (let k = 0; k < rs.n; k++) {
+      const a = rs.starts[k]!
+      const name = pairs.value(a).trim()
+      // An attribute definition never shows in an insert: its values (ATTRIB) do.
+      if (name === 'ATTDEF') continue
+      try {
+        const d = resolve(read(name, a, rs.owns[k]!, rs.ends[k]!), true)
+        if (d) entities.push(d as BlockEntity)
+        else blockKept++
+      } catch (error) {
+        if (!(error instanceof Unsupported) || error instanceof Cycle) throw error
+        blockKept++
+      }
+    }
+    const block: Block = { name: def.name, x: def.x, y: def.y, entities }
+    made.set(key, block)
+    return block
+  }
+  /**
+   * A parsed entity with its layer and color from the head, and an insert's block found: null when it is not
+   * drawn (a type not read, paper space). Throws Unsupported as the parsers do.
+   */
+  function resolve(parsed: Parsed | null, inBlock: boolean): Draft | null {
+    if (!parsed || head.paper) return null
+    const layer = layers.of(head.layer)
+    const color = colorOf(head, inBlock)
+    let d: Draft
+    if (parsed.type === 'insert') {
+      const { blockName, ...rest } = parsed as PendingInsert
+      d = { ...rest, layer, block: blockOf(blockName) }
+    } else d = { ...(parsed as Omit<Draft, 'layer'>), layer } as Draft
+    if (color !== undefined) (d as { color?: Color }).color = color
+    return d
+  }
   const drafts: Draft[] = new Array(recs.n)
   const spans = new Uint32Array(2 * recs.n)
   const kept = new Map<string, number>()
@@ -496,13 +621,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
       const parsed = read(name, a, own, end)
       if (!parsed) keep(name)
       else if (head.paper) keep('paper space')
-      else {
-        const d = parsed as unknown as { layer: number; color?: Color }
-        d.layer = layers.of(head.layer)
-        const color = colorOf(head)
-        if (color !== undefined) d.color = color
-        draft = parsed as Draft
-      }
+      else draft = resolve(parsed, false)
     } catch (error) {
       if (!(error instanceof Unsupported)) throw error
       warnings.push(`line ${error.line ?? 2 * a + 1}: ${name} kept as is: ${error.message}.`)
@@ -525,6 +644,7 @@ export function parseDxf(text: string, progress?: (done: number) => void): Parse
   for (const [key, n] of kept) {
     warnings.push(key === 'paper space' ? `${n} ${n === 1 ? 'entity' : 'entities'} in paper space kept as is (not drawn).` : `${n} ${key} kept as is (not drawn).`)
   }
+  if (blockKept > 0) warnings.push(`${blockKept} ${blockKept === 1 ? 'entity' : 'entities'} in blocks not drawn.`)
 
   let handseed = parseInt(header.get('$HANDSEED') ?? '0', 16) || 0
   const codes = pairs.codes

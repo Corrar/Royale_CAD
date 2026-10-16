@@ -1,7 +1,9 @@
 import { TRUE_COLOR, aciRgb, type Color } from '../color'
 import { docExtents, type Document, type Layer } from '../document'
 import { typeOf } from '../entity/registry'
-import type { Ellipse, Entity, Polyline, Spline } from '../entity/types'
+import { insertAffines } from '../entity/insert'
+import type { Ellipse, Entity, Insert, Polyline, Spline } from '../entity/types'
+import { affineDet, applyAffine, type Affine } from '../geom/vec'
 import { TAU, normAngle } from '../geom/tol'
 import type { DxfSource } from './reader'
 import { entryEnd, findTable, groupValue, layerEntry, type TableRange } from './tables'
@@ -167,6 +169,25 @@ function fresh(c: Ctx, e: Entity, handle: string | null): void {
       o.real(41, e.t0)
       o.real(42, ellipseEnd(e))
       return
+    case 'insert': {
+      // A copy: the block reference alone (its attributes wait for text, T38). A grid is a MINSERT.
+      const grid = e.cols > 1 || e.rows > 1
+      head(c, 'INSERT', e, handle, grid ? 'AcDbMInsertBlock' : 'AcDbBlockReference')
+      o.str(2, e.block.name)
+      o.real(10, e.x)
+      o.real(20, e.y)
+      o.real(30, 0)
+      if (e.sx !== 1) o.real(41, e.sx)
+      if (e.sy !== 1) o.real(42, e.sy)
+      if (e.rotation !== 0) o.real(50, deg(e.rotation))
+      if (grid) {
+        o.int(70, e.cols)
+        o.int(71, e.rows)
+        o.real(44, e.dx)
+        o.real(45, e.dy)
+      }
+      return
+    }
     case 'spline':
       if (!f.modern) return oldPolyline(c, asPolyline(e), handle)
       head(c, 'SPLINE', e, handle, 'AcDbSpline')
@@ -261,6 +282,7 @@ function oldPolyline(c: Ctx, e: Polyline, handle: string | null): void {
 
 const DXF_NAME: Readonly<Record<Entity['type'], string>> = {
   line: 'LINE', point: 'POINT', circle: 'CIRCLE', arc: 'ARC', polyline: 'LWPOLYLINE', opaque: '', ellipse: 'ELLIPSE', spline: 'SPLINE',
+  insert: 'INSERT',
 }
 
 /**
@@ -268,7 +290,7 @@ const DXF_NAME: Readonly<Record<Entity['type'], string>> = {
  * thickness, reactors and extended data survive the edit. Planar entities stay in the record's OCS. Null when the
  * record cannot take the new entity as is (another type, a POLYLINE, a missing group): it is then written fresh.
  */
-function patched(c: Ctx, e: Entity, text: string, nl: string): string | null {
+function patched(c: Ctx, e: Entity, was: Entity, text: string, nl: string): string | null {
   const p = tokenize(text)
   if (!p.is(0, 0, DXF_NAME[e.type]) || e.type === 'opaque') return null
   const gs: [number, string][] = []
@@ -336,6 +358,29 @@ function patched(c: Ctx, e: Entity, text: string, nl: string): string | null {
       else ok = false
       break
     }
+    case 'insert': {
+      if (e.block.name !== (was as Insert).block.name) ok = set(2, e.block.name) && ok
+      // Seen from -Z, x, the X scale, the turn and the column spacing are the other way round (as read).
+      const groups: [number, string, string][] = [
+        [10, real(s * e.x), ''], [20, real(e.y), ''], [41, real(s * e.sx), '1.0'], [42, real(e.sy), '1.0'],
+        [50, real(e.rotation === 0 ? 0 : deg(s * e.rotation)), '0.0'], [70, String(e.cols), '1'], [71, String(e.rows), '1'],
+        [44, real(s * e.dx), '0.0'], [45, real(e.dy), '0.0'],
+      ]
+      // A group the record lacks goes after the one before it in this list (or after 20, 30); a default needs none.
+      let after = gs.findIndex((g) => g[0] === 30)
+      for (const [code, v, none] of groups) {
+        const k = at(code)
+        if (k >= 0) {
+          gs[k]![1] = v
+          after = k
+        } else if (code === 10 || code === 20) ok = false
+        else if (v !== none) {
+          if (after < 0) after = at(20)
+          gs.splice(++after, 0, [code, v])
+        }
+      }
+      break
+    }
     case 'polyline': {
       const VERTEX = new Set([10, 20, 40, 41, 42, 91])
       const first = gs.findIndex((g) => VERTEX.has(g[0]))
@@ -369,7 +414,67 @@ function patched(c: Ctx, e: Entity, text: string, nl: string): string | null {
     out.str(code, v)
     if (k === layerAt) out.raw(colors.text())
   })
+  if (e.type !== 'insert') return out.text()
+  // Its attributes (ATTRIB … SEQEND) follow it: moved as the edit moved the insert.
+  const old = insertAffines(was as Insert)[0]!
+  const now = insertAffines(e)[0]!
+  const move = compose(now, invert(old))
+  let i = 1
+  while (i < p.length && p.code(i) !== 0) i++
+  while (i < p.length) {
+    const name = p.value(i).trim()
+    const child: [number, string][] = []
+    for (i++; i < p.length && p.code(i) !== 0; i++) child.push([p.code(i), p.value(i)])
+    out.str(0, name)
+    for (const [code, v] of name === 'ATTRIB' ? movedText(child, move) : child) out.str(code, v)
+  }
   return out.text()
+}
+
+/** a after b. */
+const compose = (a: Affine, b: Affine): Affine => ({
+  a: a.a * b.a + a.c * b.b, b: a.b * b.a + a.d * b.b, c: a.a * b.c + a.c * b.d, d: a.b * b.c + a.d * b.d,
+  e: a.a * b.e + a.c * b.f + a.e, f: a.b * b.e + a.d * b.f + a.f,
+})
+
+function invert(m: Affine): Affine {
+  const det = affineDet(m)
+  const a = m.d / det
+  const b = -m.b / det
+  const c = -m.c / det
+  const d = m.a / det
+  return { a, b, c, d, e: -(a * m.e + c * m.f), f: -(b * m.e + d * m.f) }
+}
+
+/**
+ * A text record's groups (an attribute) moved by m: its points, its height by the scale, its rotation by the turn.
+ * A mirror leaves the rotation, so the text still reads left to right (AutoCAD's MIRRTEXT 0). In its OCS (±Z).
+ */
+function movedText(gs: [number, string][], m: Affine): [number, string][] {
+  const z = gs.find((g) => g[0] === 230)
+  const s = z && Number(z[1]) < 0 ? -1 : 1
+  const det = affineDet(m)
+  const out = gs.map((g): [number, string] => [g[0], g[1]])
+  const at = (code: number): number => out.findIndex((g) => g[0] === code)
+  for (const [cx, cy] of [[10, 20], [11, 21]] as const) {
+    const i = at(cx)
+    const j = at(cy)
+    if (i < 0 || j < 0) continue
+    const p = applyAffine(m, s * Number(out[i]![1]), Number(out[j]![1]))
+    out[i]![1] = real(s * p.x)
+    out[j]![1] = real(p.y)
+  }
+  const h = at(40)
+  if (h >= 0) out[h]![1] = real(Number(out[h]![1]) * Math.sqrt(Math.abs(det)))
+  const r = at(50)
+  const turn = Math.atan2(m.b, m.a)
+  if (det > 0 && turn !== 0) {
+    const was = r >= 0 ? (s * Number(out[r]![1]) * Math.PI) / 180 : 0
+    const v = real(deg(s * (was + turn)))
+    if (r >= 0) out[r]![1] = v
+    else if (at(40) >= 0) out.splice(at(40) + 1, 0, [50, v])
+  }
+  return out
 }
 
 function writeEntities(c: Ctx, source: DxfSource | null): void {
@@ -386,7 +491,7 @@ function writeEntities(c: Ctx, source: DxfSource | null): void {
     }
     const handle = span ? source!.handleOf(e.id) : null
     if (span && handle !== null) {
-      const p = patched(c, e, source!.text.slice(span.start, span.end), source!.newline)
+      const p = patched(c, e, span.entity, source!.text.slice(span.start, span.end), source!.newline)
       if (p !== null) {
         c.o.raw(p)
         continue

@@ -1,6 +1,7 @@
 import { arcType } from './arc'
 import { circleType } from './circle'
 import { ellipseType } from './ellipse'
+import { insertType } from './insert'
 import { lineType } from './line'
 import { opaqueType } from './opaque'
 import { pointType } from './point'
@@ -29,3 +30,4 @@ register(pointType)
 register(opaqueType)
 register(ellipseType)
 register(splineType)
+register(insertType)

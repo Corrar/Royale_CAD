@@ -97,10 +97,48 @@ export interface Spline extends Base {
   readonly closed: boolean
 }
 
-export type Entity = Line | Circle | Arc | Polyline | Point | Opaque | Ellipse | Spline
+/** ByBlock, in a block's entities only: the color of the insert that shows them. */
+export const BY_BLOCK = 0
+
+/**
+ * A block definition (DXF BLOCK): what inserts show, in its own coordinates. Never changes once made; inserts hold
+ * it, not its name.
+ */
+export interface Block {
+  readonly name: string
+  /** The base point: where the insertion point of an insert lands. */
+  readonly x: number
+  readonly y: number
+  /** On the document's layers; on layer 0 they take the insert's layer, and ByBlock (BY_BLOCK) its color. */
+  readonly entities: readonly BlockEntity[]
+}
+
+/** An entity of a block: no id, it is not in the document. */
+export type BlockEntity = Entity extends infer E ? (E extends Entity ? Omit<E, 'id'> : never) : never
+
+/**
+ * A block reference (DXF INSERT, and MINSERT's grid): the block moved so that its base point lands on (x, y),
+ * scaled by sx, sy and turned by rotation (radians, counter-clockwise). A grid has cols × rows copies, dx and dy
+ * apart along the turned axes.
+ */
+export interface Insert extends Base {
+  readonly type: 'insert'
+  readonly block: Block
+  readonly x: number
+  readonly y: number
+  readonly sx: number
+  readonly sy: number
+  readonly rotation: number
+  readonly cols: number
+  readonly rows: number
+  readonly dx: number
+  readonly dy: number
+}
+
+export type Entity = Line | Circle | Arc | Polyline | Point | Opaque | Ellipse | Spline | Insert
 
 /** Object snap modes, as bits (AutoCAD's OSMODE uses its own values; these are ours). */
-export const SNAP = { END: 1, MID: 2, CEN: 4, INT: 8, QUA: 16, PER: 32, NEA: 64, NOD: 128 } as const
+export const SNAP = { END: 1, MID: 2, CEN: 4, INT: 8, QUA: 16, PER: 32, NEA: 64, NOD: 128, INS: 256 } as const
 
 /** Receives a snap point and the single mode it belongs to. */
 export type SnapSink = (x: number, y: number, mode: number) => void
@@ -109,6 +147,8 @@ export type SnapSink = (x: number, y: number, mode: number) => void
 export interface PrimSink {
   segment(x0: number, y0: number, x1: number, y1: number): void
   arc(cx: number, cy: number, r: number, a0: number, sweep: number): void
+  /** The primitives that follow are on this layer, in this color (undefined: ByLayer): an insert's entities. */
+  look?(layer: number, color: Color | undefined): void
 }
 
 export interface EntityType<E extends Entity> {
@@ -119,8 +159,8 @@ export interface EntityType<E extends Entity> {
    * curve's size; with clip, a flattened curve may leave out what cannot reach it. Exact primitives ignore both.
    */
   primitives(e: E, tol: number, out: PrimSink, clip?: BBox): void
-  /** A curve flattened on the CPU (free): the scene flattens it again for the zoom, the visible part only. */
-  readonly free?: true
+  /** Drawn by curves flattened on the CPU (free): the scene flattens it again for the zoom, the visible part only. */
+  free?(e: E): boolean
   distance(e: E, p: Vec2): number
   /** The point of e nearest p, where primitives at the default tolerance would not be exact enough. */
   nearest?(e: E, p: Vec2): Vec2

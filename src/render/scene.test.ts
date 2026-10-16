@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { trueColor } from '../kernel/color'
+import { colorRgb, trueColor } from '../kernel/color'
 import { createDocument, type Document, type Draft } from '../kernel/document'
 import { typeOf } from '../kernel/entity/registry'
-import type { Ellipse, Entity } from '../kernel/entity/types'
+import { BY_BLOCK, type Block, type Ellipse, type Entity } from '../kernel/entity/types'
 import { segmentDistance } from '../kernel/geom/vec'
 import type { ViewState } from '../kernel/view'
 import { ARC_STRIDE, SEGMENT_STRIDE, STYLE_WORDS, arcSubdiv, type Draw, type RenderBackend } from './backend'
@@ -539,6 +539,36 @@ describe('createScene', () => {
       })
       expect(drawn(f, scene.draws(v)).filter((i) => i.v[1]! > -5 || i.style === 1)).toEqual([])
     })
+  })
+
+  it('an insert draws its block, each primitive in the style of the layer and color it resolves to', () => {
+    const { doc, f, scene } = setup()
+    const walls = doc.layers.add({ name: 'Walls', color: 1, visible: true, locked: false })
+    const plan = doc.layers.add({ name: 'Plan', color: 3, visible: true, locked: false })
+    const block: Block = {
+      name: 'B', x: 0, y: 0,
+      entities: [
+        { type: 'line', layer: 0, color: BY_BLOCK, x0: 0, y0: 0, x1: 1, y1: 0 },
+        { type: 'circle', layer: walls, color: 5, cx: 0, cy: 0, r: 1 },
+        { type: 'line', layer: walls, x0: 0, y0: 1, x1: 1, y1: 1 },
+        { type: 'line', layer: 0, x0: 0, y0: 2, x1: 1, y1: 2 },
+      ],
+    }
+    doc.transact('draw', (tx) => void tx.add({ type: 'insert', layer: plan, color: 2, block, x: 10, y: 0, sx: 1, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }))
+    const rgba = (i: Instance): number => f.styles()[i.style * STYLE_WORDS]!
+    const aci = (n: number): number => ((colorRgb(n) << 8) | 0xff) >>> 0
+    const is = drawn(f, scene.draws(view(10, 0, 10)))
+    const line = (y: number): Instance => is.find((i) => i.kind === 'segment' && i.v[1] === y)!
+    expect(rgba(line(0))).toBe(aci(2)) // ByBlock: the insert's yellow
+    expect(rgba(is.find((i) => i.kind === 'arc')!)).toBe(aci(5))
+    expect(rgba(line(1))).toBe(aci(1)) // ByLayer on Walls: red
+    expect(rgba(line(2))).toBe(aci(3)) // layer 0 ByLayer: the insert's layer, and that layer's green
+    expect(line(0).v).toEqual([10, 0, 11, 0])
+    // Unevenly scaled, the circle is chords from the free layer.
+    doc.transact('stretch', (tx) => tx.replace({ ...(doc.get(1) as Entity & { sx: number }), sx: 3 } as Entity))
+    const stretched = drawn(f, scene.draws(view(10, 0, 10)))
+    expect(stretched.some((i) => i.kind === 'arc')).toBe(false)
+    expect(stretched.filter((i) => rgba(i) === aci(5)).length).toBeGreaterThan(8)
   })
 
   it('a highlighted primitive too big for f32 is re-emitted on top, in the highlight style', () => {

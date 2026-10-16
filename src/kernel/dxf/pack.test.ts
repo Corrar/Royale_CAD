@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Draft } from '../document'
 import { TRUE_COLOR } from '../color'
+import { BY_BLOCK, type Block, type Insert } from '../entity/types'
 import { packBuffers, packDrafts, unpackDrafts } from './pack'
 
 const DRAFTS: Draft[] = [
@@ -16,7 +17,25 @@ const DRAFTS: Draft[] = [
   { type: 'spline', layer: 1, degree: 1, closed: true, knots: Float64Array.of(0, 0, 1, 1), ctrl: Float64Array.of(0, 0, 1, 2), weights: Float64Array.of(1, 3) },
 ]
 
+const A: Block = { name: 'A', x: 1, y: 1, entities: [{ type: 'line', layer: 0, color: BY_BLOCK, x0: 1, y0: 1, x1: 3, y1: 1 }, { type: 'circle', layer: 2, cx: 0, cy: 0, r: 1 }] }
+const B: Block = {
+  name: 'B', x: 0, y: 0,
+  entities: [{ type: 'insert', layer: 0, color: BY_BLOCK, block: A, x: 10, y: 0, sx: 2, sy: 2, rotation: 1, cols: 1, rows: 1, dx: 0, dy: 0 }],
+}
+const ins = (block: Block, x: number): Omit<Insert, 'id'> => ({ type: 'insert', layer: 1, block, x, y: 0, sx: 1, sy: -1, rotation: 0.5, cols: 2, rows: 3, dx: 4, dy: 5 })
+
 describe('packDrafts', () => {
+  it('carries inserts with their blocks, nested ones too; one block read back is one object', () => {
+    const drafts = [ins(B, 1), ins(A, 2), ins(B, 3)]
+    const p = structuredClone(packDrafts(drafts))
+    expect(p.n).toBe(3)
+    const back = unpackDrafts(p, 0, p.n) as Omit<Insert, 'id'>[]
+    expect(back).toEqual(drafts)
+    expect(back[0]!.block).toBe(back[2]!.block)
+    expect((back[0]!.block.entities[0] as Omit<Insert, 'id'>).block).toBe(back[1]!.block)
+    expect(unpackDrafts(p, 1, 3)[0]).toEqual(drafts[1])
+  })
+
   it('unpacks to the same drafts, whole or in slices', () => {
     const p = structuredClone(packDrafts(DRAFTS))
     expect(unpackDrafts(p, 0, p.n)).toEqual(DRAFTS)

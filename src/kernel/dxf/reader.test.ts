@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { TRUE_COLOR } from '../color'
-import type { Arc, Circle, Ellipse, Entity, Line, Opaque, Point, Polyline, Spline } from '../entity/types'
+import { BY_BLOCK, type Arc, type Circle, type Ellipse, type Entity, type Insert, type Line, type Opaque, type Point, type Polyline, type Spline } from '../entity/types'
 import { createDocument } from '../document'
 import { drawingFrom, loader, parseDxf, readDxf } from './reader'
 
@@ -94,7 +94,7 @@ describe('readDxf', () => {
     expect(h).toMatchObject({ type: 'opaque', name: 'HATCH', color: 2, raw: lines(hatch), layer: d.doc.layers.indexOf('Hatch') })
     expect(ins).toMatchObject({ type: 'opaque', name: 'INSERT', raw: lines(insert) })
     expect(p).toMatchObject({ type: 'opaque', name: 'LINE', raw: lines(paper) })
-    expect(d.warnings).toEqual(['1 HATCH kept as is (not drawn).', '1 INSERT kept as is (not drawn).', '1 entity in paper space kept as is (not drawn).'])
+    expect(d.warnings).toEqual(['line 43: INSERT kept as is: block DOOR is not defined.', '1 HATCH kept as is (not drawn).', '1 entity in paper space kept as is (not drawn).'])
   })
 
   it('ELLIPSE: in WCS; an extrusion of (0, 0, -1) runs it the other way; 0 to 2π is the whole ellipse', () => {
@@ -134,6 +134,62 @@ describe('readDxf', () => {
     expect(d.warnings.join(' ')).toMatch(/3D/)
     expect(d.warnings.join(' ')).toMatch(/fit points/)
     expect(d.warnings.join(' ')).toMatch(/knots/)
+  })
+
+  it('BLOCK and INSERT: nested blocks with their base points, layer 0 and ByBlock kept for the insert, -Z, grids', () => {
+    const blocks: G = [
+      0, 'BLOCK', 8, '0', 2, 'A', 70, 0, 10, 1, 20, 1, 30, 0, 3, 'A',
+      0, 'LINE', 8, '0', 62, 0, 10, 1, 20, 1, 11, 3, 21, 1,
+      0, 'CIRCLE', 8, 'Walls', 62, 3, 10, 2, 20, 2, 40, 1,
+      0, 'HATCH', 8, '0', 2, 'SOLID',
+      0, 'ENDBLK', 8, '0',
+      0, 'BLOCK', 8, '0', 2, 'b', 70, 0, 10, 0, 20, 0,
+      0, 'INSERT', 8, '0', 62, 0, 2, 'a', 10, 10, 20, 0, 41, 2, 42, 2, 50, 90,
+      0, 'LINE', 8, 'Doors', 10, 0, 20, 0, 11, 0, 21, 5,
+      0, 'ENDBLK',
+      0, 'BLOCK', 8, '0', 2, 'LOOP', 70, 0, 10, 0, 20, 0,
+      0, 'INSERT', 8, '0', 2, 'LOOP', 10, 0, 20, 0,
+      0, 'ENDBLK',
+      0, 'BLOCK', 8, '0', 2, 'X', 70, 4, 10, 0, 20, 0, 1, 'other.dwg',
+      0, 'ENDBLK',
+    ]
+    const entities: G = [
+      0, 'INSERT', 8, 'Plan', 62, 6, 2, 'B', 10, 100, 20, 50, 41, 0.5, 42, 0.5, 50, 30,
+      0, 'INSERT', 8, '0', 2, 'A', 10, 10, 20, 20, 50, 30, 210, 0, 220, 0, 230, -1,
+      0, 'INSERT', 8, '0', 2, 'A', 10, 0, 20, 0, 70, 2, 71, 3, 44, 10, 45, 20,
+      0, 'INSERT', 8, '0', 2, 'LOOP', 10, 0, 20, 0,
+      0, 'INSERT', 8, '0', 2, 'NOPE', 10, 0, 20, 0,
+      0, 'INSERT', 8, '0', 2, 'X', 10, 0, 20, 0,
+    ]
+    const text = lines([
+      0, 'SECTION', 2, 'BLOCKS', ...blocks, 0, 'ENDSEC',
+      0, 'SECTION', 2, 'ENTITIES', ...entities, 0, 'ENDSEC', 0, 'EOF',
+    ])
+    const d = readDxf(text)
+    const [b, mirrored, grid, ...kept] = all(d) as [Insert, Insert, Insert, Opaque, Opaque, Opaque]
+    const L = (name: string): number => d.doc.layers.indexOf(name)
+    expect(b).toMatchObject({ type: 'insert', layer: L('Plan'), color: 6, x: 100, y: 50, sx: 0.5, sy: 0.5, cols: 1, rows: 1 })
+    expect(b.rotation).toBeCloseTo(Math.PI / 6, 12)
+    expect(b.block).toMatchObject({ name: 'b', x: 0, y: 0 })
+    const [nested, door] = b.block.entities as [Omit<Insert, 'id'>, Omit<Line, 'id'>]
+    expect(nested).toMatchObject({ type: 'insert', layer: 0, color: BY_BLOCK, x: 10, y: 0, sx: 2, sy: 2 })
+    expect(door).toMatchObject({ type: 'line', layer: L('Doors'), x1: 0, y1: 5 })
+    // A: its base, a ByBlock line on layer 0, a circle; the HATCH is not drawn.
+    expect(nested.block).toMatchObject({ name: 'A', x: 1, y: 1 })
+    expect(nested.block.entities).toEqual([
+      { type: 'line', layer: 0, color: BY_BLOCK, x0: 1, y0: 1, x1: 3, y1: 1 },
+      { type: 'circle', layer: L('Walls'), color: 3, cx: 2, cy: 2, r: 1 },
+    ])
+    // The same block, read once.
+    expect(mirrored.block).toBe(nested.block)
+    // Seen from -Z: x mirrored, the turn and the X scale reversed.
+    expect(mirrored).toMatchObject({ x: -10, y: 20, sx: -1, sy: 1 })
+    expect(mirrored.rotation).toBeCloseTo(2 * Math.PI - Math.PI / 6, 12)
+    expect(grid).toMatchObject({ cols: 2, rows: 3, dx: 10, dy: 20 })
+    expect(kept.map((k) => k.type)).toEqual(['opaque', 'opaque', 'opaque'])
+    expect(d.warnings.join(' ')).toMatch(/LOOP/)
+    expect(d.warnings.join(' ')).toMatch(/NOPE/)
+    expect(d.warnings.join(' ')).toMatch(/external/)
   })
 
   it('layers: color, off, frozen, locked and true color from the table; an unknown layer is created', () => {

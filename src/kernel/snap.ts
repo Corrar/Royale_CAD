@@ -13,7 +13,7 @@ export { SNAP } from './entity/types'
 export const APERTURE_PX = 10
 
 /** When two snap points are equally near, the earlier mode wins. */
-const PRIORITY = [SNAP.END, SNAP.MID, SNAP.CEN, SNAP.INT, SNAP.QUA, SNAP.PER, SNAP.NEA, SNAP.NOD]
+const PRIORITY = [SNAP.END, SNAP.MID, SNAP.CEN, SNAP.INT, SNAP.QUA, SNAP.INS, SNAP.PER, SNAP.NEA, SNAP.NOD]
 const rank = (mode: number): number => PRIORITY.indexOf(mode as (typeof PRIORITY)[number])
 
 export interface SnapHit { p: Vec2; mode: number; id: number }

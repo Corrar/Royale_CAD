@@ -103,7 +103,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: OverlayState, them
 
 /**
  * AutoCAD's marker shapes, traced into the current path: square END, triangle MID, circle CEN, cross INT,
- * diamond QUA, right angle PER, hourglass NEA, crossed circle NOD.
+ * diamond QUA, right angle PER, hourglass NEA, crossed circle NOD, two squares INS.
  */
 function marker(ctx: CanvasRenderingContext2D, mode: number, x: number, y: number, k: number): void {
   const cross = (): void => {
@@ -150,6 +150,11 @@ function marker(ctx: CanvasRenderingContext2D, mode: number, x: number, y: numbe
       ctx.moveTo(x + k, y)
       ctx.arc(x, y, k, 0, 2 * Math.PI)
       return cross()
+    case SNAP.INS:
+      // Two squares, one over the other's corner.
+      ctx.rect(x - k, y - k, k, k)
+      ctx.rect(x - k / 2, y - k / 2, 1.5 * k, 1.5 * k)
+      return
     default:
       ctx.arc(x, y, k, 0, 2 * Math.PI)
   }

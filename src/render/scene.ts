@@ -212,9 +212,9 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     if (st === styles) stylesDirty = true
   }
 
-  function styleIn(st: Styles, e: Entity): number {
+  function styleIn(st: Styles, layer: number, color: Color | undefined): number {
     // Colors fit in 25 bits and 0 is not a color, so it stands for ByLayer.
-    const key = e.layer * 2 ** 25 + (e.color ?? 0)
+    const key = layer * 2 ** 25 + (color ?? 0)
     let id = st.byKey.get(key)
     if (id === undefined) {
       id = st.count++
@@ -224,13 +224,15 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         st.table = t
       }
       st.byKey.set(key, id)
-      st.layer[id] = e.layer
-      st.color[id] = e.color
+      st.layer[id] = layer
+      st.color[id] = color
       writeRow(st, id)
     }
     return id
   }
-  const styleOf = (e: Entity): number => styleIn(styles, e)
+  const styleOf = (e: Entity): number => styleIn(styles, e.layer, e.color)
+  /** The style of an insert's primitive (PrimSink.look). */
+  const lookOf = (layer: number, color: Color | undefined): number => styleIn(styles, layer, color)
 
   const offLayers = doc.layers.onChange((index) => {
     for (const st of buildingStyles ? [styles, buildingStyles] : [styles]) {
@@ -241,7 +243,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   })
 
   // --- free curves (ellipses, splines): flattened on the CPU for the zoom band, near the view only -------------
-  const isFree = (e: Entity): boolean => typeOf(e).free === true
+  const isFree = (e: Entity): boolean => typeOf(e).free?.(e) === true
   const freeIds = new Set<number>()
   for (const e of doc.entities()) if (isFree(e)) freeIds.add(e.id)
   /** The zoom band and the region the free batch was flattened for; null when it must be flattened again. */
@@ -262,8 +264,10 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     const h = rect.maxY - rect.minY
     const region = { minX: rect.minX - w, minY: rect.minY - h, maxX: rect.maxX + w, maxY: rect.maxY + h }
     let n = 0
-    const flatten = (e: Entity, style: number): void => {
-      if (!doc.layers.get(e.layer)!.visible || !bboxIntersects(typeOf(e).bbox(e), region)) return
+    const flatten = (e: Entity, highlighted: boolean): void => {
+      // An insert shows what is on other layers even when its own is off.
+      if ((e.type !== 'insert' && !doc.layers.get(e.layer)!.visible) || !bboxIntersects(typeOf(e).bbox(e), region)) return
+      let style = highlighted ? HIGHLIGHT_STYLE : styleOf(e)
       typeOf(e).primitives(e, tol, {
         segment(x0, y0, x1, y1) {
           if (5 * n === chords.length) {
@@ -274,11 +278,14 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
           chords.set([x0, y0, x1, y1, style], 5 * n++)
         },
         arc() {},
+        look(layer, color) {
+          if (!highlighted) style = lookOf(layer, color)
+        },
       }, region)
     }
-    for (const id of freeIds) flatten(doc.get(id)!, styleOf(doc.get(id)!))
+    for (const id of freeIds) flatten(doc.get(id)!, false)
     freeMain = n
-    for (const id of highlight) if (freeIds.has(id)) flatten(doc.get(id)!, HIGHLIGHT_STYLE)
+    for (const id of highlight) if (freeIds.has(id)) flatten(doc.get(id)!, true)
     freeCount = n
     if (n > 0 && (!freeBatch || freeBatch.capacity < n)) {
       if (freeBatch) backend.destroyBatch(freeBatch.batch)
@@ -390,8 +397,11 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
 
   function addEntity(e: Entity): void {
     if (isFree(e)) return // the free batch draws it
-    const style = styleOf(e)
+    let style = styleOf(e)
     typeOf(e).primitives(e, 0, {
+      look(layer, color) {
+        style = lookOf(layer, color)
+      },
       segment(x0, y0, x1, y1) {
         const b = { minX: Math.min(x0, x1), minY: Math.min(y0, y1), maxX: Math.max(x0, x1), maxY: Math.max(y0, y1) }
         place('segment', 0, e.id, b, Math.hypot(x1 - x0, y1 - y0), (p, s) => writeSegment(p.f32, p.u32, s, x0, y0, x1, y1, style))
@@ -535,7 +545,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
   }
 
   /** Gathers the primitives of `entities` and packs them into `into`, yielding now and then. Returns the count. */
-  function* packAll(entities: Iterable<Entity>, styleFor: (e: Entity) => number, into: Pool[], sizeHint: number, hs: Handles | null): Generator<void, number> {
+  function* packAll(entities: Iterable<Entity>, styleFor: (layer: number, color: Color | undefined) => number, into: Pool[], sizeHint: number, hs: Handles | null): Generator<void, number> {
     const segs = new Columns(4, Math.max(16, sizeHint))
     const arcs = new Columns(5, 16)
     let style = 0
@@ -556,12 +566,15 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         arcs.v[o + 3] = a0
         arcs.v[o + 4] = sweep
       },
+      look(layer, color) {
+        style = styleFor(layer, color)
+      },
     }
     let k = 0
     for (const e of entities) {
       if (++k % GATHER_STEP === 0) yield
       if (isFree(e)) continue // the free batch draws it
-      style = styleFor(e)
+      style = styleFor(e.layer, e.color)
       owner = e.id
       typeOf(e).primitives(e, 0, sink)
     }
@@ -582,7 +595,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     const st = newStyles()
     buildingStyles = st
     const hs: Handles = { one: new Float64Array(handles.one.length), multi: new Map() }
-    const packedLive = yield* packAll(doc.entities(), (e) => styleIn(st, e), into, doc.size, hs)
+    const packedLive = yield* packAll(doc.entities(), (layer, color) => styleIn(st, layer, color), into, doc.size, hs)
     return { pools: into, handles: hs, styles: st, packedLive }
   }
 
@@ -675,7 +688,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
    * Collects, clipped to `rect` and flattened in f64, the visible primitives of `list` whose extent on screen is
    * past half the shader's limit. Between half and the full limit both copies draw, over the same pixels.
    */
-  function collectClipped(list: readonly Pool[], view: ViewState, rect: BBox, styleFor: (e: Entity) => number): void {
+  function collectClipped(list: readonly Pool[], view: ViewState, rect: BBox, styleFor: (layer: number, color: Color | undefined) => number): void {
     const ppu = view.scale * view.dpr
     const segLimit = MAX_SEGMENT_PX / 2 / ppu
     const arcLimit = MAX_ARC_RADIUS_PX / 2 / ppu
@@ -711,8 +724,11 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
     }
     for (const id of ids) {
       const e = doc.get(id)!
-      const style = styleFor(e)
+      let style = styleFor(e.layer, e.color)
       typeOf(e).primitives(e, 0, {
+        look(layer, color) {
+          style = styleFor(layer, color)
+        },
         segment(x0, y0, x1, y1) {
           if (Math.hypot(x1 - x0, y1 - y0) <= segLimit) return
           const c = clipSegment(rect, x0, y0, x1, y1)
@@ -797,7 +813,7 @@ export function createScene(doc: Document, backend: RenderBackend, opts: SceneOp
         stylesDirty = false
       }
       clipCount = 0
-      collectClipped(pools, view, rect, styleOf)
+      collectClipped(pools, view, rect, lookOf)
       const mainClipped = clipCount
       collectClipped(hlPools, view, rect, () => HIGHLIGHT_STYLE)
       const clipBatch = uploadClipped()

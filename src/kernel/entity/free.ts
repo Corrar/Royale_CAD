@@ -14,7 +14,7 @@ export function freeCurve<E extends Entity>(
   size: (e: E) => number,
 ): Pick<EntityType<E>, 'primitives' | 'free' | 'distance' | 'nearest'> {
   return {
-    free: true,
+    free: () => true,
     primitives(e: E, tol: number, out: PrimSink, clip?: BBox) {
       flattenPieces(pieces(e), tol > 0 ? tol : DEFAULT_TOL * size(e), clip ?? null, (x0, y0, x1, y1) => out.segment(x0, y0, x1, y1))
     },

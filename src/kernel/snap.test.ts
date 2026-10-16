@@ -135,6 +135,14 @@ describe('snap', () => {
     expect([hit.p.x, hit.p.y, hit.mode, hit.id]).toEqual([0, 15, SNAP.PER, ids[1]])
   })
 
+  it('INS: the insertion point of a block reference, ranked after QUA', () => {
+    const block = { name: 'B', x: 0, y: 0, entities: [{ type: 'line', layer: 0, x0: 0, y0: 0, x1: 1, y1: 0 }] } as const
+    const { doc, index, ids } = setup([{ type: 'insert', layer: 0, block, x: 2, y: 3, sx: 1, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }])
+    // At the insertion point END (the line's start) is there too and wins; INS alone answers when asked alone.
+    expect(snap(doc, index, { x: 2.1, y: 3 }, VIEW, SNAP.INS | SNAP.END, 10)).toMatchObject({ p: { x: 2, y: 3 }, mode: SNAP.END })
+    expect(snap(doc, index, { x: 2.1, y: 3 }, VIEW, SNAP.INS, 10)).toMatchObject({ p: { x: 2, y: 3 }, mode: SNAP.INS, id: ids[0] })
+  })
+
   it('NEA on a free curve (ellipse) lands on it at any zoom, not on a coarse flattening of it', () => {
     const { doc, index, ids } = setup([{ type: 'ellipse', layer: 0, cx: 0, cy: 0, mx: 1e6, my: 0, ratio: 0.5, t0: 0, t1: 0 }])
     // 1000 px per unit at a point of the ellipse; the cursor a few px off it.

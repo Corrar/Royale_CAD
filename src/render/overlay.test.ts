@@ -92,11 +92,11 @@ describe('drawOverlay', () => {
   })
 
   it('every snap mode has a marker of its own', () => {
-    const marks = [1, 2, 4, 8, 16, 32, 64, 128].map((mode) => {
+    const marks = [1, 2, 4, 8, 16, 32, 64, 128, 256].map((mode) => {
       const f = fakeContext()
       drawOverlay(f.ctx, state({ cursor: { x: 113, y: 52 }, snap: { p: { x: 1, y: 0 }, mode } }), THEME, 5)
       return JSON.stringify(f.calls)
     })
-    expect(new Set(marks).size).toBe(8)
+    expect(new Set(marks).size).toBe(9)
   })
 })
