@@ -434,6 +434,25 @@ describe('replace', () => {
     expect(doc.undo()).toBeUndefined()
   })
 
+  it('firstId: where the ids of the drawing put in place begin; undo never brings back one below it', () => {
+    const doc = createDocument()
+    expect(doc.firstId).toBe(1)
+    doc.transact('a', (tx) => void tx.add(L(0, 0, 1, 1)))
+    doc.transact('erase', (tx) => tx.remove(1))
+    expect(doc.firstId).toBe(1)
+    const seen: number[] = []
+    doc.onChange(() => seen.push(doc.firstId))
+    doc.replace([{ name: '0', color: 7, visible: true, locked: false }], [L(5, 5, 6, 6)])
+    expect(doc.firstId).toBe(2)
+    expect(seen).toEqual([2]) // already moved when the change goes out
+    doc.append([L(0, 0, 2, 2)])
+    doc.transact('b', (tx) => void tx.add(L(0, 0, 3, 3)))
+    doc.undo()
+    expect(doc.undo()).toBeUndefined()
+    expect(Math.min(...[...doc.entities()].map((e) => e.id))).toBe(2)
+    expect(doc.firstId).toBe(2)
+  })
+
   it('an invalid layer or draft changes nothing', () => {
     const doc = createDocument()
     doc.transact('a', (tx) => void tx.add(L(0, 0, 1, 1)))
