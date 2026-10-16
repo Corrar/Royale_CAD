@@ -155,6 +155,26 @@ describe('snap', () => {
     expect(hit!.p.x).toBeCloseTo(0.03, 9)
   })
 
+  it('INT: where a polyline crosses itself, open or closed, and at its corners, as separate lines would', () => {
+    const app = SNAP.END | SNAP.MID | SNAP.CEN | SNAP.INT | SNAP.PER
+    const open = setup([{ type: 'polyline', layer: 0, pts: Float64Array.of(0, 0, 10, 10, 10, 0, 0, 6), bulges: null, closed: false }])
+    for (const modes of [SNAP.INT, app]) {
+      const hit = snap(open.doc, open.index, { x: 3.8, y: 3.7 }, VIEW, modes, 10)!
+      expect([r9(hit.p.x), r9(hit.p.y), hit.mode, hit.id]).toEqual([3.75, 3.75, SNAP.INT, open.ids[0]])
+    }
+    // A bow tie, closed: its first and third sides cross.
+    const bow = setup([{ type: 'polyline', layer: 0, pts: Float64Array.of(0, 0, 10, 6, 10, 0, 0, 10), bulges: null, closed: true }])
+    const hit = snap(bow.doc, bow.index, { x: 6.3, y: 3.7 }, VIEW, SNAP.INT, 10)!
+    expect([r9(hit.p.x), r9(hit.p.y), hit.mode]).toEqual([6.25, 3.75, SNAP.INT])
+    // A corner is where two of its pieces meet; END, asked too, wins the tie there.
+    expect(snap(open.doc, open.index, { x: 9.7, y: 9.6 }, VIEW, SNAP.INT, 10)).toMatchObject({ p: { x: 10, y: 10 }, mode: SNAP.INT })
+    expect(snap(open.doc, open.index, { x: 9.7, y: 9.6 }, VIEW, app, 10)).toMatchObject({ p: { x: 10, y: 10 }, mode: SNAP.END })
+    // A lone line or circle never meets itself.
+    const lone = setup([line(0, 0, 10, 0), { type: 'circle', layer: 0, cx: 0, cy: 20, r: 5 }])
+    expect(snap(lone.doc, lone.index, { x: 4, y: 0.2 }, VIEW, SNAP.INT, 10)).toBeNull()
+    expect(snap(lone.doc, lone.index, { x: 5, y: 20.2 }, VIEW, SNAP.INT, 10)).toBeNull()
+  })
+
   it('PER: no zero-length perpendicular when the base lies on the object', () => {
     const { doc, index } = setup([line(0, 0, 10, 0)])
     expect(snap(doc, index, { x: 3, y: 0.05 }, VIEW, SNAP.PER, 10, { x: 0, y: 0 })).toBeNull()

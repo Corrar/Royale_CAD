@@ -153,12 +153,13 @@ export function snap(doc: Document, index: SpatialIndex, cursor: Vec2, view: Vie
     }
     if (modes & SNAP.PER && base && d <= r) feet(e, base, cursor, r, (x, y) => consider(x, y, SNAP.PER, id))
   }
-  // An intersection within the aperture lies on two curves that pass within it, on pieces that reach it.
-  if (modes & SNAP.INT && over.length > 1) {
+  // An intersection within the aperture lies on two curves that pass within it, on pieces that reach it. A
+  // polyline's pieces also meet one another, as separate lines would: at its corners and where it crosses itself.
+  if (modes & SNAP.INT && over.length > 0) {
     const aperture = { minX: cursor.x - r, minY: cursor.y - r, maxX: cursor.x + r, maxY: cursor.y + r }
     const near = over.sort((a, b) => a.d - b.d || a.e.id - b.e.id).slice(0, INT_MAX)
     for (let i = 0; i < near.length; i++) {
-      for (let j = i + 1; j < near.length; j++) {
+      for (let j = near[i]!.e.type === 'polyline' ? i : i + 1; j < near.length; j++) {
         for (const p of intersect(near[i]!.e, near[j]!.e, aperture)) {
           if (Math.hypot(p.x - cursor.x, p.y - cursor.y) <= r) consider(p.x, p.y, SNAP.INT, Math.min(near[i]!.e.id, near[j]!.e.id))
         }
