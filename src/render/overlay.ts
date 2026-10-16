@@ -77,19 +77,11 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: OverlayState, them
   }
 
   if (s.snap) {
-    // AutoCAD's marker shapes: square END, triangle MID, circle CEN.
     const m = worldToScreen(view, s.snap.p.x, s.snap.p.y)
-    const k = MARKER_PX
     ctx.lineWidth = 2
     ctx.strokeStyle = theme.snap
     ctx.beginPath()
-    if (s.snap.mode === SNAP.END) ctx.strokeRect(m.x - k, m.y - k, 2 * k, 2 * k)
-    else if (s.snap.mode === SNAP.MID) {
-      ctx.moveTo(m.x, m.y - k)
-      ctx.lineTo(m.x + k, m.y + k * 0.75)
-      ctx.lineTo(m.x - k, m.y + k * 0.75)
-      ctx.closePath()
-    } else ctx.arc(m.x, m.y, k, 0, 2 * Math.PI)
+    marker(ctx, s.snap.mode, m.x, m.y, MARKER_PX)
     ctx.stroke()
     ctx.lineWidth = 1
   }
@@ -104,4 +96,58 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: OverlayState, them
   ctx.strokeStyle = theme.crosshair
   ctx.stroke()
   if (s.pickbox) ctx.strokeRect(x - pickboxPx, y - pickboxPx, 2 * pickboxPx, 2 * pickboxPx)
+}
+
+/**
+ * AutoCAD's marker shapes, traced into the current path: square END, triangle MID, circle CEN, cross INT,
+ * diamond QUA, right angle PER, hourglass NEA, crossed circle NOD.
+ */
+function marker(ctx: CanvasRenderingContext2D, mode: number, x: number, y: number, k: number): void {
+  const cross = (): void => {
+    ctx.moveTo(x - k, y - k)
+    ctx.lineTo(x + k, y + k)
+    ctx.moveTo(x + k, y - k)
+    ctx.lineTo(x - k, y + k)
+  }
+  switch (mode) {
+    case SNAP.END:
+      ctx.rect(x - k, y - k, 2 * k, 2 * k)
+      return
+    case SNAP.MID:
+      ctx.moveTo(x, y - k)
+      ctx.lineTo(x + k, y + k * 0.75)
+      ctx.lineTo(x - k, y + k * 0.75)
+      ctx.closePath()
+      return
+    case SNAP.INT:
+      return cross()
+    case SNAP.QUA:
+      ctx.moveTo(x, y - k)
+      ctx.lineTo(x + k, y)
+      ctx.lineTo(x, y + k)
+      ctx.lineTo(x - k, y)
+      ctx.closePath()
+      return
+    case SNAP.PER:
+      ctx.moveTo(x - k, y - k)
+      ctx.lineTo(x - k, y + k)
+      ctx.lineTo(x + k, y + k)
+      ctx.moveTo(x - k, y)
+      ctx.lineTo(x, y)
+      ctx.lineTo(x, y + k)
+      return
+    case SNAP.NEA:
+      ctx.moveTo(x - k, y - k)
+      ctx.lineTo(x + k, y - k)
+      ctx.lineTo(x - k, y + k)
+      ctx.lineTo(x + k, y + k)
+      ctx.closePath()
+      return
+    case SNAP.NOD:
+      ctx.moveTo(x + k, y)
+      ctx.arc(x, y, k, 0, 2 * Math.PI)
+      return cross()
+    default:
+      ctx.arc(x, y, k, 0, 2 * Math.PI)
+  }
 }

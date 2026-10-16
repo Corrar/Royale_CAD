@@ -9,7 +9,8 @@ import { BUILTIN_COMMANDS } from './commands'
 import { createInterpreter, runScript, type Command, type InterpreterHost } from './runtime'
 
 /** A document, a selection and an interpreter wired like the app, with a fake view; for tests. */
-export function commandBench(commands: Readonly<Record<string, Command>> = BUILTIN_COMMANDS) {
+export function commandBench(commands: Readonly<Record<string, Command>> = BUILTIN_COMMANDS, opts: { snapModes?: number } = {}) {
+  const snapModes = opts.snapModes ?? (SNAP.END | SNAP.MID | SNAP.CEN)
   const doc = createDocument()
   const selection = createSelection()
   const index = createSpatialIndex(doc)
@@ -22,7 +23,7 @@ export function commandBench(commands: Readonly<Record<string, Command>> = BUILT
     extents: () => docExtents(doc),
     pick: (p) => pick(doc, index, p, 0.25),
     pickBox: (b, crossing) => pickBox(doc, index, b, crossing),
-    snap: (p) => snap(doc, index, p, view, SNAP.END | SNAP.MID | SNAP.CEN, 10),
+    snap: (p, base) => snap(doc, index, p, view, snapModes, 10, base),
     query: (b) => index.query(b),
   }
   const interp = createInterpreter(doc, selection, { commands, host })

@@ -1,4 +1,4 @@
-import { arcBBox, arcDistance, bulgeToArc } from '../geom/curve'
+import { arcBBox, arcDistance, arcQuadrants, bulgeToArc } from '../geom/curve'
 import { affineDet, applyAffine, bboxAdd, emptyBBox, segmentDistance } from '../geom/vec'
 import { SNAP, type EntityType, type Polyline, type PrimSink } from './types'
 
@@ -57,6 +57,7 @@ export const polylineType: EntityType<Polyline> = {
       })
     }
     if (modes & SNAP.CEN) pieces(e, { segment() {}, arc: (cx, cy) => out(cx, cy, SNAP.CEN) })
+    if (modes & SNAP.QUA) pieces(e, { segment() {}, arc: (cx, cy, r, a0, sweep) => arcQuadrants(cx, cy, r, a0, sweep, (x, y) => out(x, y, SNAP.QUA)) })
   },
   distance(e, p) {
     let d = e.pts.length >= 2 ? Math.hypot(p.x - e.pts[0]!, p.y - e.pts[1]!) : Infinity

@@ -76,8 +76,8 @@ export interface InterpreterHost {
   /** The entity under p, within the pick box. */
   pick?(p: Vec2): number | null
   pickBox?(b: BBox, crossing: boolean): number[]
-  /** The object snap under p, with the app's modes and aperture; null when none. */
-  snap?(p: Vec2): SnapHit | null
+  /** The object snap under p, with the app's modes and aperture; null when none. PER starts from base. */
+  snap?(p: Vec2, base?: Vec2): SnapHit | null
   /** The entities whose bbox meets b (the spatial index); a superset is fine. */
   query?(b: BBox): number[]
 }
@@ -228,7 +228,7 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
   function resolve(raw: Vec2): { p: Vec2; snap: SnapHit | null } {
     const r = request
     if (!r || (r.kind !== 'point' && r.kind !== 'number') || (r.kind === 'point' && r.pick)) return { p: raw, snap: null }
-    const hit = osnap ? (host.snap?.(raw) ?? null) : null
+    const hit = osnap ? (host.snap?.(raw, r.base) ?? null) : null
     if (hit) return { p: hit.p, snap: hit }
     const base = r.base
     if (ortho && base) {

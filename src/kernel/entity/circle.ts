@@ -1,3 +1,4 @@
+import { arcQuadrants } from '../geom/curve'
 import { TAU } from '../geom/tol'
 import { affineDet, applyAffine } from '../geom/vec'
 import { SNAP, type Circle, type EntityType } from './types'
@@ -13,6 +14,7 @@ export const circleType: EntityType<Circle> = {
   },
   snapPoints(e, modes, out) {
     if (modes & SNAP.CEN) out(e.cx, e.cy, SNAP.CEN)
+    if (modes & SNAP.QUA) arcQuadrants(e.cx, e.cy, e.r, 0, TAU, (x, y) => out(x, y, SNAP.QUA))
   },
   validate: (e) => (e.r > 0 ? undefined : `circle radius must be > 0, got ${e.r}`),
 }

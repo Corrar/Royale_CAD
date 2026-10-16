@@ -18,6 +18,7 @@ function setup(drafts: Draft[]) {
   return { doc, index: createSpatialIndex(doc), ids: es.map((e) => e.id) }
 }
 
+const r9 = (v: number): number => Math.round(v * 1e9) / 1e9 + 0
 const line = (x0: number, y0: number, x1: number, y1: number): Draft => ({ type: 'line', layer: 0, x0, y0, x1, y1 })
 
 describe('snapPointsOf', () => {
@@ -35,6 +36,14 @@ describe('snapPointsOf', () => {
 
   it('circle: the centre only', () => {
     expect(pts({ type: 'circle', layer: 0, cx: 3, cy: 4, r: 2 })).toEqual([[3, 4, SNAP.CEN]])
+  })
+
+  it('QUA: the quadrant points a circle, an arc or a bulged piece passes through', () => {
+    expect(pts({ type: 'circle', layer: 0, cx: 3, cy: 4, r: 2 }, SNAP.QUA)).toEqual([[5, 4, SNAP.QUA], [3, 6, SNAP.QUA], [1, 4, SNAP.QUA], [3, 2, SNAP.QUA]])
+    expect(pts({ type: 'arc', layer: 0, cx: 0, cy: 0, r: 2, a0: -0.1, a1: Math.PI / 2 - 0.1 }, SNAP.QUA)).toEqual([[2, 0, SNAP.QUA]])
+    const p: Draft = { type: 'polyline', layer: 0, pts: new Float64Array([0, 0, 2, 0]), bulges: new Float64Array([1, 0]), closed: false }
+    // The half circle below (0,0)–(2,0): both ends are quadrant points too.
+    expect(pts(p, SNAP.QUA)).toEqual([[2, 0, SNAP.QUA], [0, 0, SNAP.QUA], [1, -1, SNAP.QUA]])
   })
 
   it('arc: both ends, the middle of the arc and the centre', () => {
@@ -104,6 +113,35 @@ describe('snap', () => {
     const far = { x: 10.5, y: 0 } // 5 px at scale 10, 50 px at scale 100
     expect(snap(doc, index, far, VIEW, ALL, 10)).not.toBeNull()
     expect(snap(doc, index, far, { ...VIEW, scale: 100 }, ALL, 10)).toBeNull()
+  })
+
+  it('INT: where two objects near the cursor cross; an end there wins the tie', () => {
+    const { doc, index, ids } = setup([line(-10, 0, 10, 0), { type: 'circle', layer: 0, cx: 0, cy: 0, r: 5 }, line(5, 0, 5, -9)])
+    const hit = snap(doc, index, { x: 4.6, y: 0.3 }, VIEW, SNAP.INT, 10)!
+    expect([r9(hit.p.x), r9(hit.p.y), hit.mode]).toEqual([5, 0, SNAP.INT])
+    expect(snap(doc, index, { x: 4.6, y: 0.3 }, VIEW, SNAP.INT | SNAP.END, 10)).toMatchObject({ p: { x: 5, y: 0 }, mode: SNAP.END, id: ids[2] })
+    // Far from any crossing: nothing.
+    expect(snap(doc, index, { x: 8, y: 0.2 }, VIEW, SNAP.INT, 10)).toBeNull()
+  })
+
+  it('PER: the foot of the perpendicular from the base, with the cursor over the object', () => {
+    const { doc, index, ids } = setup([line(0, 0, 10, 0), { type: 'circle', layer: 0, cx: 0, cy: 20, r: 5 }])
+    expect(snap(doc, index, { x: 8, y: 0.3 }, VIEW, SNAP.PER, 10, { x: 3, y: 7 })).toEqual({ p: { x: 3, y: 0 }, mode: SNAP.PER, id: ids[0] })
+    expect(snap(doc, index, { x: 8, y: 0.3 }, VIEW, SNAP.PER, 10)).toBeNull() // no base, no perpendicular
+    // The foot past the end of the line is not on it.
+    expect(snap(doc, index, { x: 8, y: 0.3 }, VIEW, SNAP.PER, 10, { x: 13, y: 7 })).toBeNull()
+    // On a circle, along the line through the centre: the side nearer the cursor.
+    const hit = snap(doc, index, { x: 0.4, y: 15.2 }, VIEW, SNAP.PER, 10, { x: 0, y: 40 })!
+    expect([hit.p.x, hit.p.y, hit.mode, hit.id]).toEqual([0, 15, SNAP.PER, ids[1]])
+  })
+
+  it('NEA: the nearest point of the object, only when no other snap is in reach', () => {
+    const { doc, index, ids } = setup([line(0, 0, 10, 0), { type: 'arc', layer: 0, cx: 0, cy: 10, r: 2, a0: 0, a1: Math.PI }])
+    const onLine = snap(doc, index, { x: 3.3, y: 0.4 }, VIEW, SNAP.NEA | SNAP.END, 10)!
+    expect([r9(onLine.p.x), onLine.p.y, onLine.mode, onLine.id]).toEqual([3.3, 0, SNAP.NEA, ids[0]])
+    expect(snap(doc, index, { x: 0.6, y: 0.2 }, VIEW, SNAP.NEA | SNAP.END, 10)).toMatchObject({ p: { x: 0, y: 0 }, mode: SNAP.END })
+    const hit = snap(doc, index, { x: 0, y: 12.5 }, VIEW, SNAP.NEA, 10)!
+    expect([hit.p.x, hit.p.y, hit.id]).toEqual([0, 12, ids[1]])
   })
 
   it('no modes, no snap', () => {

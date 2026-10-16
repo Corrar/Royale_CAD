@@ -28,6 +28,14 @@ export function arcBBox(cx: number, cy: number, r: number, a0: number, sweep: nu
   return b
 }
 
+/** The quadrant points (0°, 90°, 180°, 270°) the arc passes through, in that order; exact, not via cos/sin. */
+export function arcQuadrants(cx: number, cy: number, r: number, a0: number, sweep: number, out: (x: number, y: number) => void): void {
+  if (onArc(0, a0, sweep)) out(cx + r, cy)
+  if (onArc(Math.PI / 2, a0, sweep)) out(cx, cy + r)
+  if (onArc(Math.PI, a0, sweep)) out(cx - r, cy)
+  if (onArc((3 * Math.PI) / 2, a0, sweep)) out(cx, cy - r)
+}
+
 export function arcDistance(px: number, py: number, cx: number, cy: number, r: number, a0: number, sweep: number): number {
   const dx = px - cx
   const dy = py - cy

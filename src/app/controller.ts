@@ -50,8 +50,8 @@ export interface AppSession {
   dispose(): void
 }
 
-/** The object snap modes in use (OSMODE); the settings (T40) will make them editable. */
-const SNAP_MODES = SNAP.END | SNAP.MID | SNAP.CEN
+/** The object snap modes in use (OSMODE); the settings (T40) will make them editable. QUA, NEA and NOD wait there. */
+const SNAP_MODES = SNAP.END | SNAP.MID | SNAP.CEN | SNAP.INT | SNAP.PER
 
 export function createFrameLoop(
   requestFrame: (cb: () => void) => void,
@@ -112,7 +112,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
       extents: () => docExtents(doc),
       pick: (p) => pick(doc, index, p, PICKBOX_PX / view!.scale),
       pickBox: (b, crossing) => pickBox(doc, index, b, crossing),
-      snap: (p) => snap(doc, index, p, view!, SNAP_MODES, APERTURE_PX),
+      snap: (p, base) => snap(doc, index, p, view!, SNAP_MODES, APERTURE_PX, base),
       query: (b) => index.query(b),
     },
   })

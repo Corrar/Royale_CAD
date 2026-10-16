@@ -1,4 +1,4 @@
-import { arcBBox, arcDistance, arcSweep } from '../geom/curve'
+import { arcBBox, arcDistance, arcQuadrants, arcSweep } from '../geom/curve'
 import { normAngle } from '../geom/tol'
 import { affineDet, applyAffine } from '../geom/vec'
 import { SNAP, type Arc, type EntityType } from './types'
@@ -28,6 +28,7 @@ export const arcType: EntityType<Arc> = {
     }
     if (modes & SNAP.MID) at(e.a0 + arcSweep(e.a0, e.a1) / 2, SNAP.MID)
     if (modes & SNAP.CEN) out(e.cx, e.cy, SNAP.CEN)
+    if (modes & SNAP.QUA) arcQuadrants(e.cx, e.cy, e.r, e.a0, arcSweep(e.a0, e.a1), (x, y) => out(x, y, SNAP.QUA))
   },
   validate: (e) => (e.r > 0 ? undefined : `arc radius must be > 0, got ${e.r}`),
 }

@@ -74,7 +74,7 @@ describe('drawOverlay', () => {
   })
 
   it('marks the snap point with the shape of its mode, and previews to the snapped point', () => {
-    for (const [mode, shape] of [[1, 'strokeRect'], [2, 'closePath'], [4, 'arc']] as const) {
+    for (const [mode, shape] of [[1, 'rect'], [2, 'closePath'], [4, 'arc']] as const) {
       const f = fakeContext()
       // The snap point is world (1, 0), screen (110, 50); the cursor is a little off it.
       drawOverlay(f.ctx, state({ cursor: { x: 113, y: 52 }, snap: { p: { x: 1, y: 0 }, mode }, preview: (c, out) => out.segment(0, 0, c.x, c.y) }), THEME, 5)
@@ -82,5 +82,14 @@ describe('drawOverlay', () => {
       expect(f.named(shape).length).toBeGreaterThan(0)
       expect(f.named('lineTo')[0]).toEqual(['lineTo', 110, 50])
     }
+  })
+
+  it('every snap mode has a marker of its own', () => {
+    const marks = [1, 2, 4, 8, 16, 32, 64, 128].map((mode) => {
+      const f = fakeContext()
+      drawOverlay(f.ctx, state({ cursor: { x: 113, y: 52 }, snap: { p: { x: 1, y: 0 }, mode } }), THEME, 5)
+      return JSON.stringify(f.calls)
+    })
+    expect(new Set(marks).size).toBe(8)
   })
 })

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { SNAP } from '../../snap'
 import { FIT_MARGIN_PX, fit, screenToWorld } from '../../view'
 import { commandBench } from '../testing'
+import { BUILTIN_COMMANDS } from '.'
 
 describe('LINE', () => {
   it('L⏎0,0⏎10,0⏎@0,5⏎C⏎ draws a closed triangle', () => {
@@ -223,6 +225,15 @@ describe('object snap and ORTHO', () => {
     expect(t.interp.tracked).toEqual({ p: { x: 5.1, y: 0.2 }, snap: null })
     t.run('L⏎')
     expect(t.interp.tracked).toEqual({ p: { x: 5, y: 0 }, snap: { p: { x: 5, y: 0 }, mode: 2, id: 1 } })
+  })
+
+  it('PER drops the perpendicular from the base point of the request', () => {
+    const t = commandBench(BUILTIN_COMMANDS, { snapModes: SNAP.PER })
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.run('L⏎3,7⏎')
+    t.click(8, 0.3) // over the line, far from the foot
+    t.run('⏎')
+    expect(t.lines()).toEqual([[0, 0, 10, 0], [3, 7, 3, 0]])
   })
 
   it('a point that picks an object (TRIM) is neither snapped nor squared', () => {
