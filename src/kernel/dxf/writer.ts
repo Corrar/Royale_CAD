@@ -559,13 +559,16 @@ function movedText(gs: [number, string][], m: Affine): [number, string][] {
   return out
 }
 
-function writeEntities(c: Ctx, source: DxfSource | null): void {
+/** Writes the document's entities; returns the spans of the file's records still there, as start, end pairs. */
+function writeEntities(c: Ctx, source: DxfSource | null): number[] {
+  const kept: number[] = []
   for (const e of c.doc.entities()) {
+    const span = source?.loaded(e.id) ?? null
+    if (span) kept.push(span.start, span.end)
     if (e.type === 'opaque') {
       c.o.raw(e.raw)
       continue
     }
-    const span = source?.loaded(e.id) ?? null
     if (span && span.entity === e) {
       // As read: the exact text, so a file written back without edits is the file read.
       c.o.raw(source!.text.slice(span.start, span.end))
@@ -582,6 +585,110 @@ function writeEntities(c: Ctx, source: DxfSource | null): void {
     }
     fresh(c, e, handle ?? (c.f.handles ? c.ids.take() : null))
   }
+  return kept
+}
+
+/**
+ * What the document no longer has of the file's ENTITIES, the records outside the spans still written: the handles
+ * of erased entities and of their VERTEX, ATTRIB and SEQEND records, and of what they own by a hard pointer (360,
+ * an extension dictionary).
+ */
+function erasedHandles(source: DxfSource, kept: number[]): Set<string> {
+  const gone = new Set<string>()
+  const s = source.sections.find((x) => x.name === 'ENTITIES')
+  if (!s) return gone
+  // In file order: undo brings an entity back at the end of the document.
+  let order = Array.from({ length: kept.length >> 1 }, (_, k) => k)
+  if (order.some((k) => k > 0 && kept[2 * k]! < kept[2 * k - 2]!)) order = order.sort((a, b) => kept[2 * a]! - kept[2 * b]!)
+  let from = s.start
+  const scan = (to: number): void => {
+    if (to <= from) return
+    const p = tokenize(source.text.slice(from, to))
+    for (let i = 0; i < p.length; i++) {
+      const v = p.value(i).trim()
+      if ((p.code(i) === 5 || p.code(i) === 360) && v) gone.add(v)
+    }
+  }
+  for (const k of order) {
+    scan(kept[2 * k]!)
+    from = Math.max(from, kept[2 * k + 1]!)
+  }
+  scan(s.end)
+  return gone
+}
+
+/**
+ * The OBJECTS section without what erased entities owned (gone: see erasedHandles), at any depth: an extension
+ * dictionary, what it holds. GROUP (340) and SORTENTSTABLE (331 and its sort handle) lists leave the erased
+ * entities out; a group they leave empty goes, and dictionary entries (3 and 350 or 360) of what went. The rest
+ * as read.
+ */
+function writeObjects(text: string, gone: Set<string>): string {
+  if (gone.size === 0) return text
+  const p = tokenize(text)
+  // Records between 0/SECTION and 0/ENDSEC: record r is [starts[r], starts[r + 1]).
+  const starts: number[] = []
+  for (let i = 0; i < p.length; i++) if (p.code(i) === 0) starts.push(i)
+  const handles: string[] = []
+  const owned = new Map<string, number[]>()
+  const dropped = new Set<number>()
+  for (let r = 1; r + 1 < starts.length; r++) {
+    let handle = ''
+    let owner = ''
+    let reactors = false
+    let members = 0
+    let erased = 0
+    for (let i = starts[r]! + 1; i < starts[r + 1]!; i++) {
+      const code = p.code(i)
+      // The owner is the 330 outside the 102 groups ({ACAD_REACTORS … }).
+      if (code === 102) reactors = p.value(i).trim().startsWith('{')
+      else if (code === 5 && !handle) handle = p.value(i).trim()
+      else if (code === 330 && !reactors && !owner) owner = p.value(i).trim()
+      else if (code === 340) {
+        members++
+        if (gone.has(p.value(i).trim())) erased++
+      }
+    }
+    handles[r] = handle
+    const list = owned.get(owner)
+    if (list) list.push(r)
+    else owned.set(owner, [r])
+    if (gone.has(handle) || (erased > 0 && erased === members && p.is(starts[r]!, 0, 'GROUP'))) dropped.add(r)
+  }
+  // What a dropped object owns goes too, at any depth.
+  const went = new Set(Array.from(dropped, (r) => handles[r]!).filter((h) => h !== ''))
+  const queue = [...gone, ...went]
+  while (queue.length > 0) {
+    for (const r of owned.get(queue.pop()!) ?? []) {
+      if (dropped.has(r)) continue
+      dropped.add(r)
+      if (handles[r] === '') continue
+      went.add(handles[r]!)
+      queue.push(handles[r]!)
+    }
+  }
+  const parts = [text.slice(0, p.offset(starts[1]!))]
+  for (let r = 1; r + 1 < starts.length; r++) {
+    if (dropped.has(r)) continue
+    const a = starts[r]!
+    const b = starts[r + 1]!
+    let from = p.offset(a)
+    const list = p.is(a, 0, 'GROUP') ? 340 : p.is(a, 0, 'SORTENTSTABLE') ? 331 : -1
+    const dictionary = p.is(a, 0, 'DICTIONARY')
+    for (let i = a + 1; i < b; i++) {
+      // The pairs left out: an erased member, with its sort handle; a dictionary entry, its name and handle.
+      let n = 0
+      if (p.code(i) === list && gone.has(p.value(i).trim())) n = list === 331 && p.code(i + 1) === 5 ? 2 : 1
+      else if (dictionary && p.code(i) === 3 && (p.code(i + 1) === 350 || p.code(i + 1) === 360) && went.has(p.value(i + 1).trim())) n = 2
+      if (n === 0) continue
+      parts.push(text.slice(from, p.offset(i)))
+      from = p.offset(i + n)
+      i += n - 1
+    }
+    parts.push(text.slice(from, p.offset(b)))
+  }
+  parts.push(text.slice(p.offset(starts.at(-1)!)))
+  return parts.join('')
 }
 
 /** A LAYER entry for a layer the file's table lacks. */
@@ -758,7 +865,7 @@ export function writeDxf(doc: Document, source?: DxfSource, opts: WriteOptions =
   const ids = allocator(Math.max(source.handseed, 1))
   const ents = emitter(nl)
   const c: Ctx = { o: ents, f, ids, doc, owner: f.modern ? modelSpace(source) : null }
-  writeEntities(c, source)
+  const kept = writeEntities(c, source)
   // What lies between sections (999 comments) goes back before the section that followed it.
   const sections = source.sections.map((s, k) => ({
     name: s.name, before: source.text.slice(source.sections[k - 1]?.end ?? 0, s.start), text: source.text.slice(s.start, s.end),
@@ -782,6 +889,7 @@ export function writeDxf(doc: Document, source?: DxfSource, opts: WriteOptions =
     const objects = sections.findIndex((s) => s.name === 'OBJECTS' || s.name === 'THUMBNAILIMAGE' || s.name === 'ACDSDATA')
     sections.splice(objects >= 0 ? objects : sections.length, 0, { name: 'ENTITIES', before: '', text: body })
   }
+  for (const s of sections) if (s.name === 'OBJECTS') s.text = writeObjects(s.text, erasedHandles(source, kept))
   const header = sections.find((s) => s.name === 'HEADER')
   if (header && f.handles) header.text = setHeaderVar(header.text, nl, '$HANDSEED', 5, ids.seed())
   if (header && opts.currentLayer !== undefined && opts.currentLayer !== source.header.get('$CLAYER')) {

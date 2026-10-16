@@ -28,12 +28,12 @@ const LAYERS: G = [
 ]
 
 /** An AC1015-like file: HEADER, TABLES (LAYER, BLOCK_RECORD), ENTITIES, OBJECTS. */
-function file(entities: G, version = 'AC1015', seed = '100'): string {
+function file(entities: G, version = 'AC1015', seed = '100', objects: G = [0, 'DICTIONARY', 5, 'C', 330, '0', 100, 'AcDbDictionary']): string {
   return lines([
     0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1, version, 9, '$HANDSEED', 5, seed, 0, 'ENDSEC',
     0, 'SECTION', 2, 'TABLES', ...LAYERS, 0, 'ENDSEC',
     0, 'SECTION', 2, 'ENTITIES', ...entities, 0, 'ENDSEC',
-    0, 'SECTION', 2, 'OBJECTS', 0, 'DICTIONARY', 5, 'C', 330, '0', 100, 'AcDbDictionary', 0, 'ENDSEC',
+    0, 'SECTION', 2, 'OBJECTS', ...objects, 0, 'ENDSEC',
     0, 'EOF',
   ])
 }
@@ -218,6 +218,40 @@ describe('writeDxf', () => {
     const [want, got] = [[...m.doc.entities()][0], [...back.doc.entities()][0]] as [Polyline, Polyline]
     expect([Array.from(got.pts), Array.from(got.bulges!, (b) => b + 0), widthsOf(got)]).toEqual([Array.from(want.pts), [0.5, 0, 0], widthsOf(want)])
     expect(back.source.text).toContain(lines([10, '-3.0', 20, '4.0', 30, '0.0', 42, -0.5, 70, 0]))
+  })
+
+  it('erased entities take with them the objects they own, and leave the GROUP and SORTENTSTABLE lists', () => {
+    // As ezdxf writes them: a circle with an extension dictionary holding an XRECORD, two lines in a group.
+    const CIRCLE: G = [0, 'CIRCLE', 5, '2F', 102, '{ACAD_XDICTIONARY', 360, '30', 102, '}', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbCircle', 10, 5, 20, 5, 30, 0, 40, 2]
+    const line = (h: string, y: number): G => [0, 'LINE', 5, h, 102, '{ACAD_REACTORS', 330, '34', 102, '}', 330, '1F', 100, 'AcDbEntity', 8, '0', 100, 'AcDbLine', 10, 0, 20, y, 30, 0, 11, 10, 21, y, 31, 0]
+    const GROUP: G = [0, 'GROUP', 5, '34', 102, '{ACAD_REACTORS', 330, 'D', 102, '}', 330, 'D', 100, 'AcDbGroup', 300, '', 70, 0, 71, 1, 340, '32', 340, '33']
+    const SORTENTS: G = [0, 'SORTENTSTABLE', 5, '36', 330, '35', 100, 'AcDbSortentsTable', 330, '1F', 331, '32', 5, 'FF', 331, '33', 5, 'FE', 331, '2F', 5, 'FD']
+    const OBJECTS: G = [
+      0, 'DICTIONARY', 5, 'C', 330, '0', 100, 'AcDbDictionary', 3, 'ACAD_GROUP', 350, 'D',
+      0, 'DICTIONARY', 5, 'D', 330, 'C', 100, 'AcDbDictionary', 3, 'PAIR', 350, '34',
+      0, 'DICTIONARY', 5, '30', 330, '2F', 100, 'AcDbDictionary', 280, 1, 281, 1, 3, 'ROYALE', 350, '31',
+      0, 'XRECORD', 5, '31', 330, '30', 100, 'AcDbXrecord', 280, 1, 1, 'kept',
+      ...GROUP, ...SORTENTS,
+    ]
+    const d = readDxf(file([...CIRCLE, ...line('32', 0), ...line('33', 1)], 'AC1015', '100', OBJECTS))
+    const objects = (text: string): string => text.slice(text.indexOf(lines([2, 'OBJECTS'])))
+    expect(objects(writeDxf(d.doc, d.source))).toBe(objects(d.source.text))
+    const [circle, first] = [...d.doc.entities()] as [Circle, Line]
+    d.doc.transact('ERASE', (tx) => {
+      tx.remove(circle.id)
+      tx.remove(first.id)
+    })
+    const out = objects(writeDxf(d.doc, d.source))
+    expect(out).not.toContain(lines([5, '30']))
+    expect(out).not.toContain('XRECORD')
+    expect(out).toContain(lines([...GROUP.slice(0, -4), 340, '33', 0, 'SORTENTSTABLE']))
+    expect(out).toContain(lines([...SORTENTS.slice(0, 8), 330, '1F', 331, '33', 5, 'FE', 0, 'ENDSEC']))
+    expect(out).toContain(lines([3, 'ACAD_GROUP', 350, 'D', 0, 'DICTIONARY', 5, 'D', 330, 'C', 100, 'AcDbDictionary', 3, 'PAIR', 350, '34']))
+    // A group left empty goes, and its entry with it.
+    d.doc.transact('ERASE', (tx) => tx.remove([...d.doc.entities()][0]!.id))
+    const none = objects(writeDxf(d.doc, d.source))
+    expect(none).not.toContain(lines([0, 'GROUP']))
+    expect(none).toContain(lines([0, 'DICTIONARY', 5, 'D', 330, 'C', 100, 'AcDbDictionary', 0, 'SORTENTSTABLE']))
   })
 
   it('read, edit, write, read: the same document; opaque text identical; extra groups and OCS survive the edit', () => {
