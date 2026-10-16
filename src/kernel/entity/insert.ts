@@ -130,6 +130,11 @@ function mapped(m: Affine, out: PrimSink, owner: Insert | BlockEntity, tol: numb
       const c = applyAffine(m, x2, y2)
       out.tri?.(a.x, a.y, b.x, b.y, c.x, c.y)
     },
+    edge(x0, y0, x1, y1) {
+      const p = applyAffine(m, x0, y0)
+      const q = applyAffine(m, x1, y1)
+      out.edge?.(p.x, p.y, q.x, q.y)
+    },
   }
 }
 
@@ -160,6 +165,41 @@ function infoOf(block: Block): BlockInfo {
   }
   infos.set(block, (info = { box, arcs, free }))
   return info
+}
+
+/** The distance from p to what e shows; with outline, its fills are as near as their outlines (outlineDistance). */
+function reach(e: Insert, p: Vec2, outline: boolean): number {
+  const of = (d: Entity, q: Vec2): number => {
+    const t = typeOf(d)
+    return outline && t.outlineDistance ? t.outlineDistance(d, q) : t.distance(d, q)
+  }
+  let best = Infinity
+  for (const a of shown(e)) best = Math.min(best, of(asEntity(a), p))
+  const ms = insertAffines(e)
+  if (ms.every(similar)) {
+    for (const m of ms) {
+      const q = applyAffine(invert(m), p.x, p.y)
+      const k = Math.sqrt(Math.abs(affineDet(m)))
+      for (const d of e.block.entities) best = Math.min(best, k * of(asEntity(d), q))
+    }
+    return best
+  }
+  insertType.primitives(e, 0, {
+    segment: (x0, y0, x1, y1) => void (best = Math.min(best, segmentDistance(p.x, p.y, x0, y0, x1, y1))),
+    arc: (cx, cy, r, a0, sweep) => void (best = Math.min(best, arcDistance(p.x, p.y, cx, cy, r, a0, sweep))),
+    tri(...c) {
+      if (!outline) best = Math.min(best, triangleDistance(p.x, p.y, ...c))
+    },
+    edge(x0, y0, x1, y1) {
+      if (outline) best = Math.min(best, segmentDistance(p.x, p.y, x0, y0, x1, y1))
+    },
+    // A letter counts by its cell, advance by descent to cap, as crossing selection takes it.
+    glyph(cp, x, y, ux, uy, vx, vy) {
+      const w = advanceOf(cp)
+      best = Math.min(best, quadDistance(p, x - DESCENT * vx, y - DESCENT * vy, w * ux, w * uy, (1 + DESCENT) * vx, (1 + DESCENT) * vy))
+    },
+  })
+  return best
 }
 
 export const insertType: EntityType<Insert> = {
@@ -199,30 +239,8 @@ export const insertType: EntityType<Insert> = {
     const info = infoOf(e.block)
     return info.free || (info.arcs && !similar(copyAffine(e, 0, 0)))
   },
-  distance(e, p) {
-    let best = Infinity
-    for (const a of shown(e)) best = Math.min(best, typeOf(asEntity(a)).distance(asEntity(a), p))
-    const ms = insertAffines(e)
-    if (ms.every(similar)) {
-      for (const m of ms) {
-        const q = applyAffine(invert(m), p.x, p.y)
-        const k = Math.sqrt(Math.abs(affineDet(m)))
-        for (const d of e.block.entities) best = Math.min(best, k * typeOf(asEntity(d)).distance(asEntity(d), q))
-      }
-      return best
-    }
-    insertType.primitives(e, 0, {
-      segment: (x0, y0, x1, y1) => void (best = Math.min(best, segmentDistance(p.x, p.y, x0, y0, x1, y1))),
-      arc: (cx, cy, r, a0, sweep) => void (best = Math.min(best, arcDistance(p.x, p.y, cx, cy, r, a0, sweep))),
-      tri: (...c) => void (best = Math.min(best, triangleDistance(p.x, p.y, ...c))),
-      // A letter counts by its cell, advance by descent to cap, as crossing selection takes it.
-      glyph(cp, x, y, ux, uy, vx, vy) {
-        const w = advanceOf(cp)
-        best = Math.min(best, quadDistance(p, x - DESCENT * vx, y - DESCENT * vy, w * ux, w * uy, (1 + DESCENT) * vx, (1 + DESCENT) * vy))
-      },
-    })
-    return best
-  },
+  distance: (e, p) => reach(e, p, false),
+  outlineDistance: (e, p) => reach(e, p, true),
   transform(e, m) {
     const det = affineDet(m)
     const k = Math.sqrt(Math.abs(det))

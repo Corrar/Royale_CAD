@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createDocument, type Draft } from './document'
-import type { Entity } from './entity/types'
+import type { Block, Entity } from './entity/types'
 import { pick, pickBox } from './pick'
 import { createSpatialIndex } from './spatial'
 
@@ -46,6 +46,36 @@ describe('pick', () => {
     const { doc, index, ids } = setup([solid(0, 0, 100, 0, 0, 100, 100, 100)])
     expect(pick(doc, index, { x: 50, y: 50 }, 1)).toBe(ids[0])
     expect(pick(doc, index, { x: 101.5, y: 50 }, 1)).toBeNull()
+  })
+
+  it('a line or text over a fill is picked before it, drawn before or after; inside, the fill only when nothing else is near', () => {
+    const text: Draft = {
+      type: 'text', layer: 0, value: 'HH', x: 20, y: 20, x2: 20, y2: 20, height: 5, rotation: 0, widthFactor: 1, oblique: 0,
+      halign: 0, valign: 0, backward: false, upsideDown: false,
+    }
+    const { doc, index, ids } = setup([line(10, 50, 90, 50), solid(0, 0, 100, 0, 0, 100, 100, 100), line(50, 10, 50, 40), text])
+    expect(pick(doc, index, { x: 30, y: 50.05 }, 1)).toBe(ids[0])
+    expect(pick(doc, index, { x: 50.05, y: 30 }, 1)).toBe(ids[2])
+    expect(pick(doc, index, { x: 22, y: 22 }, 1)).toBe(ids[3])
+    expect(pick(doc, index, { x: 70, y: 70 }, 1)).toBe(ids[1])
+    // Near its outline, a fill is as near as the outline: nearer than a line further off.
+    const edge = setup([solid(0, 0, 100, 0, 0, 100, 100, 100), line(98, 0, 98, 100)])
+    expect(pick(edge.doc, edge.index, { x: 99.8, y: 50 }, 1)).toBe(edge.ids[0])
+    expect(pick(edge.doc, edge.index, { x: 98.5, y: 50 }, 1)).toBe(edge.ids[1])
+  })
+
+  it('inside overlapping fills, the later one; a fill in a block counts by its outline too, however scaled', () => {
+    const square: Draft = solid(0, 0, 10, 0, 0, 10, 10, 10)
+    const block: Block = { name: 'S', x: 0, y: 0, entities: [square] }
+    const insert = (x: number, sx: number): Draft =>
+      ({ type: 'insert', layer: 0, block, x, y: 0, sx, sy: 1, rotation: 0, cols: 1, rows: 1, dx: 0, dy: 0 }) as Draft
+    const { doc, index, ids } = setup([solid(0, 0, 50, 0, 0, 50, 50, 50), solid(20, 20, 60, 20, 20, 60, 60, 60), line(30, 5, 30, 15), insert(100, 1), insert(200, 3), line(105, 5, 106, 5), line(215, 5, 216, 5)])
+    expect(pick(doc, index, { x: 30, y: 30 }, 1)).toBe(ids[1])
+    expect(pick(doc, index, { x: 10, y: 10 }, 1)).toBe(ids[0])
+    expect(pick(doc, index, { x: 30.5, y: 10 }, 1)).toBe(ids[2])
+    expect(pick(doc, index, { x: 105.5, y: 5.2 }, 1)).toBe(ids[5])
+    expect(pick(doc, index, { x: 215.5, y: 5.2 }, 1)).toBe(ids[6])
+    expect(pick(doc, index, { x: 215.5, y: 3 }, 1)).toBe(ids[4])
   })
 })
 

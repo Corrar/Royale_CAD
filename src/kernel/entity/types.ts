@@ -238,6 +238,11 @@ export interface PrimSink {
   glyph?(cp: number, x: number, y: number, ux: number, uy: number, vx: number, vy: number): void
   /** A filled triangle, in world coordinates. */
   tri?(x0: number, y0: number, x1: number, y1: number, x2: number, y2: number): void
+  /**
+   * An edge of a fill's outline, after its triangles: not drawn with the fill, but where picks, snaps and
+   * intersections find its boundary (the diagonal that splits a quad is no edge).
+   */
+  edge?(x0: number, y0: number, x1: number, y1: number): void
 }
 
 export interface EntityType<E extends Entity> {
@@ -251,6 +256,11 @@ export interface EntityType<E extends Entity> {
   /** Drawn by curves flattened on the CPU (free): the scene flattens it again for the zoom, the visible part only. */
   free?(e: E): boolean
   distance(e: E, p: Vec2): number
+  /**
+   * Where e fills, the distance to the outline of the fill, not 0 inside it: what lies over a fill is found before
+   * it. Absent: distance.
+   */
+  outlineDistance?(e: E, p: Vec2): number
   /** The point of e nearest p, where primitives at the default tolerance would not be exact enough. */
   nearest?(e: E, p: Vec2): Vec2
   /** The entity moved by m, same id: only similarities (move, rotate, mirror, uniform scale) are supported. */
