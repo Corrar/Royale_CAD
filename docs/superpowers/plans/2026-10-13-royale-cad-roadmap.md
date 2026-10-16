@@ -199,49 +199,59 @@ src/ui/              App.tsx · CommandLine.tsx · Toolbar.tsx · StatusBar.tsx 
 
 ## M4 — Precisão
 
-- [ ] **T21 · Snap END/MID/CEN**
+- [x] **T21 · Snap END/MID/CEN**
   - Arquivos: `src/kernel/snap.ts`, `snap.test.ts`; `snapPoints` em `entity/*.ts`
   - Produz: `snap(doc, index, cursor: Vec2, view: ViewState, modes: number): { p: Vec2; mode: number; id: number } | null`.
   - Testa: fora da abertura → `null`; mais próximo em px vence; empate segue a prioridade do §7; CEN dispara com cursor sobre a circunferência; extremos de arco.
+  - Feito: `snap(…, modes, aperturePx)` com `APERTURE_PX = 10` (o padrão do AutoCAD); layers ocultos ficam de fora. `snapPoints` por tipo: linha (pontas, meio), círculo (centro), arco (pontas, meio do arco, centro), polilinha (vértices, meio de cada trecho, centro dos trechos curvos).
 
-- [ ] **T22 · Snap na interação**
+- [x] **T22 · Snap na interação**
   - Arquivos: `src/app/controller.ts`, `src/render/overlay.ts`, `src/ui/StatusBar.tsx`
   - Produz: pedidos `point` recebem o ponto com snap; marcadores □ △ ○; `F3` e `F7`; botões de status com `aria-pressed`.
   - Verifica: linha fecha exatamente no endpoint (coordenadas idênticas no documento).
   - Nota: `F7` (grid) exige mudança em `src/render/webgl2/backend.ts`: hoje o passo do grid é incondicional e faz também a limpeza do frame.
+  - Feito: o interpretador ganha `osnap` (ligado por padrão) e `tracked` (onde o clique cairia e qual snap o pôs lá); só pontos apontados passam pelo snap, nunca os digitados. Backend ganha `setGrid`; sem grid o frame limpa com o fundo. Barra de status com coordenadas do ponto resolvido e GRID/ORTHO/OSNAP com `aria-pressed`.
 
-- [ ] **T23 · ORTHO e distância direta**
+- [x] **T23 · ORTHO e distância direta**
   - Arquivos: `src/kernel/command/runtime.ts` + teste; `src/ui/StatusBar.tsx`
   - Produz: `F8`; número sozinho em pedido `point` com `base` = distância na direção do cursor; `@` usa o último ponto; leitura de coordenadas.
   - Testa por script com cursor simulado: `L⏎0,0⏎` cursor em `(3,1)` com ORTHO, `10⏎` → termina em `(10,0)`.
+  - Feito: o snap vence o ORTHO, como no AutoCAD; a distância direta segue o mesmo ponto resolvido.
 
 ## M5 — Edição
 
-- [ ] **T24 · Interseções**
+- [x] **T24 · Interseções**
   - Arquivos: `src/kernel/geom/intersect.ts`, `intersect.test.ts`
   - Produz: `intersect(a: Entity, b: Entity): Vec2[]`.
   - Testa: tangente (1 ponto); paralelas e colineares (0); toque em extremo; arco fora do intervalo angular; propriedade: todo ponto retornado dista < tolerância das duas entidades.
+  - Feito: por primitivas (segmento × segmento, segmento × círculo, círculo × círculo; arco = círculo com filtro angular), a partir de uma origem local para não perder dígitos em UTM. Círculos coincidentes não dão ponto; vértice compartilhado de polilinha não repete. Propriedade: 2000 pares aleatórios, todo ponto a menos de 1e-7 das duas.
 
-- [ ] **T25 · ARC, PLINE, RECTANG**
+- [x] **T25 · ARC, PLINE, RECTANG**
   - Arquivos: `commands/{arc,pline,rectang}.ts` + testes
   - Testa por script: arco por 3 pontos passa pelos 3; `PL` com `C` fecha; `REC` gera polilinha fechada de 4 vértices.
+  - Feito: ARC por 3 pontos (colineares pedem de novo) ou `Center`, início e fim; PLINE com `Arc`/`Line` (arco tangente ao trecho anterior), `Close` e `Undo`, e Esc mantém o que foi desenhado, como no AutoCAD; RECTANG recusa retângulo sem área.
 
-- [ ] **T26 · MOVE, COPY, ROTATE, MIRROR, SCALE**
+- [x] **T26 · MOVE, COPY, ROTATE, MIRROR, SCALE**
   - Arquivos: `commands/transform.ts` + teste; `transform` em `entity/*.ts`
   - Testa: espelhar arco inverte o sentido e preserva a geometria; rotação de 360° devolve o original dentro da tolerância; COPY múltiplo até Enter.
+  - Feito: `transform` só para semelhanças (afins em `geom/vec.ts`; múltiplos de 90° exatos). Pré-seleção ou seleção; layers travados ficam de fora com aviso; prévia das entidades sob o cursor (até 500). MOVE com Enter usa o primeiro ponto como deslocamento; ROTATE aceita ângulo ou direção de um ponto; MIRROR pergunta `Erase source objects? [Yes/No] <No>:`.
 
-- [ ] **T27 · TRIM e EXTEND**
+- [x] **T27 · TRIM e EXTEND**
   - Arquivos: `commands/{trim,extend}.ts` + testes
   - Testa por script: `TR⏎⏎` + clique remove o trecho entre interseções vizinhas; círculo cortado vira arco; EXTEND leva à aresta mais próxima; sem interseção nada muda.
+  - Feito: `entity/path.ts` dá a cada tipo um parâmetro (`param`, `slack`, `slice`), e TRIM/EXTEND trabalham sobre ele para todos os tipos: polilinha aberta perde o trecho, a fechada (e o círculo) cortada duas vezes abre entre os cortes; peça curva cortada mantém o círculo (bulge da fração). EXTEND leva a ponta mais próxima do clique em linha, arco e na peça final de polilinha aberta (reta ou arco); fechados são recusados. Enter na seleção = todos os objetos; `Undo` desfaz o último. Pedido de ponto ganha `pick` (sem OSNAP/ORTHO, com pickbox) e o host ganha `query` (índice espacial).
 
-- [ ] **T28 · OFFSET**
+- [x] **T28 · OFFSET**
   - Arquivos: `commands/offset.ts` + teste
   - Produz: linha, círculo e arco. Polilinha fica fora (`shortcut:` registrado no código).
   - Testa: lado escolhido pelo ponto; raio resultante ≤ 0 é recusado com mensagem.
+  - Feito: distância por número, por dois pontos ou `Through`; guardada em `OFFSETDIST` e oferecida como padrão (pedido de ponto ganha `default` exibido como `<…>`). Várias cópias por comando, com `Exit` e `Undo`; a origem fica destacada enquanto o lado é pedido.
 
-- [ ] **T29 · Snaps INT, PER, QUA, NEA, NOD**
+- [x] **T29 · Snaps INT, PER, QUA, NEA, NOD**
   - Arquivos: `src/kernel/snap.ts` + teste
   - Testa: INT entre linha e círculo; PER relativo ao `base` do pedido; QUA nos 4 quadrantes.
+  - Feito: INT entre os objetos sob o cursor (até 32, os mais próximos); PER com o cursor sobre o objeto, pé no próprio objeto (o host repassa o `base` do pedido); QUA por tipo (`arcQuadrants`, exato); NEA só quando nenhum outro modo responde. Empates por arredondamento seguem a prioridade. Marcadores próprios para os oito modos. OSMODE do app: END, MID, CEN, INT, PER.
+  - Pendente: NOD não acha nada até existir uma entidade ponto (POINT), que o roadmap ainda não tem.
 
 ## M6 — DXF (gate G3)
 
