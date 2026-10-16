@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -19,6 +19,35 @@ describe('atomicWrite', () => {
     await atomicWrite(path, new TextEncoder().encode('new'))
     expect(await readFile(path, 'utf8')).toBe('new')
     expect(await readdir(dir)).toEqual(['a.dxf'])
+  })
+
+  // POSIX modes and symbolic links; Windows keeps neither the same way.
+  it.skipIf(process.platform === 'win32')('keeps the mode of the file it replaces: a private drawing stays private', async () => {
+    const path = join(dir, 'a.dxf')
+    await writeFile(path, 'old')
+    await chmod(path, 0o600)
+    await atomicWrite(path, new TextEncoder().encode('new'))
+    expect((await stat(path)).mode & 0o7777).toBe(0o600)
+    await chmod(path, 0o640)
+    await atomicWrite(path, new TextEncoder().encode('newer'))
+    expect((await stat(path)).mode & 0o7777).toBe(0o640)
+    // A new file gets the mode any new file gets.
+    await writeFile(join(dir, 'plain'), '')
+    await atomicWrite(join(dir, 'b.dxf'), new TextEncoder().encode('new'))
+    expect((await stat(join(dir, 'b.dxf'))).mode).toBe((await stat(join(dir, 'plain'))).mode)
+  })
+
+  it.skipIf(process.platform === 'win32')('through a symbolic link writes the file it points to, and the link stays', async () => {
+    await mkdir(join(dir, 'real'))
+    const real = join(dir, 'real', 'a.dxf')
+    await writeFile(real, 'old')
+    const link = join(dir, 'link.dxf')
+    await symlink(real, link)
+    await atomicWrite(link, new TextEncoder().encode('new'))
+    expect((await lstat(link)).isSymbolicLink()).toBe(true)
+    expect(await readFile(real, 'utf8')).toBe('new')
+    expect((await readdir(dir)).sort()).toEqual(['link.dxf', 'real'])
+    expect(await readdir(join(dir, 'real'))).toEqual(['a.dxf'])
   })
 
   it('a failed write leaves the original whole and cleans up', async () => {
