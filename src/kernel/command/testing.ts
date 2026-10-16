@@ -23,6 +23,7 @@ export function commandBench(commands: Readonly<Record<string, Command>> = BUILT
     pick: (p) => pick(doc, index, p, 0.25),
     pickBox: (b, crossing) => pickBox(doc, index, b, crossing),
     snap: (p) => snap(doc, index, p, view, SNAP.END | SNAP.MID | SNAP.CEN, 10),
+    query: (b) => index.query(b),
   }
   const interp = createInterpreter(doc, selection, { commands, host })
   const round = (v: number): number => Math.round(v * 1e9) / 1e9 + 0

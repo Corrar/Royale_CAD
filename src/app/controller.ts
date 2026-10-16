@@ -113,6 +113,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
       pick: (p) => pick(doc, index, p, PICKBOX_PX / view!.scale),
       pickBox: (b, crossing) => pickBox(doc, index, b, crossing),
       snap: (p) => snap(doc, index, p, view!, SNAP_MODES, APERTURE_PX),
+      query: (b) => index.query(b),
     },
   })
 
@@ -131,7 +132,7 @@ export function startApp(canvas: HTMLCanvasElement, overlay: HTMLCanvasElement):
         {
           view,
           cursor,
-          pickbox: !r || r.kind === 'selection',
+          pickbox: !r || r.kind === 'selection' || (r.kind === 'point' && r.pick === true),
           preview: r && (r.kind === 'point' || r.kind === 'number') ? (r.preview ?? null) : null,
           corner: interp.corner,
           snap: tracked?.snap ?? null,

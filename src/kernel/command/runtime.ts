@@ -24,6 +24,8 @@ export interface PointRequest extends Ask {
   acceptNumber?: boolean
   /** Geometry drawn under the cursor while the request waits. */
   preview?: (cursor: Vec2, out: PrimSink) => void
+  /** The point picks an object (TRIM, EXTEND): OSNAP and ORTHO leave it where it is, and the pick box shows. */
+  pick?: boolean
 }
 
 export interface NumberRequest extends Ask {
@@ -74,6 +76,8 @@ export interface InterpreterHost {
   pickBox?(b: BBox, crossing: boolean): number[]
   /** The object snap under p, with the app's modes and aperture; null when none. */
   snap?(p: Vec2): SnapHit | null
+  /** The entities whose bbox meets b (the spatial index); a superset is fine. */
+  query?(b: BBox): number[]
 }
 
 export interface CommandContext {
@@ -217,11 +221,11 @@ export function createInterpreter(doc: Document, selection: Selection, opts: Int
 
   /**
    * A pointed (not typed) location as the active request will take it: the snap point when OSNAP finds one, else
-   * squared to the base when ORTHO is on. At the Command prompt and while selecting, the raw location.
+   * squared to the base when ORTHO is on. At the Command prompt, while selecting and for picks, the raw location.
    */
   function resolve(raw: Vec2): { p: Vec2; snap: SnapHit | null } {
     const r = request
-    if (!r || (r.kind !== 'point' && r.kind !== 'number')) return { p: raw, snap: null }
+    if (!r || (r.kind !== 'point' && r.kind !== 'number') || (r.kind === 'point' && r.pick)) return { p: raw, snap: null }
     const hit = osnap ? (host.snap?.(raw) ?? null) : null
     if (hit) return { p: hit.p, snap: hit }
     const base = r.base

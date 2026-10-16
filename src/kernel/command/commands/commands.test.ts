@@ -225,6 +225,17 @@ describe('object snap and ORTHO', () => {
     expect(t.interp.tracked).toEqual({ p: { x: 5, y: 0 }, snap: { p: { x: 5, y: 0 }, mode: 2, id: 1 } })
   })
 
+  it('a point that picks an object (TRIM) is neither snapped nor squared', () => {
+    const t = commandBench()
+    t.run('L⏎0,0⏎10,0⏎⏎')
+    t.interp.osnap = true
+    t.interp.ortho = true
+    t.run('TR⏎⏎')
+    t.interp.cursor = { x: 5.1, y: 0.2 }
+    expect(t.interp.request).toMatchObject({ kind: 'point', pick: true })
+    expect(t.interp.tracked).toEqual({ p: { x: 5.1, y: 0.2 }, snap: null })
+  })
+
   it('ORTHO: L⏎0,0⏎, cursor at (3,1), 10⏎ ends at (10,0); clicks are squared to the base too', () => {
     const t = commandBench()
     t.interp.ortho = true
