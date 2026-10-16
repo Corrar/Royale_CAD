@@ -82,6 +82,21 @@ describe('PLINE', () => {
     expect(onEntity(p!, 15, 5)).toBe(true)
   })
 
+  it('offers Close from the second point on: PL, A, a point, CL closes a circle', () => {
+    const t = commandBench()
+    t.run('PL⏎0,0⏎A⏎0,10⏎')
+    expect(t.interp.prompt).toBe('Specify endpoint of arc or [Close/Line/Undo]:')
+    t.run('CL⏎')
+    const [p] = only(t, 'polyline') as Polyline[]
+    expect(Array.from(p!.pts)).toEqual([0, 0, 0, 10])
+    expect(Array.from(p!.bulges!).map((b) => Math.round(b * 1e12) / 1e12)).toEqual([1, 1])
+    expect(p!.closed).toBe(true)
+    t.run('PL⏎20,0⏎30,0⏎')
+    expect(t.interp.prompt).toBe('Specify next point or [Arc/Close/Undo]:')
+    t.run('C⏎')
+    expect((only(t, 'polyline')[1] as Polyline).closed).toBe(true)
+  })
+
   it('Esc keeps the polyline drawn so far, as AutoCAD does', () => {
     const t = commandBench()
     t.run('PL⏎0,0⏎10,0⏎10,5⏎')
